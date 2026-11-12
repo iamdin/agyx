@@ -12,10 +12,10 @@ With Homebrew:
 
 ```sh
 brew install iamdin/tap/agyctl
-agyctl install
+agyctl setup
 ```
 
-`agyctl install` only records the official agy (first `agy` on `PATH`, or the path you pass) under the data dir. `agyctl` is the only command you run; Homebrew puts it on `PATH`. agyctl never edits your shell config.
+`agyctl setup` only records the official agy (first `agy` on `PATH`, or the path you pass) under the data dir. `agyctl` is the only command you run; Homebrew puts it on `PATH`. agyctl never edits your shell config.
 
 Then log in once per account:
 
@@ -36,7 +36,7 @@ From a git clone instead of Homebrew:
 
 ```sh
 git clone https://github.com/iamdin/agyctl && cd agyctl
-./bin/agyctl install     # then link bin/agyctl onto PATH, e.g. ln -s "$PWD/bin/agyctl" ~/.local/bin/agyctl
+./bin/agyctl setup       # then link bin/agyctl onto PATH, e.g. ln -s "$PWD/bin/agyctl" ~/.local/bin/agyctl
 ```
 
 Keep `bin/` and `runtime/` together; the scripts locate each other by resolving their own real path (symlinks are fine).
@@ -45,17 +45,32 @@ Keep `bin/` and `runtime/` together; the scripts locate each other by resolving 
 
 Profile choice: leading `--account NAME` > `AGY_PROFILE` > default (`agyctl use`).
 
-`agyctl` launches agy unless its first argument is one of its own subcommands (`install`, `shim`, `unshim`, `login`, `use`, `list`, `doctor`, `help`) or `-h`/`--help`:
+`agyctl` launches agy unless its first argument is one of its own management subcommands: `setup`, `login`, `use`, `list`, `doctor`, `shim`, `unshim`. None of them overlaps with a real agy subcommand (`acp`, `agent`, `agents`, `changelog`, `help`, `install`, `mcp`, `mic-serve`, `models`, `plugin`, `plugins`, `remote-control`, `update`) or flag (`-h`, `--help`), so all of those, and `agyctl --help`, reach the real agy:
 
 ```sh
 agyctl                          # default profile
 agyctl --account personal -p "hello"
 AGY_PROFILE=work agyctl --model x
 agyctl --account work mcp list
-agyctl -- install               # a leading -- always launches: runs agy's own `install` subcommand
+agyctl --help                  # agy's own help
+agyctl install                  # agy's own `install` subcommand
 ```
 
-(After `agyctl shim`, the same works with the bare `agy`.) Profile names equal to an agyctl subcommand are rejected.
+(After `agyctl shim`, the same works with the bare `agy`.) The seven management subcommand names are reserved and rejected as profile names.
+
+### agyctl usage
+
+```
+usage: agyctl setup [path]      record the official agy (default: first agy in PATH)
+       agyctl login NAME        create profile NAME and log in with agy's native login
+       agyctl use NAME          set the default profile
+       agyctl list              list profiles
+       agyctl doctor            check the installation
+       agyctl shim | unshim     enable / disable the optional bare 'agy' takeover
+       agyctl [--account NAME] [agy args...]   anything else launches agy
+```
+
+This usage is printed (exit 2) on any misuse of a management subcommand: a missing, extra, invalid or reserved argument, or an unknown profile.
 
 `--account` is only read before any other argument (`--` ends it); everything after is passed to agy untouched. A bad or missing profile is an error, never a fallback to another one.
 

@@ -14,15 +14,16 @@ class Agyctl < Formula
   end
 
   test do
-    assert_match "usage: agyctl", shell_output("#{bin}/agyctl --help")
+    # misuse of a management subcommand prints the usage and exits 2
+    assert_match "usage: agyctl", shell_output("#{bin}/agyctl list extra 2>&1", 2)
     assert_path_exists libexec/"bin/agy"
     refute_path_exists bin/"agy"
 
-    # `install` only records the real agy; `shim`/`unshim` toggle the optional bare agy
+    # `setup` only records the real agy; `shim`/`unshim` toggle the optional bare agy
     # takeover (no real agy is run).
     ENV["AGYCTL_DATA_DIR"] = testpath/"data"
     ENV["AGYCTL_REAL_HOME"] = testpath
-    system bin/"agyctl", "install", "/usr/bin/true"
+    system bin/"agyctl", "setup", "/usr/bin/true"
     assert_equal Pathname("/usr/bin/true").realpath, (testpath/"data/real-agy").realpath
     refute_path_exists testpath/"data/bin/agy"
     # anything that is not an agyctl subcommand launches agy via the shim

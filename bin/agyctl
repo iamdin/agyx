@@ -1,5 +1,5 @@
 #!/bin/sh
-# agyctl: manage agy profiles (install, shim, unshim, login, use, list, doctor, help);
+# agyctl: manage agy profiles (setup, login, use, list, doctor, shim, unshim);
 # any other invocation launches agy through the shim. See README.md.
 die() { echo "agyctl: $*" >&2; exit 1; }
 valid() {
@@ -15,10 +15,10 @@ while [ -L "$self" ]; do
 done
 me=$(cd "$(dirname "$self")" && pwd -P)/$(basename "$self")
 shim=$(dirname "$me")/agy
-# Anything that is not one of our own subcommands launches agy (a leading `--` is the escape
-# for agy subcommands named like ours). umask is untouched so agy inherits the caller's.
+# Anything that is not one of our own subcommands launches agy (none of them overlaps with an
+# agy subcommand or flag, including -h/--help). umask is untouched so agy inherits the caller's.
 case ${1-} in
-  install|shim|unshim|login|use|list|doctor|help|-h|--help) ;;
+  setup|login|use|list|doctor|shim|unshim) ;;
   *) exec "$shim" "$@" ;;
 esac
 rh=${AGYCTL_REAL_HOME:-$(eval "printf %s ~$(id -un)")}
@@ -26,21 +26,28 @@ data=${AGYCTL_DATA_DIR:-$rh/.local/share/agyctl}
 tok=home/.gemini/antigravity-cli/antigravity-oauth-token
 
 need() {
-  valid "${1-}" || die "invalid profile name: ${1-}"
-  case $1 in install|shim|unshim|login|use|list|doctor|help) die "profile name is reserved: $1" ;; esac
+  valid "${1-}" || bad "invalid profile name: ${1-}"
+  case $1 in setup|login|use|list|doctor|shim|unshim) bad "profile name is reserved: $1" ;; esac
 }
-exists() { need "${1-}"; [ -d "$data/profiles/$1/home" ] || die "no such profile: $1"; }
+exists() { need "${1-}"; [ -d "$data/profiles/$1/home" ] || bad "no such profile: $1"; }
 names() { for d in "$data"/profiles/*/; do [ -d "$d" ] && basename "$d"; done; }
 dflt() { [ -f "$data/default" ] && cat "$data/default"; }
 tokstate() { if [ -f "$data/profiles/$1/$tok" ]; then echo "token file present"; else echo "no token file"; fi; }
 
 isshim() { [ -L "$1" ] && [ "$1" -ef "$shim" ]; }
-usage="usage: agyctl install [path] | shim | unshim | login NAME | use NAME | list | doctor | help
-       agyctl [--account NAME] [agy args...]   launch agy (use 'agyctl -- ARGS' to pass agy's own install/help/...)"
+usage="usage: agyctl setup [path]      record the official agy (default: first agy in PATH)
+       agyctl login NAME        create profile NAME and log in with agy's native login
+       agyctl use NAME          set the default profile
+       agyctl list              list profiles
+       agyctl doctor            check the installation
+       agyctl shim | unshim     enable / disable the optional bare 'agy' takeover
+       agyctl [--account NAME] [agy args...]   anything else launches agy"
+bad() { echo "agyctl: $*" >&2; echo "$usage" >&2; exit 2; }
 
 cmd=${1-}; [ $# -gt 0 ] && shift
 case $cmd in
-  install)
+  setup)
+    [ $# -le 1 ] || bad "setup takes at most one argument"
     t=${1-}
     if [ -z "$t" ]; then
       IFS=:
@@ -51,14 +58,15 @@ case $cmd in
     fi
     [ -n "$t" ] || die "no agy found in PATH; pass its path"
     case $t in /*) ;; *) t=$PWD/$t ;; esac
-    [ -x "$t" ] || die "not executable: $t"
-    [ ! "$t" -ef "$shim" ] || die "that is the shim itself"
+    [ -x "$t" ] || bad "not executable: $t"
+    [ ! "$t" -ef "$shim" ] || bad "that is the shim itself"
     (umask 077; mkdir -p "$data") && ln -sfn "$t" "$data/real-agy" || die "cannot write $data"
     echo "real agy: $t"
     echo "agyctl launches it: 'agyctl --account NAME ...' (make sure agyctl itself is on PATH)."
     echo "optional: 'agyctl shim' also takes over the bare 'agy' name"
     ;;
   shim)
+    [ $# -eq 0 ] || bad "shim takes no arguments"
     l=$data/bin/agy
     if [ -e "$l" ] || [ -L "$l" ]; then isshim "$l" || die "$l exists and is not a link to the shim; not touching it"; fi
     mkdir -p "$data/bin" && ln -sfn "$shim" "$l" || die "cannot write $l"
@@ -69,6 +77,7 @@ case $cmd in
     echo "  export PATH=\"$data/bin:\$PATH\""
     ;;
   unshim)
+    [ $# -eq 0 ] || bad "unshim takes no arguments"
     l=$data/bin/agy
     if [ -e "$l" ] || [ -L "$l" ]; then
       isshim "$l" || die "$l is not a link to the shim; not removing it"
@@ -77,15 +86,18 @@ case $cmd in
     echo "bare 'agy' is no longer taken over (agyx still works)"
     ;;
   login)
+    [ $# -eq 1 ] || bad "login needs exactly one profile name"
     need "${1-}"
     (umask 077; mkdir -p "$data/profiles/$1/home") || die "cannot create profile"
     exec "$shim" --account "$1"
     ;;
   use)
+    [ $# -eq 1 ] || bad "use needs exactly one profile name"
     exists "${1-}"
     printf '%s\n' "$1" > "$data/default"
     ;;
   list)
+    [ $# -eq 0 ] || bad "list takes no arguments"
     d=$(dflt)
     for n in $(names); do
       m=" "; [ "$n" = "$d" ] && m="*"
@@ -93,12 +105,13 @@ case $cmd in
     done
     ;;
   doctor)
+    [ $# -eq 0 ] || bad "doctor takes no arguments"
     real=$data/real-agy
     if [ -x "$real" ]; then
       echo "real agy: $(readlink "$real")"
       echo "version: $(AGY_CLI_DISABLE_AUTO_UPDATE=true "$real" --version 2>&1 | head -n 1)"
     else
-      echo "real agy: not set (run: agyctl install)"
+      echo "real agy: not set (run: agyctl setup)"
     fi
     first=$(command -v agyctl)
     if [ -n "$first" ] && [ "$first" -ef "$me" ]; then echo "PATH: agyctl resolves to this script ($first)"
@@ -117,5 +130,4 @@ case $cmd in
       echo "profile $n: $(tokstate "$n"), home $(ls -ld "$p/home" | cut -c1-10)$([ -f "$t" ] && echo ", token $(ls -l "$t" | cut -c1-10)")"
     done
     ;;
-  help|-h|--help) echo "$usage" ;;
 esac
