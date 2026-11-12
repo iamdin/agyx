@@ -1,6 +1,6 @@
 # Draft formula: move to the tap repo (iamdin/homebrew-tap, Formula/agyx.rb).
 class Agyx < Formula
-  desc "Run several Google Antigravity (agy) CLI accounts side by side"
+  desc "Run several Google Antigravity (agy) CLI profiles side by side"
   homepage "https://github.com/iamdin/agyx"
   url "https://github.com/iamdin/agyx/archive/refs/tags/vX.Y.Z.tar.gz" # TODO: real release
   sha256 "0000000000000000000000000000000000000000000000000000000000000000" # TODO: real sha256
@@ -28,7 +28,7 @@ class Agyx < Formula
     refute_path_exists testpath/"data/bin/agy"
     # anything that is not an agyx subcommand launches agy via the shim
     (testpath/"data/profiles/work/home").mkpath
-    system bin/"agyx", "--account", "work"
+    system bin/"agyx", "--profile", "work"
     system bin/"agyx", "shim"
     assert_equal (libexec/"bin/agy").realpath, (testpath/"data/bin/agy").realpath
     system bin/"agyx", "unshim"

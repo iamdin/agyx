@@ -41,7 +41,7 @@ usage="usage: agyx setup [path]      record the official agy (default: first agy
        agyx list              list profiles
        agyx doctor            check the installation
        agyx shim | unshim     enable / disable the optional bare 'agy' takeover
-       agyx [--account NAME] [agy args...]   anything else launches agy"
+       agyx [--profile NAME] [agy args...]   anything else launches agy"
 bad() { echo "agyx: $*" >&2; echo "$usage" >&2; exit 2; }
 
 cmd=${1-}; [ $# -gt 0 ] && shift
@@ -62,7 +62,7 @@ case $cmd in
     [ ! "$t" -ef "$shim" ] || bad "that is the shim itself"
     (umask 077; mkdir -p "$data") && ln -sfn "$t" "$data/real-agy" || die "cannot write $data"
     echo "real agy: $t"
-    echo "agyx launches it: 'agyx --account NAME ...' (make sure agyx itself is on PATH)."
+    echo "agyx launches it: 'agyx --profile NAME ...' (make sure agyx itself is on PATH)."
     echo "optional: 'agyx shim' also takes over the bare 'agy' name"
     ;;
   shim)
@@ -89,7 +89,7 @@ case $cmd in
     [ $# -eq 1 ] || bad "login needs exactly one profile name"
     need "${1-}"
     (umask 077; mkdir -p "$data/profiles/$1/home") || die "cannot create profile"
-    exec "$shim" --account "$1"
+    exec "$shim" --profile "$1"
     ;;
   use)
     [ $# -eq 1 ] || bad "use needs exactly one profile name"
@@ -121,7 +121,7 @@ case $cmd in
       if [ -n "$first" ] && [ "$first" -ef "$shim" ]; then echo "takeover: on, agy resolves to the shim ($first)"
       else echo "takeover: WARNING agy link exists but 'agy' resolves to ${first:-nothing}; put $data/bin before the real agy's directory in PATH"; fi
     else
-      echo "takeover: off. Inside an agent shell a nested 'agyx' routes to the inherited profile, but a nested bare 'agy' runs the real agy with the real HOME (default account, not the instance profile); use 'agyx shim' to enable"
+      echo "takeover: off. Inside an agent shell a nested 'agyx' routes to the inherited profile, but a nested bare 'agy' runs the real agy with the real HOME (default login, not the instance profile); use 'agyx shim' to enable"
     fi
     d=$(dflt); echo "default: ${d:-none}"
     for n in $(names); do

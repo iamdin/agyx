@@ -19,7 +19,7 @@ agyx setup
 
 `agyx setup` only records the official agy (first `agy` on `PATH`, or the path you pass) under the data dir. `agyx` is the only command you run; Homebrew puts it on `PATH`. agyx never edits your shell config.
 
-Then log in once per account:
+Then log in once per profile:
 
 ```sh
 agyx login work        # runs agy's native login in profile "work"
@@ -32,7 +32,7 @@ agyx doctor            # checks that `agyx` on PATH is this script
 
 By default the official `agy` is left alone. `agyx shim` creates `<data dir>/bin/agy` (a link to the shim) and tells you that `<data dir>/bin` must now come **before** the real agy's directory in `PATH` (the official installer uses `~/.local/bin`, so put `export PATH="$HOME/.local/share/agyx/bin:$PATH"` at the end of your shell config). `agyx unshim` removes only that link (it refuses to remove anything that is not a symlink to the shim). Both are idempotent.
 
-Inside an agent's shell, a nested `agyx` always routes to the inherited profile. A nested bare `agy` does only with the takeover on; without it, it runs the real agy with the real `HOME`, i.e. the default account, not the instance profile. `agyx doctor` reports which mode you are in.
+Inside an agent's shell, a nested `agyx` always routes to the inherited profile. A nested bare `agy` does only with the takeover on; without it, it runs the real agy with the real `HOME`, i.e. the default login, not the instance profile. `agyx doctor` reports which mode you are in.
 
 From a git clone instead of Homebrew:
 
@@ -45,15 +45,15 @@ Keep `bin/` and `runtime/` together; the scripts locate each other by resolving 
 
 ## Use
 
-Profile choice: leading `--account NAME` > `AGY_PROFILE` > default (`agyx use`).
+Profile choice: leading `--profile NAME` > `AGY_PROFILE` > default (`agyx use`).
 
 `agyx` launches agy unless its first argument is one of its own management subcommands: `setup`, `login`, `use`, `list`, `doctor`, `shim`, `unshim`. None of them overlaps with a real agy subcommand (`acp`, `agent`, `agents`, `changelog`, `help`, `install`, `mcp`, `mic-serve`, `models`, `plugin`, `plugins`, `remote-control`, `update`) or flag (`-h`, `--help`), so all of those, and `agyx --help`, reach the real agy:
 
 ```sh
 agyx                          # default profile
-agyx --account personal -p "hello"
+agyx --profile personal -p "hello"
 AGY_PROFILE=work agyx --model x
-agyx --account work mcp list
+agyx --profile work mcp list
 agyx --help                  # agy's own help
 agyx install                  # agy's own `install` subcommand
 ```
@@ -69,12 +69,12 @@ usage: agyx setup [path]      record the official agy (default: first agy in PAT
        agyx list              list profiles
        agyx doctor            check the installation
        agyx shim | unshim     enable / disable the optional bare 'agy' takeover
-       agyx [--account NAME] [agy args...]   anything else launches agy
+       agyx [--profile NAME] [agy args...]   anything else launches agy
 ```
 
 This usage is printed (exit 2) on any misuse of a management subcommand: a missing, extra, invalid or reserved argument, or an unknown profile.
 
-`--account` is only read before any other argument (`--` ends it); everything after is passed to agy untouched. A bad or missing profile is an error, never a fallback to another one.
+`--profile` is only read before any other argument (`--` ends it); everything after is passed to agy untouched. A bad or missing profile is an error, never a fallback to another one.
 
 `agyx list` shows profiles and whether the token file exists ("token file present", not proof of a valid login).
 

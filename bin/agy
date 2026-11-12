@@ -18,19 +18,19 @@ runtime=$(cd "$(dirname "$self")/../runtime" && pwd -P)
 rh=${AGYX_REAL_HOME:-$(eval "printf %s ~$(id -un)")}
 data=${AGYX_DATA_DIR:-$rh/.local/share/agyx}
 
-# 1. profile choice: leading --account flags only
+# 1. profile choice: leading --profile flags only
 flag=0 name=
 while [ $# -gt 0 ]; do
   case $1 in
-    --account)
-      [ $# -ge 2 ] || die "--account needs a value"
+    --profile)
+      [ $# -ge 2 ] || die "--profile needs a value"
       v=$2; shift 2 ;;
-    --account=*) v=${1#--account=}; shift ;;
+    --profile=*) v=${1#--profile=}; shift ;;
     --) shift; break ;;
     *) break ;;
   esac
-  [ "$flag" = 0 ] || die "--account given more than once"
-  [ -n "$v" ] || die "--account value is empty"
+  [ "$flag" = 0 ] || die "--profile given more than once"
+  [ -n "$v" ] || die "--profile value is empty"
   flag=1 name=$v
 done
 if [ "$flag" = 0 ]; then
@@ -38,7 +38,7 @@ if [ "$flag" = 0 ]; then
   if [ -z "$name" ] && [ -f "$data/default" ]; then
     read -r name < "$data/default" || :
   fi
-  [ -n "$name" ] || die "no profile: use --account NAME, AGY_PROFILE, or 'agyx use NAME'"
+  [ -n "$name" ] || die "no profile: use --profile NAME, AGY_PROFILE, or 'agyx use NAME'"
 fi
 valid "$name" || die "invalid profile name: $name"
 case $name in setup|login|use|list|doctor|shim|unshim) die "profile name is reserved: $name" ;; esac

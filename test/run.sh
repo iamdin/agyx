@@ -44,9 +44,9 @@ nl='
 # priority
 eq default "work" "$(prof)"
 eq env "home" "$(AGY_PROFILE=home prof)"
-eq flag-over-env "other" "$(AGY_PROFILE=home prof --account other)"
-eq flag-equals "other" "$(AGY_PROFILE=home prof --account=other)"
-eq home-dir "HOME=$DD/profiles/other/home" "$(agy --account other | grep ^HOME=)"
+eq flag-over-env "other" "$(AGY_PROFILE=home prof --profile other)"
+eq flag-equals "other" "$(AGY_PROFILE=home prof --profile=other)"
+eq home-dir "HOME=$DD/profiles/other/home" "$(agy --profile other | grep ^HOME=)"
 eq no-default-file-env-only "home" "$(mv "$DD/default" "$T/d"; AGY_PROFILE=home prof; mv "$T/d" "$DD/default")"
 
 # errors: nonzero, message on stderr, nothing on stdout (never falls back)
@@ -56,17 +56,17 @@ bad() { # name args...
   eq "err-$n" "nonzero,empty-stdout,has-stderr" \
     "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty-stdout),$([ -s "$T/err" ] && echo has-stderr)"
 }
-bad missing-value --account
-bad empty-eq --account=
-bad empty-arg --account ""
-bad repeated --account work --account other
-bad repeated-eq --account=work --account=other
-bad uppercase --account Work
-bad digit-first --account 1x
-bad too-long --account abcdefghijklmnopqrstuvwxyzabcdefg
-bad bad-chars "--account=a/b"
-bad no-profile-dir --account nope
-bad env-no-dir-fallback --account nope x
+bad missing-value --profile
+bad empty-eq --profile=
+bad empty-arg --profile ""
+bad repeated --profile work --profile other
+bad repeated-eq --profile=work --profile=other
+bad uppercase --profile Work
+bad digit-first --profile 1x
+bad too-long --profile abcdefghijklmnopqrstuvwxyzabcdefg
+bad bad-chars "--profile=a/b"
+bad no-profile-dir --profile nope
+bad env-no-dir-fallback --profile nope x
 out=$(AGY_PROFILE=BAD agy 2>&1); eq env-invalid "1" "$([ -n "$out" ] && ! echo "$out" | grep -q HOME= && echo 1)"
 out=$(AGY_PROFILE=nope agy 2>&1); eq env-no-dir "1" "$([ -n "$out" ] && ! echo "$out" | grep -q HOME= && echo 1)"
 mv "$DD/default" "$T/d"
@@ -75,15 +75,15 @@ eq no-default "1" "$([ $rc -ne 0 ] && ! echo "$out" | grep -q HOME= && echo 1)"
 mv "$T/d" "$DD/default"
 
 # argv preserved
-eq argv "ARG=hello world${nl}ARG=${nl}ARG=--account${nl}ARG=b${nl}ARG=--${nl}ARG=x" \
-  "$(args --account other "hello world" "" --account b -- x)"
-eq dashdash-consumed "ARG=--account${nl}ARG=b" "$(args --account other -- --account b)"
-eq dashdash-no-flag "ARG=--account${nl}ARG=b" "$(AGY_PROFILE=home args -- --account b)"
-eq prompt-account-untouched "work ARG=-p${nl}ARG=--account${nl}ARG=zzz" "work $(args -p --account zzz)"
+eq argv "ARG=hello world${nl}ARG=${nl}ARG=--profile${nl}ARG=b${nl}ARG=--${nl}ARG=x" \
+  "$(args --profile other "hello world" "" --profile b -- x)"
+eq dashdash-consumed "ARG=--profile${nl}ARG=b" "$(args --profile other -- --profile b)"
+eq dashdash-no-flag "ARG=--profile${nl}ARG=b" "$(AGY_PROFILE=home args -- --profile b)"
+eq prompt-profile-untouched "work ARG=-p${nl}ARG=--profile${nl}ARG=zzz" "work $(args -p --profile zzz)"
 eq no-args "" "$(args)"
 
 # bridge: run `$1` (shell snippet) inside the shim environment
-inshim() { FAKE_RUN=$1 agy --account other; }
+inshim() { FAKE_RUN=$1 agy --profile other; }
 for sh in zsh bash; do
   command -v $sh >/dev/null || { echo "SKIP $sh (not installed)"; continue; }
   eq "$sh-home" "$RH" "$(inshim "$sh -c 'echo \$HOME'")"
@@ -112,17 +112,17 @@ if command -v bash >/dev/null; then
 fi
 rm -f "$RH/.zshenv"
 
-# nested: bare agy inside a bridged shell keeps the profile; --account switches
+# nested: bare agy inside a bridged shell keeps the profile; --profile switches
 if command -v zsh >/dev/null; then
   eq nested-same "other" "$(inshim "zsh -c 'FAKE_RUN= agy x'" | sed -n 's/^AGY_PROFILE=//p')"
-  eq nested-switch "home" "$(inshim "zsh -c 'FAKE_RUN= agy --account home x'" | sed -n 's/^AGY_PROFILE=//p')"
+  eq nested-switch "home" "$(inshim "zsh -c 'FAKE_RUN= agy --profile home x'" | sed -n 's/^AGY_PROFILE=//p')"
   eq nested-home "HOME=$DD/profiles/other/home" "$(inshim "zsh -c 'FAKE_RUN= agy x'" | grep ^HOME=)"
   eq nested-originals "ORIG_ZDOTDIR=/zd" "$(ZDOTDIR=/zd inshim "zsh -c 'FAKE_RUN= agy x'" | grep ^ORIG_ZDOTDIR=)"
 fi
 # direct nested call (ZDOTDIR/BASH_ENV still point at the bridge): saved originals survive
 eq nested-direct "orig-zd=/zd orig-be=/be set=1" "$(ZDOTDIR=$here/runtime/zsh BASH_ENV=$here/runtime/bash_env \
   AGYX_ORIG_ZDOTDIR_SET=1 AGYX_ORIG_ZDOTDIR=/zd AGYX_ORIG_BASH_ENV_SET=1 AGYX_ORIG_BASH_ENV=/be \
-  FAKE_RUN='echo orig-zd=$AGYX_ORIG_ZDOTDIR orig-be=$AGYX_ORIG_BASH_ENV set=$AGYX_ORIG_ZDOTDIR_SET' agy --account home)"
+  FAKE_RUN='echo orig-zd=$AGYX_ORIG_ZDOTDIR orig-be=$AGYX_ORIG_BASH_ENV set=$AGYX_ORIG_ZDOTDIR_SET' agy --profile home)"
 
 # real-agy pointing at the shim is refused
 ln -sfn "$here/bin/agy" "$DD/real-agy"
@@ -131,26 +131,30 @@ eq refuse-self "1" "$([ $rc -ne 0 ] && echo "$out" | grep -q 'shim itself' && ec
 ln -sfn "$T/fake-agy" "$DD/real-agy"
 
 # agyx launches agy unless the first argument is one of its own subcommands
-eq launch-flag "other" "$(agyx --account other | sed -n 's/^AGY_PROFILE=//p')"
-eq launch-flag-eq-args "AGY_PROFILE=other${nl}ARG=-p${nl}ARG=hi" "$(agyx --account=other -p hi | grep '^AGY_PROFILE=\|^ARG=')"
+eq launch-flag "other" "$(agyx --profile other | sed -n 's/^AGY_PROFILE=//p')"
+eq launch-flag-eq-args "AGY_PROFILE=other${nl}ARG=-p${nl}ARG=hi" "$(agyx --profile=other -p hi | grep '^AGY_PROFILE=\|^ARG=')"
 eq launch-env "AGY_PROFILE=home${nl}ARG=--model${nl}ARG=x" "$(AGY_PROFILE=home agyx --model x | grep '^AGY_PROFILE=\|^ARG=')"
 eq launch-no-args "AGY_PROFILE=work/0" "$(agyx | grep '^AGY_PROFILE=')/$(agyx | grep -c '^ARG=')"
-eq launch-flag-then-subcommand "ARG=mcp${nl}ARG=list" "$(agyx --account work mcp list | grep '^ARG=')"
-eq launch-argv-boundaries "ARG=a b${nl}ARG=${nl}ARG=--account${nl}ARG=zz" "$(agyx --account work "a b" "" --account zz | grep '^ARG=')"
-eq launch-help-flags "AGY_PROFILE=other${nl}ARG=--help" "$(agyx --account other --help | grep '^AGY_PROFILE=\|^ARG=')"
+eq launch-flag-then-subcommand "ARG=mcp${nl}ARG=list" "$(agyx --profile work mcp list | grep '^ARG=')"
+eq launch-argv-boundaries "ARG=a b${nl}ARG=${nl}ARG=--profile${nl}ARG=zz" "$(agyx --profile work "a b" "" --profile zz | grep '^ARG=')"
+eq launch-help-flags "AGY_PROFILE=other${nl}ARG=--help" "$(agyx --profile other --help | grep '^AGY_PROFILE=\|^ARG=')"
+eq project-passthrough "AGY_PROFILE=work${nl}ARG=--project${nl}ARG=x" "$(agyx --project x | grep '^AGY_PROFILE=\|^ARG=')"
+eq project-after-profile "AGY_PROFILE=other${nl}ARG=--project${nl}ARG=x" "$(agyx --profile other --project x | grep '^AGY_PROFILE=\|^ARG=')"
+eq account-flag-is-plain-arg "AGY_PROFILE=work${nl}ARG=--account${nl}ARG=other" "$(agyx --account other | grep '^AGY_PROFILE=\|^ARG=')"
+eq account-eq-is-plain-arg "AGY_PROFILE=work${nl}ARG=--account=other" "$(agyx --account=other | grep '^AGY_PROFILE=\|^ARG=')"
 eq launch-bare-help "ARG=--help" "$(agyx --help | grep '^ARG=')"
 eq escape-dashdash "AGY_PROFILE=home${nl}ARG=foo" "$(AGY_PROFILE=home agyx -- foo | grep '^AGY_PROFILE=\|^ARG=')"
-eq launch-umask "$(umask)" "$(FAKE_RUN='umask' agyx --account other)"
+eq launch-umask "$(umask)" "$(FAKE_RUN='umask' agyx --profile other)"
 # nested calls inside an agent shell route to the inherited profile (agyx, and bare agy when shimmed)
-eq nested-agyx "other" "$(FAKE_RUN='FAKE_RUN= agyx x' agyx --account other | sed -n 's/^AGY_PROFILE=//p')"
-eq nested-agy "other" "$(FAKE_RUN='FAKE_RUN= agy x' agyx --account other | sed -n 's/^AGY_PROFILE=//p')"
-eq nested-agyx-switch "home" "$(FAKE_RUN='FAKE_RUN= agyx --account home x' agyx --account other | sed -n 's/^AGY_PROFILE=//p')"
+eq nested-agyx "other" "$(FAKE_RUN='FAKE_RUN= agyx x' agyx --profile other | sed -n 's/^AGY_PROFILE=//p')"
+eq nested-agy "other" "$(FAKE_RUN='FAKE_RUN= agy x' agyx --profile other | sed -n 's/^AGY_PROFILE=//p')"
+eq nested-agyx-switch "home" "$(FAKE_RUN='FAKE_RUN= agyx --profile home x' agyx --profile other | sed -n 's/^AGY_PROFILE=//p')"
 # profile names equal to an agyx subcommand are rejected, even if the directory exists
 res=
 for n in setup login use list doctor shim unshim; do
   mkdir -p "$DD/profiles/$n/home"; : > "$LAUNCHLOG"
-  agyx --account "$n" >/dev/null 2>&1 && res="$res launched:$n"
-  agy --account "$n" >/dev/null 2>&1 && res="$res shim-launched:$n"
+  agyx --profile "$n" >/dev/null 2>&1 && res="$res launched:$n"
+  agy --profile "$n" >/dev/null 2>&1 && res="$res shim-launched:$n"
   "$here/bin/agyx" login "$n" >/dev/null 2>&1 && res="$res login:$n"
   "$here/bin/agyx" use "$n" >/dev/null 2>&1 && res="$res use:$n"
   [ -s "$LAUNCHLOG" ] && res="$res log:$n"
@@ -206,7 +210,7 @@ for s in $agy_subs; do [ "$(agyx "$s" | grep '^ARG=')" = "ARG=$s" ] || res="$res
 eq agy-subcommands-reach-agy "" "$res"
 # names of agy subcommands are fine as profile names
 mkdir -p "$DD/profiles/install/home"
-eq profile-named-install "install" "$(agyx --account install | sed -n 's/^AGY_PROFILE=//p')"
+eq profile-named-install "install" "$(agyx --profile install | sed -n 's/^AGY_PROFILE=//p')"
 rm -rf "${DD:?}/profiles/install"
 
 # doctor
@@ -225,7 +229,7 @@ eq ctl-doctor-off "1" "$(ctl doctor | grep -c 'takeover: off.*nested .agyx. rout
 out=$(ctl shim); eq ctl-shim-link "$here/bin/agy" "$(readlink "$DD/bin/agy")"
 eq ctl-shim-says-path "1" "$(echo "$out" | grep -c 'must come BEFORE the directory of the real agy')"
 eq ctl-shim-idempotent "0" "$(ctl shim >/dev/null; echo $?)"
-eq ctl-shim-used "other" "$(agy --account other | sed -n 's/^AGY_PROFILE=//p')"
+eq ctl-shim-used "other" "$(agy --profile other | sed -n 's/^AGY_PROFILE=//p')"
 ctl unshim >/dev/null
 # refusals: never remove or overwrite anything that is not a link to the shim
 echo precious > "$DD/bin/agy"
