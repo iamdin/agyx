@@ -15,7 +15,7 @@ class Agyx < Formula
 
   test do
     # misuse of a management subcommand prints the usage and exits 2
-    assert_match "usage: agyx", shell_output("#{bin}/agyx list extra 2>&1", 2)
+    assert_match "usage: agyx", shell_output("#{bin}/agyx profile list extra 2>&1", 2)
     assert_path_exists libexec/"bin/agy"
     refute_path_exists bin/"agy"
 

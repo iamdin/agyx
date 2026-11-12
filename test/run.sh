@@ -145,18 +145,25 @@ eq account-eq-is-plain-arg "AGY_PROFILE=work${nl}ARG=--account=other" "$(agyx --
 eq launch-bare-help "ARG=--help" "$(agyx --help | grep '^ARG=')"
 eq escape-dashdash "AGY_PROFILE=home${nl}ARG=foo" "$(AGY_PROFILE=home agyx -- foo | grep '^AGY_PROFILE=\|^ARG=')"
 eq launch-umask "$(umask)" "$(FAKE_RUN='umask' agyx --profile other)"
+# the old top-level list/login/use are gone: they are ordinary arguments for agy, and valid profile names
+eq old-list-passthrough "AGY_PROFILE=work${nl}ARG=list" "$(agyx list | grep '^AGY_PROFILE=\|^ARG=')"
+eq old-login-passthrough "AGY_PROFILE=work${nl}ARG=login${nl}ARG=x" "$(agyx login x | grep '^AGY_PROFILE=\|^ARG=')"
+eq old-use-passthrough "AGY_PROFILE=work${nl}ARG=use${nl}ARG=x" "$(agyx use x | grep '^AGY_PROFILE=\|^ARG=')"
+mkdir -p "$DD/profiles/list/home"
+eq profile-named-list "list" "$(agyx --profile list | sed -n 's/^AGY_PROFILE=//p')"
+rm -rf "${DD:?}/profiles/list"
 # nested calls inside an agent shell route to the inherited profile (agyx, and bare agy when shimmed)
 eq nested-agyx "other" "$(FAKE_RUN='FAKE_RUN= agyx x' agyx --profile other | sed -n 's/^AGY_PROFILE=//p')"
 eq nested-agy "other" "$(FAKE_RUN='FAKE_RUN= agy x' agyx --profile other | sed -n 's/^AGY_PROFILE=//p')"
 eq nested-agyx-switch "home" "$(FAKE_RUN='FAKE_RUN= agyx --profile home x' agyx --profile other | sed -n 's/^AGY_PROFILE=//p')"
 # profile names equal to an agyx subcommand are rejected, even if the directory exists
 res=
-for n in setup login use list doctor shim unshim; do
+for n in setup doctor shim unshim profile; do
   mkdir -p "$DD/profiles/$n/home"; : > "$LAUNCHLOG"
   agyx --profile "$n" >/dev/null 2>&1 && res="$res launched:$n"
   agy --profile "$n" >/dev/null 2>&1 && res="$res shim-launched:$n"
-  "$here/bin/agyx" login "$n" >/dev/null 2>&1 && res="$res login:$n"
-  "$here/bin/agyx" use "$n" >/dev/null 2>&1 && res="$res use:$n"
+  "$here/bin/agyx" profile login "$n" >/dev/null 2>&1 && res="$res login:$n"
+  "$here/bin/agyx" profile use "$n" >/dev/null 2>&1 && res="$res use:$n"
   [ -s "$LAUNCHLOG" ] && res="$res log:$n"
   rm -rf "${DD:?}/profiles/$n"
 done
@@ -164,8 +171,8 @@ eq reserved-names "" "$res"
 
 # agyx
 ctl() { "$here/bin/agyx" "$@"; }
-eq ctl-use "home" "$(ctl use home; cat "$DD/default")"
-eq ctl-use-bad "1" "$(ctl use nope 2>/dev/null || echo 1)"
+eq ctl-use "home" "$(ctl profile use home; cat "$DD/default")"
+eq ctl-use-bad "1" "$(ctl profile use nope 2>/dev/null || echo 1)"
 # list / doctor show the Google account from id_token_email, and never any other token field
 tokdir() { mkdir -p "$DD/profiles/$1/home/.gemini/antigravity-cli"; echo "$DD/profiles/$1/home/.gemini/antigravity-cli/antigravity-oauth-token"; }
 tokjson() { # profile email  (fake token strings that must never be printed)
@@ -177,16 +184,16 @@ printf '{"token":{"access_token":"SECRET-ACCESS-work","refresh_token":"SECRET-RE
 mkdir -p "$DD/profiles/junk/home"; echo 'not json SECRET-JUNK' > "$(tokdir junk)"
 dupline="WARNING: profiles home twin are logged in to the same Google account (alice@example.com)"
 want=$(printf '%-12s %s\n' home 'alice@example.com  (default)' junk 'token file present, email unknown' other 'not logged in' twin 'alice@example.com' work 'token file present, email unknown')
-eq ctl-list "$want${nl}$dupline" "$(ctl list)"
+eq ctl-list "$want${nl}$dupline" "$(ctl profile list)"
 eq ctl-doctor-email "1" "$(ctl doctor | grep -c '^profile home: alice@example.com, home ')"
 eq ctl-doctor-not-logged-in "1" "$(ctl doctor | grep -c '^profile other: not logged in, home ')"
 eq ctl-doctor-unknown "2" "$(ctl doctor | grep -c '^profile \(work\|junk\): token file present, email unknown, home ')"
 eq ctl-doctor-dup "1" "$(ctl doctor | grep -cF "$dupline")"
-eq ctl-no-token-strings "0" "$( (ctl list; ctl doctor) | grep -c SECRET)"
+eq ctl-no-token-strings "0" "$( (ctl profile list; ctl doctor) | grep -c SECRET)"
 rm -rf "${DD:?}/profiles/twin" "${DD:?}/profiles/junk"
-eq ctl-list-no-dup "0" "$(ctl list | grep -c WARNING)"
-eq ctl-login-bad "1" "$(ctl login Bad 2>/dev/null || echo 1)"
-eq ctl-login "PROFILE=newp" "$(FAKE_RUN='echo PROFILE=$AGY_PROFILE' ctl login newp)"
+eq ctl-list-no-dup "0" "$(ctl profile list | grep -c WARNING)"
+eq ctl-login-bad "1" "$(ctl profile login Bad 2>/dev/null || echo 1)"
+eq ctl-login "PROFILE=newp" "$(FAKE_RUN='echo PROFILE=$AGY_PROFILE' ctl profile login newp)"
 eq ctl-login-mode "drwx------" "$(ls -ld "$DD/profiles/newp/home" | cut -c1-10)"
 # setup only records the real agy; management subcommands never launch agy
 rm "$DD/real-agy"
@@ -199,15 +206,17 @@ mkdir "$T/fakebin"; ln -s "$T/fake-agy" "$T/fakebin/agy"
 eq ctl-setup-autodetect "real agy: $T/fakebin/agy" "$(PATH=$DD/bin:$T/fakebin:$PATH ctl setup | head -n 1)"
 eq ctl-setup-keeps-shim "$here/bin/agy" "$(readlink "$DD/bin/agy")"
 : > "$LAUNCHLOG"
-for c in list "use work" doctor "setup $T/fake-agy" shim unshim shim; do
+for c in "profile list" "profile use work" doctor "setup $T/fake-agy" shim unshim shim; do
   # shellcheck disable=SC2086
   agyx $c >/dev/null 2>&1
 done
 eq mgmt-never-launches "0" "$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
+# no profiles yet
+eq ctl-empty-list "no profiles yet; run: agyx profile login NAME/0" "$(AGYX_DATA_DIR=$T/empty ctl profile list)/$(AGYX_DATA_DIR=$T/empty ctl profile list >/dev/null; echo $?)"
 # misuse of a management subcommand prints the usage (exit 2) and never launches agy
 : > "$LAUNCHLOG"
 res=
-for c in "setup a b" "setup $T/nonexistent" login "login Bad" "login list" "login a b" use "use nope" "use list" "list x" "doctor x" "shim x" "unshim x"; do
+for c in "setup a b" "setup $T/nonexistent" profile "profile bogus" "profile login" "profile login Bad" "profile login profile" "profile login a b" "profile use" "profile use nope" "profile use profile" "profile list x" "doctor x" "shim x" "unshim x"; do
   # shellcheck disable=SC2086
   out=$(ctl $c 2>&1 >/dev/null); rc=$?
   [ "$rc" = 2 ] && echo "$out" | grep -q '^usage: agyx' || res="$res [$c rc=$rc]"
@@ -216,7 +225,7 @@ eq ctl-misuse-usage "" "$res"
 eq ctl-misuse-no-launch "0" "$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
 
 # agyx subcommands never overlap with the real agy 1.5.6 subcommands/flags
-ctl_subs="setup login use list doctor shim unshim"
+ctl_subs="setup doctor shim unshim profile"
 agy_subs="acp agent agents changelog help install mcp mic-serve models plugin plugins remote-control update -h --help"
 both=
 for a in $ctl_subs; do for b in $agy_subs; do [ "$a" = "$b" ] && both="$both $a"; done; done

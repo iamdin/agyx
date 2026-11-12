@@ -1,5 +1,5 @@
 #!/bin/sh
-# agyx: manage agy profiles (setup, login, use, list, doctor, shim, unshim);
+# agyx: manage agy profiles (setup, doctor, shim, unshim, profile);
 # any other invocation launches agy through the shim. See README.md.
 die() { echo "agyx: $*" >&2; exit 1; }
 valid() {
@@ -18,7 +18,7 @@ shim=$(dirname "$me")/agy
 # Anything that is not one of our own subcommands launches agy (none of them overlaps with an
 # agy subcommand or flag, including -h/--help). umask is untouched so agy inherits the caller's.
 case ${1-} in
-  setup|login|use|list|doctor|shim|unshim) ;;
+  setup|doctor|shim|unshim|profile) ;;
   *) exec "$shim" "$@" ;;
 esac
 rh=${AGYX_REAL_HOME:-$(eval "printf %s ~$(id -un)")}
@@ -27,7 +27,7 @@ tok=home/.gemini/antigravity-cli/antigravity-oauth-token
 
 need() {
   valid "${1-}" || bad "invalid profile name: ${1-}"
-  case $1 in setup|login|use|list|doctor|shim|unshim) bad "profile name is reserved: $1" ;; esac
+  case $1 in setup|doctor|shim|unshim|profile) bad "profile name is reserved: $1" ;; esac
 }
 exists() { need "${1-}"; [ -d "$data/profiles/$1/home" ] || bad "no such profile: $1"; }
 names() { for d in "$data"/profiles/*/; do [ -d "$d" ] && basename "$d"; done; }
@@ -50,12 +50,12 @@ dup_warning() {
 }
 
 isshim() { [ -L "$1" ] && [ "$1" -ef "$shim" ]; }
-usage="usage: agyx setup [path]      record the official agy (default: first agy in PATH)
-       agyx login NAME        create profile NAME and log in with agy's native login
-       agyx use NAME          set the default profile
-       agyx list              list profiles
-       agyx doctor            check the installation
-       agyx shim | unshim     enable / disable the optional bare 'agy' takeover
+usage="usage: agyx setup [path]        record the official agy (default: first agy in PATH)
+       agyx profile login NAME  create profile NAME and log in with agy's native login
+       agyx profile use NAME    set the default profile
+       agyx profile list        list profiles and their Google accounts
+       agyx doctor              check the installation
+       agyx shim | unshim       enable / disable the optional bare 'agy' takeover
        agyx [--profile NAME] [agy args...]   anything else launches agy"
 bad() { echo "agyx: $*" >&2; echo "$usage" >&2; exit 2; }
 
@@ -100,25 +100,32 @@ case $cmd in
     fi
     echo "bare 'agy' is no longer taken over (agyx still works)"
     ;;
-  login)
-    [ $# -eq 1 ] || bad "login needs exactly one profile name"
-    need "${1-}"
-    (umask 077; mkdir -p "$data/profiles/$1/home") || die "cannot create profile"
-    exec "$shim" --profile "$1"
-    ;;
-  use)
-    [ $# -eq 1 ] || bad "use needs exactly one profile name"
-    exists "${1-}"
-    printf '%s\n' "$1" > "$data/default"
-    ;;
-  list)
-    [ $# -eq 0 ] || bad "list takes no arguments"
-    d=$(dflt)
-    for n in $(names); do
-      s=$(status "$n"); [ "$n" = "$d" ] && s="$s  (default)"
-      printf '%-12s %s\n' "$n" "$s"
-    done
-    dup_warning
+  profile)
+    sub=${1-}; [ $# -gt 0 ] && shift
+    case $sub in
+      login)
+        [ $# -eq 1 ] || bad "profile login needs exactly one profile name"
+        need "${1-}"
+        (umask 077; mkdir -p "$data/profiles/$1/home") || die "cannot create profile"
+        exec "$shim" --profile "$1"
+        ;;
+      use)
+        [ $# -eq 1 ] || bad "profile use needs exactly one profile name"
+        exists "${1-}"
+        printf '%s\n' "$1" > "$data/default"
+        ;;
+      list)
+        [ $# -eq 0 ] || bad "profile list takes no arguments"
+        if [ -z "$(names)" ]; then echo "no profiles yet; run: agyx profile login NAME"; exit 0; fi
+        d=$(dflt)
+        for n in $(names); do
+          s=$(status "$n"); [ "$n" = "$d" ] && s="$s  (default)"
+          printf '%-12s %s\n' "$n" "$s"
+        done
+        dup_warning
+        ;;
+      *) bad "profile needs a subcommand: list | login NAME | use NAME" ;;
+    esac
     ;;
   doctor)
     [ $# -eq 0 ] || bad "doctor takes no arguments"

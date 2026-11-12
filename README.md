@@ -22,9 +22,9 @@ agyx setup
 Then log in once per profile:
 
 ```sh
-agyx login work        # runs agy's native login in profile "work"
-agyx login personal
-agyx use work          # default profile
+agyx profile login work   # runs agy's native login in profile "work"
+agyx profile login personal
+agyx profile use work     # default profile
 agyx doctor            # checks that `agyx` on PATH is this script
 ```
 
@@ -45,9 +45,9 @@ Keep `bin/` and `runtime/` together; the scripts locate each other by resolving 
 
 ## Use
 
-Profile choice: leading `--profile NAME` > `AGY_PROFILE` > default (`agyx use`).
+Profile choice: leading `--profile NAME` > `AGY_PROFILE` > default (`agyx profile use`).
 
-`agyx` launches agy unless its first argument is one of its own management subcommands: `setup`, `login`, `use`, `list`, `doctor`, `shim`, `unshim`. None of them overlaps with a real agy subcommand (`acp`, `agent`, `agents`, `changelog`, `help`, `install`, `mcp`, `mic-serve`, `models`, `plugin`, `plugins`, `remote-control`, `update`) or flag (`-h`, `--help`), so all of those, and `agyx --help`, reach the real agy:
+`agyx` launches agy unless its first argument is one of its own management subcommands: `setup`, `doctor`, `shim`, `unshim`, `profile` (with `profile list`, `profile login NAME`, `profile use NAME`). None of them overlaps with a real agy subcommand (`acp`, `agent`, `agents`, `changelog`, `help`, `install`, `mcp`, `mic-serve`, `models`, `plugin`, `plugins`, `remote-control`, `update`) or flag (`-h`, `--help`), so all of those, and `agyx --help`, reach the real agy:
 
 ```sh
 agyx                          # default profile
@@ -58,17 +58,17 @@ agyx --help                  # agy's own help
 agyx install                  # agy's own `install` subcommand
 ```
 
-(After `agyx shim`, the same works with the bare `agy`.) The seven management subcommand names are reserved and rejected as profile names.
+(After `agyx shim`, the same works with the bare `agy`.) The five management subcommand names are reserved and rejected as profile names.
 
 ### agyx usage
 
 ```
-usage: agyx setup [path]      record the official agy (default: first agy in PATH)
-       agyx login NAME        create profile NAME and log in with agy's native login
-       agyx use NAME          set the default profile
-       agyx list              list profiles
-       agyx doctor            check the installation
-       agyx shim | unshim     enable / disable the optional bare 'agy' takeover
+usage: agyx setup [path]        record the official agy (default: first agy in PATH)
+       agyx profile login NAME  create profile NAME and log in with agy's native login
+       agyx profile use NAME    set the default profile
+       agyx profile list        list profiles and their Google accounts
+       agyx doctor              check the installation
+       agyx shim | unshim       enable / disable the optional bare 'agy' takeover
        agyx [--profile NAME] [agy args...]   anything else launches agy
 ```
 
@@ -76,7 +76,7 @@ This usage is printed (exit 2) on any misuse of a management subcommand: a missi
 
 `--profile` is only read before any other argument (`--` ends it); everything after is passed to agy untouched. A bad or missing profile is an error, never a fallback to another one.
 
-`agyx list` and `agyx doctor` show, per profile, which Google account it is logged in as:
+`agyx profile list` and `agyx doctor` show, per profile, which Google account it is logged in as:
 
 ```
 work         you@example.com  (default)

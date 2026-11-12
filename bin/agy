@@ -38,12 +38,12 @@ if [ "$flag" = 0 ]; then
   if [ -z "$name" ] && [ -f "$data/default" ]; then
     read -r name < "$data/default" || :
   fi
-  [ -n "$name" ] || die "no profile: use --profile NAME, AGY_PROFILE, or 'agyx use NAME'"
+  [ -n "$name" ] || die "no profile: use --profile NAME, AGY_PROFILE, or 'agyx profile use NAME'"
 fi
 valid "$name" || die "invalid profile name: $name"
-case $name in setup|login|use|list|doctor|shim|unshim) die "profile name is reserved: $name" ;; esac
+case $name in setup|doctor|shim|unshim|profile) die "profile name is reserved: $name" ;; esac
 phome=$data/profiles/$name/home
-[ -d "$phome" ] || die "profile '$name' does not exist (run: agyx login $name)"
+[ -d "$phome" ] || die "profile '$name' does not exist (run: agyx profile login $name)"
 
 # 3. real binary
 real=$data/real-agy
