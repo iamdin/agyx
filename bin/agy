@@ -41,6 +41,7 @@ if [ "$flag" = 0 ]; then
   [ -n "$name" ] || die "no profile: use --account NAME, AGY_PROFILE, or 'agyctl use NAME'"
 fi
 valid "$name" || die "invalid profile name: $name"
+case $name in install|shim|unshim|login|use|list|doctor|help) die "profile name is reserved: $name" ;; esac
 phome=$data/profiles/$name/home
 [ -d "$phome" ] || die "profile '$name' does not exist (run: agyctl login $name)"
 

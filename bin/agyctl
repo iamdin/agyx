@@ -1,6 +1,6 @@
 #!/bin/sh
-# agyctl: manage agy profiles. See README.md.
-umask 077
+# agyctl: manage agy profiles (install, shim, unshim, login, use, list, doctor, help);
+# any other invocation launches agy through the shim. See README.md.
 die() { echo "agyctl: $*" >&2; exit 1; }
 valid() {
   case $1 in *'
@@ -13,19 +13,30 @@ while [ -L "$self" ]; do
   l=$(readlink "$self")
   case $l in /*) self=$l ;; *) self=$(dirname "$self")/$l ;; esac
 done
-shim=$(cd "$(dirname "$self")" && pwd -P)/agy
+me=$(cd "$(dirname "$self")" && pwd -P)/$(basename "$self")
+shim=$(dirname "$me")/agy
+# Anything that is not one of our own subcommands launches agy (a leading `--` is the escape
+# for agy subcommands named like ours). umask is untouched so agy inherits the caller's.
+case ${1-} in
+  install|shim|unshim|login|use|list|doctor|help|-h|--help) ;;
+  *) exec "$shim" "$@" ;;
+esac
 rh=${AGYCTL_REAL_HOME:-$(eval "printf %s ~$(id -un)")}
 data=${AGYCTL_DATA_DIR:-$rh/.local/share/agyctl}
 tok=home/.gemini/antigravity-cli/antigravity-oauth-token
 
-need() { valid "${1-}" || die "invalid profile name: ${1-}"; }
+need() {
+  valid "${1-}" || die "invalid profile name: ${1-}"
+  case $1 in install|shim|unshim|login|use|list|doctor|help) die "profile name is reserved: $1" ;; esac
+}
 exists() { need "${1-}"; [ -d "$data/profiles/$1/home" ] || die "no such profile: $1"; }
 names() { for d in "$data"/profiles/*/; do [ -d "$d" ] && basename "$d"; done; }
 dflt() { [ -f "$data/default" ] && cat "$data/default"; }
 tokstate() { if [ -f "$data/profiles/$1/$tok" ]; then echo "token file present"; else echo "no token file"; fi; }
 
 isshim() { [ -L "$1" ] && [ "$1" -ef "$shim" ]; }
-usage="usage: agyctl install [path] | shim | unshim | login NAME | use NAME | list | doctor"
+usage="usage: agyctl install [path] | shim | unshim | login NAME | use NAME | list | doctor | help
+       agyctl [--account NAME] [agy args...]   launch agy (use 'agyctl -- ARGS' to pass agy's own install/help/...)"
 
 cmd=${1-}; [ $# -gt 0 ] && shift
 case $cmd in
@@ -42,13 +53,10 @@ case $cmd in
     case $t in /*) ;; *) t=$PWD/$t ;; esac
     [ -x "$t" ] || die "not executable: $t"
     [ ! "$t" -ef "$shim" ] || die "that is the shim itself"
-    mkdir -p "$data/bin" && ln -sfn "$t" "$data/real-agy" && ln -sfn "$shim" "$data/bin/agyx" \
-      || die "cannot write $data"
+    (umask 077; mkdir -p "$data") && ln -sfn "$t" "$data/real-agy" || die "cannot write $data"
     echo "real agy: $t"
-    echo "shim:     $data/bin/agyx -> $shim"
-    echo "put this line anywhere in your shell config (agyx collides with nothing):"
-    echo "  export PATH=\"$data/bin:\$PATH\""
-    echo "then run e.g. 'agyx --account NAME'. To also take over the bare 'agy' name: agyctl shim"
+    echo "agyctl launches it: 'agyctl --account NAME ...' (make sure agyctl itself is on PATH)."
+    echo "optional: 'agyctl shim' also takes over the bare 'agy' name"
     ;;
   shim)
     l=$data/bin/agy
@@ -70,7 +78,7 @@ case $cmd in
     ;;
   login)
     need "${1-}"
-    mkdir -p "$data/profiles/$1/home" || die "cannot create profile"
+    (umask 077; mkdir -p "$data/profiles/$1/home") || die "cannot create profile"
     exec "$shim" --account "$1"
     ;;
   use)
@@ -92,15 +100,15 @@ case $cmd in
     else
       echo "real agy: not set (run: agyctl install)"
     fi
-    first=$(command -v agyx)
-    if [ -n "$first" ] && [ "$first" -ef "$shim" ]; then echo "PATH: agyx resolves to the shim ($first)"
-    else echo "PATH: agyx does NOT resolve to the shim (found: ${first:-none}); run 'agyctl install' and add $data/bin to PATH"; fi
+    first=$(command -v agyctl)
+    if [ -n "$first" ] && [ "$first" -ef "$me" ]; then echo "PATH: agyctl resolves to this script ($first)"
+    else echo "PATH: agyctl does NOT resolve to this script (found: ${first:-none}); put it on PATH (Homebrew does; or link $me)"; fi
     if [ -L "$data/bin/agy" ]; then
       first=$(command -v agy)
       if [ -n "$first" ] && [ "$first" -ef "$shim" ]; then echo "takeover: on, agy resolves to the shim ($first)"
       else echo "takeover: WARNING agy link exists but 'agy' resolves to ${first:-nothing}; put $data/bin before the real agy's directory in PATH"; fi
     else
-      echo "takeover: off. A nested bare 'agy' inside an agent shell runs the real agy with the real HOME (default account, not the instance profile); use 'agyctl shim' to enable"
+      echo "takeover: off. Inside an agent shell a nested 'agyctl' routes to the inherited profile, but a nested bare 'agy' runs the real agy with the real HOME (default account, not the instance profile); use 'agyctl shim' to enable"
     fi
     d=$(dflt); echo "default: ${d:-none}"
     for n in $(names); do
@@ -109,6 +117,5 @@ case $cmd in
       echo "profile $n: $(tokstate "$n"), home $(ls -ld "$p/home" | cut -c1-10)$([ -f "$t" ] && echo ", token $(ls -l "$t" | cut -c1-10)")"
     done
     ;;
-  -h|--help|help) echo "$usage" ;;
-  *) echo "$usage" >&2; exit 2 ;;
+  help|-h|--help) echo "$usage" ;;
 esac

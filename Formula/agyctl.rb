@@ -18,13 +18,16 @@ class Agyctl < Formula
     assert_path_exists libexec/"bin/agy"
     refute_path_exists bin/"agy"
 
-    # `install` links the packaged shim as agyx only; `shim`/`unshim` toggle the bare agy
+    # `install` only records the real agy; `shim`/`unshim` toggle the optional bare agy
     # takeover (no real agy is run).
     ENV["AGYCTL_DATA_DIR"] = testpath/"data"
     ENV["AGYCTL_REAL_HOME"] = testpath
     system bin/"agyctl", "install", "/usr/bin/true"
-    assert_equal (libexec/"bin/agy").realpath, (testpath/"data/bin/agyx").realpath
+    assert_equal Pathname("/usr/bin/true").realpath, (testpath/"data/real-agy").realpath
     refute_path_exists testpath/"data/bin/agy"
+    # anything that is not an agyctl subcommand launches agy via the shim
+    (testpath/"data/profiles/work/home").mkpath
+    system bin/"agyctl", "--account", "work"
     system bin/"agyctl", "shim"
     assert_equal (libexec/"bin/agy").realpath, (testpath/"data/bin/agy").realpath
     system bin/"agyctl", "unshim"
