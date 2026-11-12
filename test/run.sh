@@ -5,12 +5,12 @@ T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
 DD=$T/data RH=$T/realhome
 mkdir -p "$DD/profiles" "$RH"
-export LAUNCHLOG=$T/launched AGYCTL_DATA_DIR=$DD AGYCTL_REAL_HOME=$RH HOME=$RH
-unset AGY_PROFILE ZDOTDIR BASH_ENV AGYCTL_ORIG_ZDOTDIR_SET AGYCTL_ORIG_ZDOTDIR AGYCTL_ORIG_BASH_ENV_SET AGYCTL_ORIG_BASH_ENV
+export LAUNCHLOG=$T/launched AGYX_DATA_DIR=$DD AGYX_REAL_HOME=$RH HOME=$RH
+unset AGY_PROFILE ZDOTDIR BASH_ENV AGYX_ORIG_ZDOTDIR_SET AGYX_ORIG_ZDOTDIR AGYX_ORIG_BASH_ENV_SET AGYX_ORIG_BASH_ENV
 # Minimal PATH so the real agy can never be found. $T/brewbin has a Homebrew-style symlink to
-# agyctl; <data dir>/bin gets the optional bare `agy` link from `agyctl shim` below.
+# agyx; <data dir>/bin gets the optional bare `agy` link from `agyx shim` below.
 PATH=$T/brewbin:$DD/bin:/usr/bin:/bin:/usr/sbin:/sbin
-[ -x "$here/bin/agy" ] && [ -x "$here/bin/agyctl" ] || { echo "bin/agy, bin/agyctl must be executable" >&2; exit 1; }
+[ -x "$here/bin/agy" ] && [ -x "$here/bin/agyx" ] || { echo "bin/agy, bin/agyx must be executable" >&2; exit 1; }
 
 cat > "$T/fake-agy" <<'EOF'
 #!/bin/sh
@@ -20,14 +20,14 @@ echo "HOME=$HOME"
 echo "AGY_PROFILE=$AGY_PROFILE"
 echo "ZDOTDIR=${ZDOTDIR-<unset>}"
 echo "BASH_ENV=${BASH_ENV-<unset>}"
-echo "ORIG_ZDOTDIR=$AGYCTL_ORIG_ZDOTDIR"
+echo "ORIG_ZDOTDIR=$AGYX_ORIG_ZDOTDIR"
 for a in "$@"; do echo "ARG=$a"; done
 EOF
 chmod +x "$T/fake-agy"
-mkdir "$T/brewbin"; ln -s "$here/bin/agyctl" "$T/brewbin/agyctl"
-"$T/brewbin/agyctl" setup "$T/fake-agy" > "$T/install.out" || { cat "$T/install.out"; exit 1; }
+mkdir "$T/brewbin"; ln -s "$here/bin/agyx" "$T/brewbin/agyx"
+"$T/brewbin/agyx" setup "$T/fake-agy" > "$T/install.out" || { cat "$T/install.out"; exit 1; }
 [ ! -e "$DD/bin" ] || { echo "setup must not create bin/" >&2; exit 1; }
-"$T/brewbin/agyctl" shim > "$T/shim.out" || { cat "$T/shim.out"; exit 1; }
+"$T/brewbin/agyx" shim > "$T/shim.out" || { cat "$T/shim.out"; exit 1; }
 [ "$(command -v agy)" = "$DD/bin/agy" ] || { echo "agy not resolved to $DD/bin/agy" >&2; exit 1; }
 for p in work home other; do mkdir -p "$DD/profiles/$p/home"; done
 echo work > "$DD/default"
@@ -121,8 +121,8 @@ if command -v zsh >/dev/null; then
 fi
 # direct nested call (ZDOTDIR/BASH_ENV still point at the bridge): saved originals survive
 eq nested-direct "orig-zd=/zd orig-be=/be set=1" "$(ZDOTDIR=$here/runtime/zsh BASH_ENV=$here/runtime/bash_env \
-  AGYCTL_ORIG_ZDOTDIR_SET=1 AGYCTL_ORIG_ZDOTDIR=/zd AGYCTL_ORIG_BASH_ENV_SET=1 AGYCTL_ORIG_BASH_ENV=/be \
-  FAKE_RUN='echo orig-zd=$AGYCTL_ORIG_ZDOTDIR orig-be=$AGYCTL_ORIG_BASH_ENV set=$AGYCTL_ORIG_ZDOTDIR_SET' agy --account home)"
+  AGYX_ORIG_ZDOTDIR_SET=1 AGYX_ORIG_ZDOTDIR=/zd AGYX_ORIG_BASH_ENV_SET=1 AGYX_ORIG_BASH_ENV=/be \
+  FAKE_RUN='echo orig-zd=$AGYX_ORIG_ZDOTDIR orig-be=$AGYX_ORIG_BASH_ENV set=$AGYX_ORIG_ZDOTDIR_SET' agy --account home)"
 
 # real-agy pointing at the shim is refused
 ln -sfn "$here/bin/agy" "$DD/real-agy"
@@ -130,36 +130,36 @@ out=$(agy 2>&1); rc=$?
 eq refuse-self "1" "$([ $rc -ne 0 ] && echo "$out" | grep -q 'shim itself' && echo 1)"
 ln -sfn "$T/fake-agy" "$DD/real-agy"
 
-# agyctl launches agy unless the first argument is one of its own subcommands
-eq launch-flag "other" "$(agyctl --account other | sed -n 's/^AGY_PROFILE=//p')"
-eq launch-flag-eq-args "AGY_PROFILE=other${nl}ARG=-p${nl}ARG=hi" "$(agyctl --account=other -p hi | grep '^AGY_PROFILE=\|^ARG=')"
-eq launch-env "AGY_PROFILE=home${nl}ARG=--model${nl}ARG=x" "$(AGY_PROFILE=home agyctl --model x | grep '^AGY_PROFILE=\|^ARG=')"
-eq launch-no-args "AGY_PROFILE=work/0" "$(agyctl | grep '^AGY_PROFILE=')/$(agyctl | grep -c '^ARG=')"
-eq launch-flag-then-subcommand "ARG=mcp${nl}ARG=list" "$(agyctl --account work mcp list | grep '^ARG=')"
-eq launch-argv-boundaries "ARG=a b${nl}ARG=${nl}ARG=--account${nl}ARG=zz" "$(agyctl --account work "a b" "" --account zz | grep '^ARG=')"
-eq launch-help-flags "AGY_PROFILE=other${nl}ARG=--help" "$(agyctl --account other --help | grep '^AGY_PROFILE=\|^ARG=')"
-eq launch-bare-help "ARG=--help" "$(agyctl --help | grep '^ARG=')"
-eq escape-dashdash "AGY_PROFILE=home${nl}ARG=foo" "$(AGY_PROFILE=home agyctl -- foo | grep '^AGY_PROFILE=\|^ARG=')"
-eq launch-umask "$(umask)" "$(FAKE_RUN='umask' agyctl --account other)"
-# nested calls inside an agent shell route to the inherited profile (agyctl, and bare agy when shimmed)
-eq nested-agyctl "other" "$(FAKE_RUN='FAKE_RUN= agyctl x' agyctl --account other | sed -n 's/^AGY_PROFILE=//p')"
-eq nested-agy "other" "$(FAKE_RUN='FAKE_RUN= agy x' agyctl --account other | sed -n 's/^AGY_PROFILE=//p')"
-eq nested-agyctl-switch "home" "$(FAKE_RUN='FAKE_RUN= agyctl --account home x' agyctl --account other | sed -n 's/^AGY_PROFILE=//p')"
-# profile names equal to an agyctl subcommand are rejected, even if the directory exists
+# agyx launches agy unless the first argument is one of its own subcommands
+eq launch-flag "other" "$(agyx --account other | sed -n 's/^AGY_PROFILE=//p')"
+eq launch-flag-eq-args "AGY_PROFILE=other${nl}ARG=-p${nl}ARG=hi" "$(agyx --account=other -p hi | grep '^AGY_PROFILE=\|^ARG=')"
+eq launch-env "AGY_PROFILE=home${nl}ARG=--model${nl}ARG=x" "$(AGY_PROFILE=home agyx --model x | grep '^AGY_PROFILE=\|^ARG=')"
+eq launch-no-args "AGY_PROFILE=work/0" "$(agyx | grep '^AGY_PROFILE=')/$(agyx | grep -c '^ARG=')"
+eq launch-flag-then-subcommand "ARG=mcp${nl}ARG=list" "$(agyx --account work mcp list | grep '^ARG=')"
+eq launch-argv-boundaries "ARG=a b${nl}ARG=${nl}ARG=--account${nl}ARG=zz" "$(agyx --account work "a b" "" --account zz | grep '^ARG=')"
+eq launch-help-flags "AGY_PROFILE=other${nl}ARG=--help" "$(agyx --account other --help | grep '^AGY_PROFILE=\|^ARG=')"
+eq launch-bare-help "ARG=--help" "$(agyx --help | grep '^ARG=')"
+eq escape-dashdash "AGY_PROFILE=home${nl}ARG=foo" "$(AGY_PROFILE=home agyx -- foo | grep '^AGY_PROFILE=\|^ARG=')"
+eq launch-umask "$(umask)" "$(FAKE_RUN='umask' agyx --account other)"
+# nested calls inside an agent shell route to the inherited profile (agyx, and bare agy when shimmed)
+eq nested-agyx "other" "$(FAKE_RUN='FAKE_RUN= agyx x' agyx --account other | sed -n 's/^AGY_PROFILE=//p')"
+eq nested-agy "other" "$(FAKE_RUN='FAKE_RUN= agy x' agyx --account other | sed -n 's/^AGY_PROFILE=//p')"
+eq nested-agyx-switch "home" "$(FAKE_RUN='FAKE_RUN= agyx --account home x' agyx --account other | sed -n 's/^AGY_PROFILE=//p')"
+# profile names equal to an agyx subcommand are rejected, even if the directory exists
 res=
 for n in setup login use list doctor shim unshim; do
   mkdir -p "$DD/profiles/$n/home"; : > "$LAUNCHLOG"
-  agyctl --account "$n" >/dev/null 2>&1 && res="$res launched:$n"
+  agyx --account "$n" >/dev/null 2>&1 && res="$res launched:$n"
   agy --account "$n" >/dev/null 2>&1 && res="$res shim-launched:$n"
-  "$here/bin/agyctl" login "$n" >/dev/null 2>&1 && res="$res login:$n"
-  "$here/bin/agyctl" use "$n" >/dev/null 2>&1 && res="$res use:$n"
+  "$here/bin/agyx" login "$n" >/dev/null 2>&1 && res="$res login:$n"
+  "$here/bin/agyx" use "$n" >/dev/null 2>&1 && res="$res use:$n"
   [ -s "$LAUNCHLOG" ] && res="$res log:$n"
   rm -rf "${DD:?}/profiles/$n"
 done
 eq reserved-names "" "$res"
 
-# agyctl
-ctl() { "$here/bin/agyctl" "$@"; }
+# agyx
+ctl() { "$here/bin/agyx" "$@"; }
 eq ctl-use "home" "$(ctl use home; cat "$DD/default")"
 eq ctl-use-bad "1" "$(ctl use nope 2>/dev/null || echo 1)"
 mkdir -p "$DD/profiles/home/home/.gemini/antigravity-cli"; : > "$DD/profiles/home/home/.gemini/antigravity-cli/antigravity-oauth-token"
@@ -171,7 +171,6 @@ eq ctl-login-mode "drwx------" "$(ls -ld "$DD/profiles/newp/home" | cut -c1-10)"
 rm "$DD/real-agy"
 eq ctl-setup "real agy: $T/fake-agy" "$(ctl setup "$T/fake-agy" | head -n 1)"
 eq ctl-setup-link "$T/fake-agy" "$(readlink "$DD/real-agy")"
-eq ctl-setup-no-agyx "absent" "$([ -e "$DD/bin/agyx" ] || [ -L "$DD/bin/agyx" ] || echo absent)"
 eq ctl-setup-shim "1" "$(ctl setup "$here/bin/agy" >/dev/null 2>&1 || echo 1)"
 eq ctl-setup-data-shim "1" "$(ctl setup "$DD/bin/agy" >/dev/null 2>&1 || echo 1)"
 # setup without an argument skips the shim link and takes the next agy in PATH
@@ -181,7 +180,7 @@ eq ctl-setup-keeps-shim "$here/bin/agy" "$(readlink "$DD/bin/agy")"
 : > "$LAUNCHLOG"
 for c in list "use work" doctor "setup $T/fake-agy" shim unshim shim; do
   # shellcheck disable=SC2086
-  agyctl $c >/dev/null 2>&1
+  agyx $c >/dev/null 2>&1
 done
 eq mgmt-never-launches "0" "$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
 # misuse of a management subcommand prints the usage (exit 2) and never launches agy
@@ -190,30 +189,29 @@ res=
 for c in "setup a b" "setup $T/nonexistent" login "login Bad" "login list" "login a b" use "use nope" "use list" "list x" "doctor x" "shim x" "unshim x"; do
   # shellcheck disable=SC2086
   out=$(ctl $c 2>&1 >/dev/null); rc=$?
-  [ "$rc" = 2 ] && echo "$out" | grep -q '^usage: agyctl' || res="$res [$c rc=$rc]"
+  [ "$rc" = 2 ] && echo "$out" | grep -q '^usage: agyx' || res="$res [$c rc=$rc]"
 done
 eq ctl-misuse-usage "" "$res"
 eq ctl-misuse-no-launch "0" "$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
 
-# agyctl subcommands never overlap with the real agy 1.5.6 subcommands/flags
+# agyx subcommands never overlap with the real agy 1.5.6 subcommands/flags
 ctl_subs="setup login use list doctor shim unshim"
 agy_subs="acp agent agents changelog help install mcp mic-serve models plugin plugins remote-control update -h --help"
 both=
 for a in $ctl_subs; do for b in $agy_subs; do [ "$a" = "$b" ] && both="$both $a"; done; done
 eq subcommands-disjoint "" "$both"
-eq subcommands-match-script "$ctl_subs" "$(sed -n 's/^  \(setup|.*\)) ;;$/\1/p' "$here/bin/agyctl" | tr '|' ' ')"
+eq subcommands-match-script "$ctl_subs" "$(sed -n 's/^  \(setup|.*\)) ;;$/\1/p' "$here/bin/agyx" | tr '|' ' ')"
 res=
-for s in $agy_subs; do [ "$(agyctl "$s" | grep '^ARG=')" = "ARG=$s" ] || res="$res $s"; done
+for s in $agy_subs; do [ "$(agyx "$s" | grep '^ARG=')" = "ARG=$s" ] || res="$res $s"; done
 eq agy-subcommands-reach-agy "" "$res"
 # names of agy subcommands are fine as profile names
 mkdir -p "$DD/profiles/install/home"
-eq profile-named-install "install" "$(agyctl --account install | sed -n 's/^AGY_PROFILE=//p')"
+eq profile-named-install "install" "$(agyx --account install | sed -n 's/^AGY_PROFILE=//p')"
 rm -rf "${DD:?}/profiles/install"
 
 # doctor
-eq ctl-doctor-path "1" "$(ctl doctor | grep -c 'agyctl resolves to this script')"
-eq ctl-doctor-path-missing "1" "$(PATH=/usr/bin:/bin ctl doctor | grep -c 'agyctl does NOT resolve')"
-eq ctl-doctor-no-agyx "0" "$(ctl doctor | grep -c agyx)"
+eq ctl-doctor-path "1" "$(ctl doctor | grep -c 'agyx resolves to this script')"
+eq ctl-doctor-path-missing "1" "$(PATH=/usr/bin:/bin ctl doctor | grep -c 'agyx does NOT resolve')"
 eq ctl-doctor-on "1" "$(ctl doctor | grep -c 'takeover: on')"
 eq ctl-doctor-warn "1" "$(PATH=$T/fakebin:$PATH ctl doctor | grep -c 'takeover: WARNING')"
 eq ctl-doctor-no-token-content "0" "$(ctl doctor | grep -c secret)"
@@ -223,7 +221,7 @@ ctl unshim >/dev/null
 eq ctl-unshim "absent" "$([ -e "$DD/bin/agy" ] || [ -L "$DD/bin/agy" ] || echo absent)"
 eq ctl-unshim-keeps-real-agy "ok" "$([ -L "$DD/real-agy" ] && echo ok)"
 eq ctl-unshim-idempotent "0" "$(ctl unshim >/dev/null; echo $?)"
-eq ctl-doctor-off "1" "$(ctl doctor | grep -c 'takeover: off.*nested .agyctl. routes to the inherited profile.*bare .agy. runs the real agy')"
+eq ctl-doctor-off "1" "$(ctl doctor | grep -c 'takeover: off.*nested .agyx. routes to the inherited profile.*bare .agy. runs the real agy')"
 out=$(ctl shim); eq ctl-shim-link "$here/bin/agy" "$(readlink "$DD/bin/agy")"
 eq ctl-shim-says-path "1" "$(echo "$out" | grep -c 'must come BEFORE the directory of the real agy')"
 eq ctl-shim-idempotent "0" "$(ctl shim >/dev/null; echo $?)"

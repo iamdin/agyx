@@ -1,7 +1,7 @@
 #!/bin/sh
-# agyctl: manage agy profiles (setup, login, use, list, doctor, shim, unshim);
+# agyx: manage agy profiles (setup, login, use, list, doctor, shim, unshim);
 # any other invocation launches agy through the shim. See README.md.
-die() { echo "agyctl: $*" >&2; exit 1; }
+die() { echo "agyx: $*" >&2; exit 1; }
 valid() {
   case $1 in *'
 '*) return 1 ;; esac
@@ -21,8 +21,8 @@ case ${1-} in
   setup|login|use|list|doctor|shim|unshim) ;;
   *) exec "$shim" "$@" ;;
 esac
-rh=${AGYCTL_REAL_HOME:-$(eval "printf %s ~$(id -un)")}
-data=${AGYCTL_DATA_DIR:-$rh/.local/share/agyctl}
+rh=${AGYX_REAL_HOME:-$(eval "printf %s ~$(id -un)")}
+data=${AGYX_DATA_DIR:-$rh/.local/share/agyx}
 tok=home/.gemini/antigravity-cli/antigravity-oauth-token
 
 need() {
@@ -35,14 +35,14 @@ dflt() { [ -f "$data/default" ] && cat "$data/default"; }
 tokstate() { if [ -f "$data/profiles/$1/$tok" ]; then echo "token file present"; else echo "no token file"; fi; }
 
 isshim() { [ -L "$1" ] && [ "$1" -ef "$shim" ]; }
-usage="usage: agyctl setup [path]      record the official agy (default: first agy in PATH)
-       agyctl login NAME        create profile NAME and log in with agy's native login
-       agyctl use NAME          set the default profile
-       agyctl list              list profiles
-       agyctl doctor            check the installation
-       agyctl shim | unshim     enable / disable the optional bare 'agy' takeover
-       agyctl [--account NAME] [agy args...]   anything else launches agy"
-bad() { echo "agyctl: $*" >&2; echo "$usage" >&2; exit 2; }
+usage="usage: agyx setup [path]      record the official agy (default: first agy in PATH)
+       agyx login NAME        create profile NAME and log in with agy's native login
+       agyx use NAME          set the default profile
+       agyx list              list profiles
+       agyx doctor            check the installation
+       agyx shim | unshim     enable / disable the optional bare 'agy' takeover
+       agyx [--account NAME] [agy args...]   anything else launches agy"
+bad() { echo "agyx: $*" >&2; echo "$usage" >&2; exit 2; }
 
 cmd=${1-}; [ $# -gt 0 ] && shift
 case $cmd in
@@ -62,8 +62,8 @@ case $cmd in
     [ ! "$t" -ef "$shim" ] || bad "that is the shim itself"
     (umask 077; mkdir -p "$data") && ln -sfn "$t" "$data/real-agy" || die "cannot write $data"
     echo "real agy: $t"
-    echo "agyctl launches it: 'agyctl --account NAME ...' (make sure agyctl itself is on PATH)."
-    echo "optional: 'agyctl shim' also takes over the bare 'agy' name"
+    echo "agyx launches it: 'agyx --account NAME ...' (make sure agyx itself is on PATH)."
+    echo "optional: 'agyx shim' also takes over the bare 'agy' name"
     ;;
   shim)
     [ $# -eq 0 ] || bad "shim takes no arguments"
@@ -111,17 +111,17 @@ case $cmd in
       echo "real agy: $(readlink "$real")"
       echo "version: $(AGY_CLI_DISABLE_AUTO_UPDATE=true "$real" --version 2>&1 | head -n 1)"
     else
-      echo "real agy: not set (run: agyctl setup)"
+      echo "real agy: not set (run: agyx setup)"
     fi
-    first=$(command -v agyctl)
-    if [ -n "$first" ] && [ "$first" -ef "$me" ]; then echo "PATH: agyctl resolves to this script ($first)"
-    else echo "PATH: agyctl does NOT resolve to this script (found: ${first:-none}); put it on PATH (Homebrew does; or link $me)"; fi
+    first=$(command -v agyx)
+    if [ -n "$first" ] && [ "$first" -ef "$me" ]; then echo "PATH: agyx resolves to this script ($first)"
+    else echo "PATH: agyx does NOT resolve to this script (found: ${first:-none}); put it on PATH (Homebrew does; or link $me)"; fi
     if [ -L "$data/bin/agy" ]; then
       first=$(command -v agy)
       if [ -n "$first" ] && [ "$first" -ef "$shim" ]; then echo "takeover: on, agy resolves to the shim ($first)"
       else echo "takeover: WARNING agy link exists but 'agy' resolves to ${first:-nothing}; put $data/bin before the real agy's directory in PATH"; fi
     else
-      echo "takeover: off. Inside an agent shell a nested 'agyctl' routes to the inherited profile, but a nested bare 'agy' runs the real agy with the real HOME (default account, not the instance profile); use 'agyctl shim' to enable"
+      echo "takeover: off. Inside an agent shell a nested 'agyx' routes to the inherited profile, but a nested bare 'agy' runs the real agy with the real HOME (default account, not the instance profile); use 'agyx shim' to enable"
     fi
     d=$(dflt); echo "default: ${d:-none}"
     for n in $(names); do
