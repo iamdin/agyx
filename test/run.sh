@@ -166,8 +166,25 @@ eq reserved-names "" "$res"
 ctl() { "$here/bin/agyx" "$@"; }
 eq ctl-use "home" "$(ctl use home; cat "$DD/default")"
 eq ctl-use-bad "1" "$(ctl use nope 2>/dev/null || echo 1)"
-mkdir -p "$DD/profiles/home/home/.gemini/antigravity-cli"; : > "$DD/profiles/home/home/.gemini/antigravity-cli/antigravity-oauth-token"
-eq ctl-list "* home  token file present${nl}  other  no token file${nl}  work  no token file" "$(ctl list)"
+# list / doctor show the Google account from id_token_email, and never any other token field
+tokdir() { mkdir -p "$DD/profiles/$1/home/.gemini/antigravity-cli"; echo "$DD/profiles/$1/home/.gemini/antigravity-cli/antigravity-oauth-token"; }
+tokjson() { # profile email  (fake token strings that must never be printed)
+  printf '{"token":{"access_token":"SECRET-ACCESS-%s","refresh_token":"SECRET-REFRESH-%s","expiry":"2030-01-01T00:00:00Z"},"auth_method":"oauth","id_token_email":"%s"}\n' "$1" "$1" "$2" > "$(tokdir "$1")"
+}
+tokjson home alice@example.com
+tokjson twin alice@example.com
+printf '{"token":{"access_token":"SECRET-ACCESS-work","refresh_token":"SECRET-REFRESH-work"},"auth_method":"oauth"}\n' > "$(tokdir work)"
+mkdir -p "$DD/profiles/junk/home"; echo 'not json SECRET-JUNK' > "$(tokdir junk)"
+dupline="WARNING: profiles home twin are logged in to the same Google account (alice@example.com)"
+want=$(printf '%-12s %s\n' home 'alice@example.com  (default)' junk 'token file present, email unknown' other 'not logged in' twin 'alice@example.com' work 'token file present, email unknown')
+eq ctl-list "$want${nl}$dupline" "$(ctl list)"
+eq ctl-doctor-email "1" "$(ctl doctor | grep -c '^profile home: alice@example.com, home ')"
+eq ctl-doctor-not-logged-in "1" "$(ctl doctor | grep -c '^profile other: not logged in, home ')"
+eq ctl-doctor-unknown "2" "$(ctl doctor | grep -c '^profile \(work\|junk\): token file present, email unknown, home ')"
+eq ctl-doctor-dup "1" "$(ctl doctor | grep -cF "$dupline")"
+eq ctl-no-token-strings "0" "$( (ctl list; ctl doctor) | grep -c SECRET)"
+rm -rf "${DD:?}/profiles/twin" "${DD:?}/profiles/junk"
+eq ctl-list-no-dup "0" "$(ctl list | grep -c WARNING)"
 eq ctl-login-bad "1" "$(ctl login Bad 2>/dev/null || echo 1)"
 eq ctl-login "PROFILE=newp" "$(FAKE_RUN='echo PROFILE=$AGY_PROFILE' ctl login newp)"
 eq ctl-login-mode "drwx------" "$(ls -ld "$DD/profiles/newp/home" | cut -c1-10)"
@@ -218,7 +235,6 @@ eq ctl-doctor-path "1" "$(ctl doctor | grep -c 'agyx resolves to this script')"
 eq ctl-doctor-path-missing "1" "$(PATH=/usr/bin:/bin ctl doctor | grep -c 'agyx does NOT resolve')"
 eq ctl-doctor-on "1" "$(ctl doctor | grep -c 'takeover: on')"
 eq ctl-doctor-warn "1" "$(PATH=$T/fakebin:$PATH ctl doctor | grep -c 'takeover: WARNING')"
-eq ctl-doctor-no-token-content "0" "$(ctl doctor | grep -c secret)"
 
 # shim / unshim
 ctl unshim >/dev/null

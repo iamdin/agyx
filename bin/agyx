@@ -32,7 +32,22 @@ need() {
 exists() { need "${1-}"; [ -d "$data/profiles/$1/home" ] || bad "no such profile: $1"; }
 names() { for d in "$data"/profiles/*/; do [ -d "$d" ] && basename "$d"; done; }
 dflt() { [ -f "$data/default" ] && cat "$data/default"; }
-tokstate() { if [ -f "$data/profiles/$1/$tok" ]; then echo "token file present"; else echo "no token file"; fi; }
+# Only the id_token_email field is ever read from the token file (never access/refresh tokens).
+email_of() {
+  e=$(plutil -extract id_token_email raw -o - "$data/profiles/$1/$tok" 2>/dev/null | tr -d '[:cntrl:]')
+  case $e in ''|*[[:space:]]*) return 0 ;; esac
+  printf '%s' "$e"
+}
+status() {
+  [ -f "$data/profiles/$1/$tok" ] || { echo "not logged in"; return 0; }
+  e=$(email_of "$1")
+  echo "${e:-token file present, email unknown}"
+}
+dup_warning() {
+  for n in $(names); do e=$(email_of "$n"); [ -n "$e" ] && echo "$e $n"; done | awk '
+    { c[$1]++; p[$1] = p[$1] " " $2 }
+    END { for (e in c) if (c[e] > 1) print "WARNING: profiles" p[e] " are logged in to the same Google account (" e ")" }'
+}
 
 isshim() { [ -L "$1" ] && [ "$1" -ef "$shim" ]; }
 usage="usage: agyx setup [path]      record the official agy (default: first agy in PATH)
@@ -100,9 +115,10 @@ case $cmd in
     [ $# -eq 0 ] || bad "list takes no arguments"
     d=$(dflt)
     for n in $(names); do
-      m=" "; [ "$n" = "$d" ] && m="*"
-      echo "$m $n  $(tokstate "$n")"
+      s=$(status "$n"); [ "$n" = "$d" ] && s="$s  (default)"
+      printf '%-12s %s\n' "$n" "$s"
     done
+    dup_warning
     ;;
   doctor)
     [ $# -eq 0 ] || bad "doctor takes no arguments"
@@ -127,7 +143,8 @@ case $cmd in
     for n in $(names); do
       p=$data/profiles/$n
       t=$p/$tok
-      echo "profile $n: $(tokstate "$n"), home $(ls -ld "$p/home" | cut -c1-10)$([ -f "$t" ] && echo ", token $(ls -l "$t" | cut -c1-10)")"
+      echo "profile $n: $(status "$n"), home $(ls -ld "$p/home" | cut -c1-10)$([ -f "$t" ] && echo ", token $(ls -l "$t" | cut -c1-10)")"
     done
+    dup_warning
     ;;
 esac

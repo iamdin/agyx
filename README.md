@@ -76,7 +76,15 @@ This usage is printed (exit 2) on any misuse of a management subcommand: a missi
 
 `--profile` is only read before any other argument (`--` ends it); everything after is passed to agy untouched. A bad or missing profile is an error, never a fallback to another one.
 
-`agyx list` shows profiles and whether the token file exists ("token file present", not proof of a valid login).
+`agyx list` and `agyx doctor` show, per profile, which Google account it is logged in as:
+
+```
+work         you@example.com  (default)
+personal     not logged in
+old          token file present, email unknown
+```
+
+The email is read from the `id_token_email` field of the profile's agy token file with macOS `plutil` (no other dependency). No other field of that file is ever read or printed, in particular not the access or refresh tokens. "token file present, email unknown" means the file exists but the field could not be read; a present token file is not proof of a valid login. If two profiles report the same email, a `WARNING` line says both are logged in to the same Google account.
 
 Data dir: `${AGYX_DATA_DIR:-~/.local/share/agyx}` holding `real-agy`, `bin/agy` (only after `agyx shim`), `default`, `profiles/<name>/home/`.
 
