@@ -1,0 +1,66 @@
+#!/bin/sh
+# agyctl shim: run the real agy under a per-profile HOME.
+die() { echo "agy shim: $*" >&2; exit 2; }
+valid() {
+  case $1 in *'
+'*) return 1 ;; esac
+  printf %s "$1" | grep -Eq '^[a-z][a-z0-9_-]{0,31}$'
+}
+
+# find our own real location (follow symlinks) so runtime/ is found wherever we are installed
+self=$0
+while [ -L "$self" ]; do
+  l=$(readlink "$self")
+  case $l in /*) self=$l ;; *) self=$(dirname "$self")/$l ;; esac
+done
+self=$(cd "$(dirname "$self")" && pwd -P)/$(basename "$self")
+runtime=$(cd "$(dirname "$self")/../runtime" && pwd -P)
+rh=${AGYCTL_REAL_HOME:-$(eval "printf %s ~$(id -un)")}
+data=${AGYCTL_DATA_DIR:-$rh/.local/share/agyctl}
+
+# 1. profile choice: leading --account flags only
+flag=0 name=
+while [ $# -gt 0 ]; do
+  case $1 in
+    --account)
+      [ $# -ge 2 ] || die "--account needs a value"
+      v=$2; shift 2 ;;
+    --account=*) v=${1#--account=}; shift ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+  [ "$flag" = 0 ] || die "--account given more than once"
+  [ -n "$v" ] || die "--account value is empty"
+  flag=1 name=$v
+done
+if [ "$flag" = 0 ]; then
+  name=${AGY_PROFILE:-}
+  if [ -z "$name" ] && [ -f "$data/default" ]; then
+    read -r name < "$data/default" || :
+  fi
+  [ -n "$name" ] || die "no profile: use --account NAME, AGY_PROFILE, or 'agyctl use NAME'"
+fi
+valid "$name" || die "invalid profile name: $name"
+phome=$data/profiles/$name/home
+[ -d "$phome" ] || die "profile '$name' does not exist (run: agyctl login $name)"
+
+# 3. real binary
+real=$data/real-agy
+[ -x "$real" ] || die "real agy not set (run: agyctl install)"
+[ ! "$real" -ef "$self" ] || die "real-agy points at the shim itself"
+
+# 4. environment (originals saved unless the caller already points at the bridge)
+bz=$runtime/zsh bb=$runtime/bash_env
+if [ "${ZDOTDIR-}" != "$bz" ]; then
+  if [ "${ZDOTDIR+x}" ]; then AGYCTL_ORIG_ZDOTDIR_SET=1 AGYCTL_ORIG_ZDOTDIR=$ZDOTDIR
+  else AGYCTL_ORIG_ZDOTDIR_SET=0 AGYCTL_ORIG_ZDOTDIR=; fi
+fi
+if [ "${BASH_ENV-}" != "$bb" ]; then
+  if [ "${BASH_ENV+x}" ]; then AGYCTL_ORIG_BASH_ENV_SET=1 AGYCTL_ORIG_BASH_ENV=$BASH_ENV
+  else AGYCTL_ORIG_BASH_ENV_SET=0 AGYCTL_ORIG_BASH_ENV=; fi
+fi
+HOME=$phome AGY_PROFILE=$name AGYCTL_REAL_HOME=$rh AGY_CLI_DISABLE_AUTO_UPDATE=true
+ZDOTDIR=$bz BASH_ENV=$bb
+export HOME AGY_PROFILE AGYCTL_REAL_HOME AGY_CLI_DISABLE_AUTO_UPDATE ZDOTDIR BASH_ENV \
+  AGYCTL_ORIG_ZDOTDIR_SET AGYCTL_ORIG_ZDOTDIR AGYCTL_ORIG_BASH_ENV_SET AGYCTL_ORIG_BASH_ENV
+exec "$real" "$@"
