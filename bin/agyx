@@ -24,6 +24,7 @@ esac
 rh=${AGYX_REAL_HOME:-$(eval "printf %s ~$(id -un)")}
 data=${AGYX_DATA_DIR:-$rh/.local/share/agyx}
 tok=home/.gemini/antigravity-cli/antigravity-oauth-token
+sec=${AGYX_SECURITY:-/usr/bin/security}  # AGYX_SECURITY is only for tests
 
 need() {
   valid "${1-}" || bad "invalid profile name: ${1-}"
@@ -42,6 +43,12 @@ status() {
   [ -f "$data/profiles/$1/$tok" ] || { echo "not logged in"; return 0; }
   e=$(email_of "$1")
   echo "${e:-token file present, email unknown}"
+}
+kcstate() {
+  kc=$data/profiles/$1/home/Library/Keychains/login.keychain-db
+  [ -e "$kc" ] || { echo "keychain missing (created on next launch)"; return 0; }
+  kd=$(HOME=$data/profiles/$1/home "$sec" default-keychain -d user 2>/dev/null | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//')
+  if [ "$kd" = "$kc" ]; then echo "keychain ok (default for this profile)"; else echo "keychain NOT the default for this profile (found: ${kd:-none})"; fi
 }
 dup_warning() {
   for n in $(names); do e=$(email_of "$n"); [ -n "$e" ] && echo "$e $n"; done | awk '
@@ -146,11 +153,16 @@ case $cmd in
     else
       echo "takeover: off. Inside an agent shell a nested 'agyx' routes to the inherited profile, but a nested bare 'agy' runs the real agy with the real HOME (default login, not the instance profile); use 'agyx shim' to enable"
     fi
+    kd=$(HOME=$rh "$sec" default-keychain -d user 2>/dev/null | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//')
+    case $kd in
+      "$data"/*) echo "keychain: WARNING the real default keychain is inside the agyx data dir ($kd)" ;;
+      *) echo "keychain: real default keychain is ${kd:-unknown}, outside the agyx data dir" ;;
+    esac
     d=$(dflt); echo "default: ${d:-none}"
     for n in $(names); do
       p=$data/profiles/$n
       t=$p/$tok
-      echo "profile $n: $(status "$n"), home $(ls -ld "$p/home" | cut -c1-10)$([ -f "$t" ] && echo ", token $(ls -l "$t" | cut -c1-10)")"
+      echo "profile $n: $(status "$n"), home $(ls -ld "$p/home" | cut -c1-10)$([ -f "$t" ] && echo ", token $(ls -l "$t" | cut -c1-10)"), $(kcstate "$n")"
     done
     dup_warning
     ;;

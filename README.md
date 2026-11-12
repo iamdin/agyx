@@ -88,6 +88,14 @@ The email is read from the `id_token_email` field of the profile's agy token fil
 
 Data dir: `${AGYX_DATA_DIR:-~/.local/share/agyx}` holding `real-agy`, `bin/agy` (only after `agyx shim`), `default`, `profiles/<name>/home/`.
 
+## The "Keychain Not Found" dialog
+
+agy saves its token by calling `/usr/bin/security`. Under a profile `HOME` there is no default keychain, so macOS shows a "Keychain Not Found" dialog on every token save, and agy gives up after about 5 seconds and falls back to the token file.
+
+To avoid this, on every launch the shim checks `<profile home>/Library/Keychains/login.keychain-db`. If it does not exist, it creates an empty keychain with an empty password and makes it the default and only keychain of that profile `HOME` (`security create-keychain`, `list-keychains`, `default-keychain`, `set-keychain-settings`, no auto-lock). Every `security` call runs with `HOME` set to the profile home and names the keychain by explicit path, so your real keychain and its search list are never touched, and items agy saves stay per profile. Existing profiles get their keychain on their next launch. If creation fails, agyx prints a warning and launches agy anyway.
+
+`agyx doctor` reports, per profile, whether this keychain exists and is the default for that `HOME`, and warns if your real default keychain is inside the agyx data dir. The profile keychain has an empty password and is no secret store: same-user processes can open it, like the token files (see the limits below).
+
 ## Tests
 
 ```sh
@@ -98,5 +106,5 @@ sh test/run.sh      # uses a fake agy; never runs the real one
 
 - Not a security boundary (same UID).
 - Only shells that read their startup files get the real `HOME`; programs agy runs directly, MCP servers, and agy's own file tools still see the profile `HOME`.
-- Isolation relies on agy 1.5.6 falling back to per-`HOME` token files when the keychain is not reachable. Token refresh, logout, and agy upgrades are not yet verified.
-- Each token save may wait about 5 seconds for the keychain timeout.
+- agy still keeps its token file (`<profile home>/.gemini/antigravity-cli/antigravity-oauth-token`) and loads from it when the profile keychain has no item; `agyx profile list` reads the email from that file only. A profile that is logged in only through its keychain would show "not logged in" there; agyx does not read keychain items.
+- Token refresh, logout, and agy upgrades are not yet verified. If creating the profile keychain fails, agyx only warns and agy falls back to the token file (with the old 5-second wait and dialog).

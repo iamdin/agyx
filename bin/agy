@@ -50,6 +50,29 @@ real=$data/real-agy
 [ -x "$real" ] || die "real agy not set (run: agyx setup)"
 [ ! "$real" -ef "$self" ] || die "real-agy points at the shim itself"
 
+# 3b. give the profile HOME its own empty, unlocked keychain, so agy's /usr/bin/security calls
+# succeed silently instead of showing "Keychain Not Found". Every security call sets HOME to the
+# profile home and names the keychain explicitly: the real keychain is never touched.
+# AGYX_SECURITY is only for tests.
+sec=${AGYX_SECURITY:-/usr/bin/security}
+ensure_keychain() {
+  kc=$phome/Library/Keychains/login.keychain-db
+  [ ! -e "$kc" ] || return 0
+  ( umask 077; mkdir -p "$phome/Library/Keychains" ) &&
+  (
+    HOME=$phome; export HOME
+    "$sec" create-keychain -p "" "$kc" &&
+    "$sec" list-keychains -d user -s "$kc" &&
+    "$sec" default-keychain -d user -s "$kc" &&
+    "$sec" set-keychain-settings "$kc"
+  ) >/dev/null </dev/null || {
+    rm -f "$kc"
+    echo "agyx: warning: could not create the profile keychain; agy will fall back to its token file" >&2
+  }
+  return 0
+}
+ensure_keychain
+
 # 4. environment (originals saved unless the caller already points at the bridge)
 bz=$runtime/zsh bb=$runtime/bash_env
 if [ "${ZDOTDIR-}" != "$bz" ]; then

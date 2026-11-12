@@ -24,6 +24,21 @@ echo "ORIG_ZDOTDIR=$AGYX_ORIG_ZDOTDIR"
 for a in "$@"; do echo "ARG=$a"; done
 EOF
 chmod +x "$T/fake-agy"
+# Fake `security`: logs every call (never prints to stdout), keeps a per-HOME default keychain.
+cat > "$T/fake-security" <<'EOF'
+#!/bin/sh
+echo "HOME=$HOME $*" >> "$SECLOG"
+if [ "$FAKE_SEC_FAIL" = "$1" ]; then echo "security: fake failure" >&2; exit 1; fi
+case $1 in
+  create-keychain) mkdir -p "$(dirname "$4")"; : > "$4" ;;
+  default-keychain)
+    if [ "$4" = -s ]; then echo "$5" > "$HOME/.fake-default"
+    elif [ -f "$HOME/.fake-default" ]; then echo "    \"$(cat "$HOME/.fake-default")\""
+    else echo "    \"$HOME/Library/Keychains/login.keychain-db\""; fi ;;
+esac
+EOF
+chmod +x "$T/fake-security"
+export SECLOG=$T/seclog AGYX_SECURITY=$T/fake-security
 mkdir "$T/brewbin"; ln -s "$here/bin/agyx" "$T/brewbin/agyx"
 "$T/brewbin/agyx" setup "$T/fake-agy" > "$T/install.out" || { cat "$T/install.out"; exit 1; }
 [ ! -e "$DD/bin" ] || { echo "setup must not create bin/" >&2; exit 1; }
@@ -266,6 +281,41 @@ eq ctl-unshim-refuse-other-link "1" "$(ctl unshim >/dev/null 2>&1 || echo 1)"
 eq ctl-shim-refuse-other-link "1" "$(ctl shim >/dev/null 2>&1 || echo 1)"
 eq ctl-refuse-link-intact "$T/fake-agy" "$(readlink "$DD/bin/agy")"
 rm "$DD/bin/agy"
+
+# per-profile keychain (fake security; the real one is never called)
+H=$DD/profiles/kc/home K=$DD/profiles/kc/home/Library/Keychains/login.keychain-db
+mkdir -p "$H"; : > "$SECLOG"
+out=$(agyx --profile kc x)
+eq kc-stdout-only-agy "6" "$(echo "$out" | wc -l | tr -d ' ')"
+eq kc-exact-calls "$(printf 'HOME=%s create-keychain -p  %s\nHOME=%s list-keychains -d user -s %s\nHOME=%s default-keychain -d user -s %s\nHOME=%s set-keychain-settings %s' "$H" "$K" "$H" "$K" "$H" "$K" "$H" "$K")" "$(cat "$SECLOG")"
+eq kc-dir-modes "drwx------ drwx------" "$(ls -ld "$H/Library" "$H/Library/Keychains" | cut -c1-10 | tr '\n' ' ' | sed 's/ $//')"
+: > "$SECLOG"; agyx --profile kc x >/dev/null
+eq kc-second-launch-no-calls "0" "$(wc -c < "$SECLOG" | tr -d ' ')"
+# failing security only warns; agy still launches; a later launch retries
+mkdir -p "$DD/profiles/kcfail/home"
+out=$(FAKE_SEC_FAIL=create-keychain agyx --profile kcfail y 2>"$T/err")
+eq kc-fail-launches "ARG=y" "$(echo "$out" | grep '^ARG=')"
+eq kc-fail-warns "1" "$(grep -c 'warning: could not create the profile keychain' "$T/err")"
+eq kc-fail-no-keychain "absent" "$([ -e "$DD/profiles/kcfail/home/Library/Keychains/login.keychain-db" ] || echo absent)"
+out=$(FAKE_SEC_FAIL=default-keychain agyx --profile kcfail y 2>/dev/null)
+eq kc-fail-late-step-launches "ARG=y" "$(echo "$out" | grep '^ARG=')"
+eq kc-fail-late-step-removed "absent" "$([ -e "$DD/profiles/kcfail/home/Library/Keychains/login.keychain-db" ] || echo absent)"
+agyx --profile kcfail y >/dev/null
+eq kc-retried "present" "$([ -e "$DD/profiles/kcfail/home/Library/Keychains/login.keychain-db" ] && echo present)"
+# doctor
+mkdir -p "$DD/profiles/nokc/home" "$DD/profiles/badkc/home"
+agyx --profile badkc z >/dev/null; echo /elsewhere > "$DD/profiles/badkc/home/.fake-default"
+eq kc-doctor-ok "1" "$(ctl doctor | grep -c '^profile kc: .*keychain ok (default for this profile)$')"
+eq kc-doctor-missing "1" "$(ctl doctor | grep -c '^profile nokc: .*keychain missing (created on next launch)$')"
+eq kc-doctor-not-default "1" "$(ctl doctor | grep -c '^profile badkc: .*keychain NOT the default for this profile (found: /elsewhere)$')"
+eq kc-doctor-real-ok "1" "$(ctl doctor | grep -c "^keychain: real default keychain is $RH/Library/Keychains/login.keychain-db, outside the agyx data dir$")"
+echo "$DD/profiles/kc/home/Library/Keychains/login.keychain-db" > "$RH/.fake-default"
+eq kc-doctor-real-inside "1" "$(ctl doctor | grep -c '^keychain: WARNING the real default keychain is inside the agyx data dir')"
+rm -f "$RH/.fake-default"
+eq kc-doctor-no-secrets "0" "$(ctl doctor | grep -c SECRET)"
+# every write call went to a profile HOME with an explicit keychain path; never the real HOME
+eq kc-never-real-keychain "0" "$(grep -e ' -s ' -e create-keychain -e set-keychain-settings "$SECLOG" | grep -vc "^HOME=$DD/profiles/[a-z]*/home .*$DD/profiles/[a-z]*/home/Library/Keychains/login.keychain-db")"
+rm -rf "${DD:?}/profiles/kc" "${DD:?}/profiles/kcfail" "${DD:?}/profiles/nokc" "${DD:?}/profiles/badkc"
 
 echo "passed: $pass, failed: $fail"
 [ "$fail" = 0 ]
