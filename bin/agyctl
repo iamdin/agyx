@@ -24,6 +24,9 @@ names() { for d in "$data"/profiles/*/; do [ -d "$d" ] && basename "$d"; done; }
 dflt() { [ -f "$data/default" ] && cat "$data/default"; }
 tokstate() { if [ -f "$data/profiles/$1/$tok" ]; then echo "token file present"; else echo "no token file"; fi; }
 
+isshim() { [ -L "$1" ] && [ "$1" -ef "$shim" ]; }
+usage="usage: agyctl install [path] | shim | unshim | login NAME | use NAME | list | doctor"
+
 cmd=${1-}; [ $# -gt 0 ] && shift
 case $cmd in
   install)
@@ -39,12 +42,31 @@ case $cmd in
     case $t in /*) ;; *) t=$PWD/$t ;; esac
     [ -x "$t" ] || die "not executable: $t"
     [ ! "$t" -ef "$shim" ] || die "that is the shim itself"
-    mkdir -p "$data/bin" && ln -sfn "$t" "$data/real-agy" && ln -sfn "$shim" "$data/bin/agy" \
+    mkdir -p "$data/bin" && ln -sfn "$t" "$data/real-agy" && ln -sfn "$shim" "$data/bin/agyx" \
       || die "cannot write $data"
     echo "real agy: $t"
-    echo "shim:     $data/bin/agy -> $shim"
-    echo "put this line at the END of your shell config (e.g. ~/.zshrc), so it comes first in PATH:"
+    echo "shim:     $data/bin/agyx -> $shim"
+    echo "put this line anywhere in your shell config (agyx collides with nothing):"
     echo "  export PATH=\"$data/bin:\$PATH\""
+    echo "then run e.g. 'agyx --account NAME'. To also take over the bare 'agy' name: agyctl shim"
+    ;;
+  shim)
+    l=$data/bin/agy
+    if [ -e "$l" ] || [ -L "$l" ]; then isshim "$l" || die "$l exists and is not a link to the shim; not touching it"; fi
+    mkdir -p "$data/bin" && ln -sfn "$shim" "$l" || die "cannot write $l"
+    echo "bare 'agy' now runs the shim: $l -> $shim"
+    r=$(readlink "$data/real-agy" 2>/dev/null)
+    echo "$data/bin must come BEFORE the directory of the real agy${r:+ ($(dirname "$r"))} in PATH."
+    echo "put this line at the END of your shell config (after anything that adds the real agy's directory):"
+    echo "  export PATH=\"$data/bin:\$PATH\""
+    ;;
+  unshim)
+    l=$data/bin/agy
+    if [ -e "$l" ] || [ -L "$l" ]; then
+      isshim "$l" || die "$l is not a link to the shim; not removing it"
+      rm "$l" || die "cannot remove $l"
+    fi
+    echo "bare 'agy' is no longer taken over (agyx still works)"
     ;;
   login)
     need "${1-}"
@@ -70,9 +92,16 @@ case $cmd in
     else
       echo "real agy: not set (run: agyctl install)"
     fi
-    first=$(command -v agy)
-    if [ -n "$first" ] && [ "$first" -ef "$shim" ]; then echo "PATH: agy resolves to the shim ($first)"
-    else echo "PATH: agy does NOT resolve to the shim (found: ${first:-none}); run 'agyctl install' and put $data/bin first in PATH"; fi
+    first=$(command -v agyx)
+    if [ -n "$first" ] && [ "$first" -ef "$shim" ]; then echo "PATH: agyx resolves to the shim ($first)"
+    else echo "PATH: agyx does NOT resolve to the shim (found: ${first:-none}); run 'agyctl install' and add $data/bin to PATH"; fi
+    if [ -L "$data/bin/agy" ]; then
+      first=$(command -v agy)
+      if [ -n "$first" ] && [ "$first" -ef "$shim" ]; then echo "takeover: on, agy resolves to the shim ($first)"
+      else echo "takeover: WARNING agy link exists but 'agy' resolves to ${first:-nothing}; put $data/bin before the real agy's directory in PATH"; fi
+    else
+      echo "takeover: off. A nested bare 'agy' inside an agent shell runs the real agy with the real HOME (default account, not the instance profile); use 'agyctl shim' to enable"
+    fi
     d=$(dflt); echo "default: ${d:-none}"
     for n in $(names); do
       p=$data/profiles/$n
@@ -80,6 +109,6 @@ case $cmd in
       echo "profile $n: $(tokstate "$n"), home $(ls -ld "$p/home" | cut -c1-10)$([ -f "$t" ] && echo ", token $(ls -l "$t" | cut -c1-10)")"
     done
     ;;
-  -h|--help|help) echo "usage: agyctl install [path] | login NAME | use NAME | list | doctor" ;;
-  *) echo "usage: agyctl install [path] | login NAME | use NAME | list | doctor" >&2; exit 2 ;;
+  -h|--help|help) echo "$usage" ;;
+  *) echo "$usage" >&2; exit 2 ;;
 esac

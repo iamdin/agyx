@@ -8,7 +8,7 @@ mkdir -p "$DD/profiles" "$RH"
 export AGYCTL_DATA_DIR=$DD AGYCTL_REAL_HOME=$RH HOME=$RH
 unset AGY_PROFILE ZDOTDIR BASH_ENV AGYCTL_ORIG_ZDOTDIR_SET AGYCTL_ORIG_ZDOTDIR AGYCTL_ORIG_BASH_ENV_SET AGYCTL_ORIG_BASH_ENV
 # Minimal PATH so the real agy can never be found. Only <data dir>/bin (created by
-# `agyctl install` below, via a Homebrew-style symlink to agyctl) holds `agy`.
+# `agyctl install` + `agyctl shim` below, via a Homebrew-style symlink to agyctl) holds `agy`.
 PATH=$DD/bin:/usr/bin:/bin:/usr/sbin:/sbin
 [ -x "$here/bin/agy" ] && [ -x "$here/bin/agyctl" ] || { echo "bin/agy, bin/agyctl must be executable" >&2; exit 1; }
 
@@ -25,6 +25,8 @@ EOF
 chmod +x "$T/fake-agy"
 mkdir "$T/brewbin"; ln -s "$here/bin/agyctl" "$T/brewbin/agyctl"
 "$T/brewbin/agyctl" install "$T/fake-agy" > "$T/install.out" || { cat "$T/install.out"; exit 1; }
+[ -L "$DD/bin/agyx" ] && [ ! -e "$DD/bin/agy" ] && [ ! -L "$DD/bin/agy" ] || { echo "install must create only agyx" >&2; exit 1; }
+"$T/brewbin/agyctl" shim > "$T/shim.out" || { cat "$T/shim.out"; exit 1; }
 [ "$(command -v agy)" = "$DD/bin/agy" ] || { echo "agy not resolved to $DD/bin/agy" >&2; exit 1; }
 for p in work home other; do mkdir -p "$DD/profiles/$p/home"; done
 echo work > "$DD/default"
@@ -136,20 +138,52 @@ eq ctl-list "* home  token file present${nl}  other  no token file${nl}  work  n
 eq ctl-login-bad "1" "$(ctl login Bad 2>/dev/null || echo 1)"
 eq ctl-login "PROFILE=newp" "$(FAKE_RUN='echo PROFILE=$AGY_PROFILE' ctl login newp)"
 eq ctl-login-mode "drwx------" "$(ls -ld "$DD/profiles/newp/home" | cut -c1-10)"
-rm "$DD/real-agy" "$DD/bin/agy"
+rm "$DD/real-agy" "$DD/bin/agy" "$DD/bin/agyx"
 eq ctl-install "real agy: $T/fake-agy" "$(ctl install "$T/fake-agy" | head -n 1)"
 eq ctl-install-link "$T/fake-agy" "$(readlink "$DD/real-agy")"
-eq ctl-install-shim-link "$here/bin/agy" "$(readlink "$DD/bin/agy")"
-eq ctl-install-path-line "  export PATH=\"$DD/bin:\$PATH\"" "$(ctl install "$T/fake-agy" | tail -n 1)"
+eq ctl-install-agyx-link "$here/bin/agy" "$(readlink "$DD/bin/agyx")"
+eq ctl-install-only-agyx "absent" "$([ -e "$DD/bin/agy" ] || [ -L "$DD/bin/agy" ] || echo absent)"
+eq ctl-install-path-line "1" "$(ctl install "$T/fake-agy" | grep -c "^  export PATH=\"$DD/bin:\\\$PATH\"\$")"
+eq ctl-install-anywhere "1" "$(ctl install "$T/fake-agy" | grep -c 'anywhere in your shell config')"
+eq ctl-install-still-only-agyx "absent" "$([ -e "$DD/bin/agy" ] || [ -L "$DD/bin/agy" ] || echo absent)"
 eq ctl-install-shim "1" "$(ctl install "$here/bin/agy" >/dev/null 2>&1 || echo 1)"
-eq ctl-install-data-shim "1" "$(ctl install "$DD/bin/agy" >/dev/null 2>&1 || echo 1)"
-# install without an argument skips the shim and takes the next agy in PATH
+eq ctl-install-data-shim "1" "$(ctl install "$DD/bin/agyx" >/dev/null 2>&1 || echo 1)"
+eq agyx-works "other" "$(agyx --account other | sed -n 's/^AGY_PROFILE=//p')"
+eq agyx-env "home" "$(AGY_PROFILE=home agyx -p hi | sed -n 's/^AGY_PROFILE=//p')"
+eq agyx-nested "other" "$(FAKE_RUN='FAKE_RUN= agyx x' agyx --account other | sed -n 's/^AGY_PROFILE=//p')"
+
+# doctor: takeover off
+eq ctl-doctor-agyx "1" "$(ctl doctor | grep -c 'agyx resolves to the shim')"
+eq ctl-doctor-off "1" "$(ctl doctor | grep -c 'takeover: off.*real HOME')"
+
+# shim / unshim
+out=$(ctl shim); eq ctl-shim-link "$here/bin/agy" "$(readlink "$DD/bin/agy")"
+eq ctl-shim-says-path "1" "$(echo "$out" | grep -c 'must come BEFORE the directory of the real agy')"
+eq ctl-shim-idempotent "0" "$(ctl shim >/dev/null; echo $?)"
+eq ctl-shim-used "other" "$(agy --account other | sed -n 's/^AGY_PROFILE=//p')"
+# auto-detect skips both links and takes the next agy in PATH
 mkdir "$T/fakebin"; ln -s "$T/fake-agy" "$T/fakebin/agy"
 eq ctl-install-autodetect "real agy: $T/fakebin/agy" "$(PATH=$DD/bin:$T/fakebin:$PATH ctl install | head -n 1)"
+eq ctl-install-keeps-shim "$here/bin/agy" "$(readlink "$DD/bin/agy")"
 eq ctl-help "0" "$(ctl --help >/dev/null; echo $?)"
-eq ctl-doctor "1" "$(ctl doctor | grep -c 'resolves to the shim')"
-eq ctl-doctor-not-first "1" "$(PATH=$T/fakebin:$PATH ctl doctor | grep -c 'does NOT resolve')"
+eq ctl-doctor-on "1" "$(ctl doctor | grep -c 'takeover: on')"
+eq ctl-doctor-warn "1" "$(PATH=$T/fakebin:$PATH ctl doctor | grep -c 'takeover: WARNING')"
 eq ctl-doctor-no-token-content "0" "$(ctl doctor | grep -c secret)"
+ctl unshim >/dev/null
+eq ctl-unshim "absent" "$([ -e "$DD/bin/agy" ] || [ -L "$DD/bin/agy" ] || echo absent)"
+eq ctl-unshim-keeps-agyx "$here/bin/agy" "$(readlink "$DD/bin/agyx")"
+eq ctl-unshim-idempotent "0" "$(ctl unshim >/dev/null; echo $?)"
+eq ctl-doctor-off-again "1" "$(ctl doctor | grep -c 'takeover: off')"
+# refusals: never remove or overwrite anything that is not a link to the shim
+echo precious > "$DD/bin/agy"
+eq ctl-unshim-refuse-file "1" "$(ctl unshim >/dev/null 2>&1 || echo 1)"
+eq ctl-shim-refuse-file "1" "$(ctl shim >/dev/null 2>&1 || echo 1)"
+eq ctl-refuse-file-intact "precious" "$(cat "$DD/bin/agy")"
+rm "$DD/bin/agy"; ln -s "$T/fake-agy" "$DD/bin/agy"
+eq ctl-unshim-refuse-other-link "1" "$(ctl unshim >/dev/null 2>&1 || echo 1)"
+eq ctl-shim-refuse-other-link "1" "$(ctl shim >/dev/null 2>&1 || echo 1)"
+eq ctl-refuse-link-intact "$T/fake-agy" "$(readlink "$DD/bin/agy")"
+rm "$DD/bin/agy"
 
 echo "passed: $pass, failed: $fail"
 [ "$fail" = 0 ]
