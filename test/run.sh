@@ -192,10 +192,9 @@ tokdir() { mkdir -p "$DD/profiles/$1/home/.gemini/antigravity-cli"; echo "$DD/pr
 tokjson() { # profile email  (fake token strings that must never be printed)
   printf '{"token":{"access_token":"SECRET-ACCESS-%s","refresh_token":"SECRET-REFRESH-%s","expiry":"2030-01-01T00:00:00Z"},"auth_method":"oauth","id_token_email":"%s"}\n' "$1" "$1" "$2" > "$(tokdir "$1")"
 }
-tokjson home alice@example.com
-tokjson twin alice@example.com
-printf '{"token":{"access_token":"SECRET-ACCESS-work","refresh_token":"SECRET-REFRESH-work"},"auth_method":"oauth"}\n' > "$(tokdir work)"
-mkdir -p "$DD/profiles/junk/home"; echo 'not json SECRET-JUNK' > "$(tokdir junk)"
+giveitem() { mkdir -p "$DD/profiles/$1/home/Library/Keychains"; : > "$DD/profiles/$1/home/Library/Keychains/login.keychain-db"; : > "$DD/profiles/$1/home/.fake-item"; }
+for n in home twin work junk; do giveitem $n; done
+printf 'alice@example.com\n' > "$DD/profiles/home/email"; printf 'alice@example.com\n' > "$DD/profiles/twin/email"
 dupline="WARNING: profiles home twin are logged in to the same Google account (alice@example.com)"
 want=$(printf '%-12s %s\n' home 'alice@example.com  (default)' junk 'logged in, email unknown' other 'not logged in' twin 'alice@example.com' work 'logged in, email unknown')
 eq ctl-list "$want${nl}$dupline" "$(ctl profile list)"
@@ -348,7 +347,7 @@ echo p > "$N/data/default"
 eq not-logged-in-launches "AGY_PROFILE=p" "$(fx env PATH="$SP" "$AX" 2>/dev/null | grep '^AGY_PROFILE=')"
 # profile login: the first successful login becomes the default
 fresh c1; rmdir "$N/data/profiles/p/home" "$N/data/profiles/p"
-mktok='mkdir -p $HOME/.gemini/antigravity-cli; echo "{}" > $HOME/.gemini/antigravity-cli/antigravity-oauth-token'
+mktok='touch $HOME/.fake-item'
 out=$(fx env FAKE_RUN="$mktok" PATH="$SP" "$AX" profile login first 2>"$T/err"); rc=$?
 eq login-sets-default "0/first/1" "$rc/$(cat "$N/data/default")/$(echo "$out" | grep -c "'first' is now the default profile")"
 fx env FAKE_RUN="$mktok" PATH="$SP" "$AX" profile login second >/dev/null 2>&1
@@ -547,57 +546,7 @@ G=$RH/.gemini
 launch() { FAKE_RUN=true agyx --profile "$1" 2>"$T/err"; }
 islink() { [ -L "$1" ] && [ "$1" -ef "$2" ] && echo link || echo "not-link"; }
 snap() { ls -lRA "$@"; }
-mkdir -p "$G/antigravity-cli/log" "$G/skills" "$G/skills2" "$G/antigravity-cli/subdir"
-echo shared > "$G/settings.json"; echo a > "$G/a.txt"; echo same > "$G/b.txt"
-echo old > "$G/c.txt"; touch -t 202001010000 "$G/c.txt"
-echo shared-d > "$G/d.txt"; touch -t 202401010000 "$G/d.txt"
-echo mcp > "$G/antigravity-cli/mcp.json"
-echo R-token > "$G/antigravity-cli/antigravity-oauth-token"; echo R-log > "$G/antigravity-cli/cli.log"
-echo R-jb > "$G/antigravity-cli/jetbox_summaries_proto.pb"
-S=$DD/profiles/s1/home A=$DD/profiles/s1/home/.gemini/antigravity-cli
-mkdir -p "$A/log" "$S/.gemini/skills2"
-echo p > "$S/.gemini/skills2/p.txt"   # differs from the shared (empty) directory
-ln -s /nonexistent "$S/.gemini/a.txt"                                  # case 3: wrong link
-echo same > "$S/.gemini/b.txt"                                         # case 4: identical
-echo new-c > "$S/.gemini/c.txt"; touch -t 202401010000 "$S/.gemini/c.txt"   # case 4: profile newer
-echo profile-d > "$S/.gemini/d.txt"; touch -t 202001010000 "$S/.gemini/d.txt" # case 4: shared newer
-echo only > "$S/.gemini/only-here.txt"; echo extra > "$A/extra.json"  # adoption
-echo P-token > "$A/antigravity-oauth-token"; echo P-log > "$A/cli.log"; echo P-jb > "$A/jetbox_summaries_proto.pb"
-out=$(launch s1)
-eq gem-stdout-empty "" "$out"
-eq gem-stderr-lines "3" "$(grep -c . "$T/err")"
-eq gem-new-link "link" "$(islink "$S/.gemini/settings.json" "$G/settings.json")"
-eq gem-dir-link "link" "$(islink "$S/.gemini/skills" "$G/skills")"
-eq gem-nested-link "link" "$(islink "$A/mcp.json" "$G/antigravity-cli/mcp.json")"
-eq gem-wrong-link-replaced "link" "$(islink "$S/.gemini/a.txt" "$G/a.txt")"
-eq gem-identical-linked "link/same" "$(islink "$S/.gemini/b.txt" "$G/b.txt")/$(cat "$G/b.txt")"
-eq gem-profile-newer "link/new-c/old" "$(islink "$S/.gemini/c.txt" "$G/c.txt")/$(cat "$G/c.txt")/$(cat "$S"/agyx-drift/.gemini/c.txt.*)"
-eq gem-shared-newer "link/shared-d/profile-d" "$(islink "$S/.gemini/d.txt" "$G/d.txt")/$(cat "$G/d.txt")/$(cat "$S"/agyx-drift/.gemini/d.txt.*)"
-eq gem-real-dir-merged "link/p" "$(islink "$S/.gemini/skills2" "$G/skills2")/$(cat "$G/skills2/p.txt")"
-eq gem-real-dir-merge-line "1" "$(grep -c "^agyx: merged $S/.gemini/skills2 into the shared $G/skills2: 1 entries moved, 0 to " "$T/err")"
-eq gem-adopt-file "link/only" "$(islink "$S/.gemini/only-here.txt" "$G/only-here.txt")/$(cat "$G/only-here.txt")"
-eq gem-adopt-nested "link/extra" "$(islink "$A/extra.json" "$G/antigravity-cli/extra.json")/$(cat "$G/antigravity-cli/extra.json")"
-eq gem-real-dirs "dir dir" "$([ -d "$S/.gemini" ] && [ ! -L "$S/.gemini" ] && printf dir) $([ -d "$A" ] && [ ! -L "$A" ] && echo dir)"
-eq gem-private-kept "P-token P-log P-jb" "$(cat "$A/antigravity-oauth-token") $(cat "$A/cli.log") $(cat "$A/jetbox_summaries_proto.pb")"
-eq gem-private-regular "reg reg reg dir" "$(for f in antigravity-oauth-token cli.log jetbox_summaries_proto.pb; do [ -f "$A/$f" ] && [ ! -L "$A/$f" ] && printf 'reg '; done)$([ -d "$A/log" ] && [ ! -L "$A/log" ] && echo dir)"
-eq gem-private-shared-untouched "R-token R-log R-jb" "$(cat "$G/antigravity-cli/antigravity-oauth-token") $(cat "$G/antigravity-cli/cli.log") $(cat "$G/antigravity-cli/jetbox_summaries_proto.pb")"
-# second launch changes nothing (only the real-directory warning repeats)
-before=$(snap "$S" "$G"); out=$(launch s1); after=$(snap "$S" "$G")
-eq gem-second-launch-same "$before" "$after"
-eq gem-second-launch-stderr "0" "$(grep -c . "$T/err")"
-eq gem-second-launch-stdout "" "$out"
-# R/.gemini/antigravity-cli is created when adopting into a real home that lacks it
-R2=$T/real2; mkdir -p "$R2"; mkdir -p "$DD/profiles/s2/home/.gemini/antigravity-cli"
-echo e2 > "$DD/profiles/s2/home/.gemini/antigravity-cli/extra.json"
-(AGYX_REAL_HOME=$R2 launch s2 >/dev/null)
-eq gem-creates-shared-dir "link/e2" "$(islink "$DD/profiles/s2/home/.gemini/antigravity-cli/extra.json" "$R2/.gemini/antigravity-cli/extra.json")/$(cat "$R2/.gemini/antigravity-cli/extra.json")"
-# a clean profile: a launch is a no-op when everything is already correct
-mkdir -p "$DD/profiles/s3/home"; launch s3 >/dev/null
-S3=$DD/profiles/s3/home
-before=$(snap "$S3" "$G"); launch s3 >/dev/null; after=$(snap "$S3" "$G")
-eq gem-noop-same "$before" "$after"
-eq gem-noop-stderr "0" "$(grep -c . "$T/err")"
-
+mkdir -p "$G/antigravity-cli"
 # whitelist: default list when symlinks is missing
 HL=$RH/.config/agyx/symlinks   # the whitelist file lives in the real home's config dir
 rm -f "$HL"
@@ -617,8 +566,6 @@ eq wl-dangling-removed "gone" "$([ -L "$S4/.cache" ] || [ -e "$S4/.cache" ] || e
 # doctor reports (section of profile s4 / s1)
 sect() { ctl doctor | awk -v p="$1:" '/^profile /{on=($2==p)} on'; }
 eq wl-doctor "1 1 1 1" "$(sect s4 | grep -c 'symlinks .gitconfig: linked') $(sect s4 | grep -c 'symlinks .ssh: CONFLICT') $(sect s4 | grep -c 'symlinks .npm: missing in the real home') $(sect s4 | grep -c 'symlinks .config: CONFLICT')"
-eq gem-doctor "0 1" "$(sect s1 | grep -c 'skills2: real directory') $(sect s1 | grep -c 'agyx-drift: 2 file(s)')"
-eq gem-doctor-clean "0" "$(sect s3 | grep -c 'shared ')"
 # list file: comments, blanks, whitespace, invalid names
 mkdir -p "$RH/.local" "$RH/mydir2"
 mkdir -p "$(dirname "$HL")"; printf '# comment\n\n   # indented comment\n  .gitconfig  \n../etc\na/b\n.gemini\nLibrary\n.local\n.\n..\nmydir2\n' > "$HL"
@@ -626,7 +573,7 @@ S5=$DD/profiles/s5/home; mkdir -p "$S5"
 launch s5 >/dev/null
 eq wl-file-valid "link link" "$(islink "$S5/.gitconfig" "$RH/.gitconfig") $(islink "$S5/mydir2" "$RH/mydir2")"
 eq wl-file-invalid-warned "7" "$(grep -c "symlinks: skipping invalid name" "$T/err")"
-eq wl-file-not-linked ".local absent, .gemini real" "$([ -e "$S5/.local" ] || [ -L "$S5/.local" ] || printf '.local absent,') $([ -d "$S5/.gemini" ] && [ ! -L "$S5/.gemini" ] && echo .gemini real)"
+eq wl-file-not-linked ".local absent, .gemini is the shared link" "$([ -e "$S5/.local" ] || [ -L "$S5/.local" ] || printf '.local absent,') $(islink "$S5/.gemini" "$RH/.gemini" | sed 's/^link$/.gemini is the shared link/')"
 eq wl-library-not-link "no" "$([ -L "$S5/Library" ] && echo yes || echo no)"
 # profile default: show (or none) and set
 rm -f "$DD/default"
@@ -647,47 +594,33 @@ echo mine > "$L3"; (AGYX_REAL_HOME=$RH3 AGYX_DATA_DIR=$D2 ctl doctor >/dev/null 
 eq doctor-keeps-list "mine" "$(cat "$L3")"
 rm -rf "${DD:?}/profiles/s1" "${DD:?}/profiles/s2" "${DD:?}/profiles/s3" "${DD:?}/profiles/s4" "${DD:?}/profiles/s5"
 
-# a real directory identical to the shared one is dropped (nothing to keep) and replaced by the link
-rm -f "$HL"   # drop the invalid-names list left by the whitelist tests
-mkdir -p "$G/antigravity-cli/mcp/t3-code"; echo '{"a":1}' > "$G/antigravity-cli/mcp/t3-code/a.json"
-S6=$DD/profiles/s6/home
-mkdir -p "$S6/.gemini/antigravity-cli/mcp/t3-code"; echo '{"a":1}' > "$S6/.gemini/antigravity-cli/mcp/t3-code/a.json"
-out=$(launch s6)
-eq dir-identical-silent "0" "$(grep -vc "^agyx: wrote" "$T/err")"
-eq dir-identical-linked "link" "$(islink "$S6/.gemini/antigravity-cli/mcp" "$G/antigravity-cli/mcp")"
-eq dir-identical-nothing-kept "absent" "$([ -e "$S6/agyx-drift" ] && echo present || echo absent)"
-before=$(snap "$S6" "$G"); launch s6 >/dev/null; after=$(snap "$S6" "$G")
-eq dir-identical-second-launch "$before/0" "$after/$(grep -c . "$T/err")"
-rm -rf "${DD:?}/profiles/s6" "$G/antigravity-cli/mcp"
-
-# logged in via the profile keychain (item gemini/antigravity) and email from agy's log
-mklk() { h=$DD/profiles/$1/home; mkdir -p "$h/Library/Keychains" "$h/.gemini/antigravity-cli/log"; : > "$h/Library/Keychains/login.keychain-db"; echo "$h"; }
-loglines() { printf '%s\n' "$@"; }
-h=$(mklk lk1); : > "$h/.fake-item"; L=$h/.gemini/antigravity-cli/log
-loglines '10:00 applyAuthResult ok email=old@example.com' > "$L/a.log"; touch -t 202001010000 "$L/a.log"
-loglines '11:00 applyAuthResult ok email=first@example.com scopes=x' '11:01 applyAuthResult ok email=last@example.com' '11:02 other email=ignored@example.com' > "$L/b.log"; touch -t 202401010000 "$L/b.log"
+# logged in via the profile keychain (item gemini/antigravity); the email comes from the profile's email file
+mklk() { h=$DD/profiles/$1/home; mkdir -p "$h/Library/Keychains"; : > "$h/Library/Keychains/login.keychain-db"; echo "$h"; }
+setemail() { printf '%s\n' "$2" > "$DD/profiles/$1/email"; }
+h=$(mklk lk1); : > "$h/.fake-item"; setemail lk1 last@example.com
 h=$(mklk lk2); : > "$h/.fake-item"
-h=$(mklk lk3); : > "$h/.fake-item"; tokjson lk3 tok@example.com
-loglines '11:00 applyAuthResult ok email=log@example.com' > "$h/.gemini/antigravity-cli/log/c.log"
+h=$(mklk lk3); : > "$h/.fake-item"; tokjson lk3 tok@example.com; setemail lk3 file@example.com
 h=$(mklk lk4); : > "$h/.fake-item"; printf '{"token":{"access_token":"SECRET-ACCESS-lk4"},"auth_method":"oauth"}\n' > "$(tokdir lk4)"
-loglines '11:00 applyAuthResult ok email=fromlog@example.com' > "$h/.gemini/antigravity-cli/log/d.log"
-h=$(mklk lk5); loglines '11:00 applyAuthResult ok email=nobody@example.com' > "$h/.gemini/antigravity-cli/log/e.log"
-h=$(mklk lk6); : > "$h/.fake-item"; loglines '12:00 applyAuthResult ok email=last@example.com' > "$h/.gemini/antigravity-cli/log/f.log"
+h=$(mklk lk5); setemail lk5 nobody@example.com
+h=$(mklk lk6); : > "$h/.fake-item"; setemail lk6 last@example.com
+h=$(mklk lk7); : > "$h/.fake-item"; tokjson lk7 fromtok@example.com
 : > "$SECLOG"
 lst=$(ctl profile list)
 row() { echo "$lst" | grep "^$1 " | sed 's/  */ /g'; }
-eq lk-newest-log-last-email "lk1 last@example.com" "$(row lk1)"
+eq lk-email-file "lk1 last@example.com" "$(row lk1)"
 eq lk-keychain-no-email "lk2 logged in, email unknown" "$(row lk2)"
-eq lk-token-email-wins "lk3 tok@example.com" "$(row lk3)"
-eq lk-token-without-field-uses-log "lk4 fromlog@example.com" "$(row lk4)"
+eq lk-email-file-wins-over-token "lk3 file@example.com" "$(row lk3)"
+eq lk-token-without-field-unknown "lk4 logged in, email unknown" "$(row lk4)"
 eq lk-no-item-no-token "lk5 not logged in" "$(row lk5)"
+eq lk-token-field-fallback "lk7 fromtok@example.com" "$(row lk7)"
 eq lk-dup-warning "1" "$(echo "$lst" | grep -c 'WARNING: profiles lk1 lk6 are logged in to the same Google account (last@example.com)')"
 eq lk-doctor "1" "$(ctl doctor | grep -c '^profile lk1: last@example.com, home ')"
 K=$DD/profiles/lk1/home/Library/Keychains/login.keychain-db
 eq lk-find-call "HOME=$DD/profiles/lk1/home find-generic-password -s gemini -a antigravity $K" "$(grep 'HOME=[^ ]*/lk1/home find-generic' "$SECLOG" | head -n 1)"
 eq lk-never-secret "0" "$(grep find-generic-password "$SECLOG" | grep -c -e ' -w' -e ' -g')"
 eq lk-no-secrets-printed "0" "$( (echo "$lst"; ctl doctor) | grep -c SECRET)"
-for n in lk1 lk2 lk3 lk4 lk5 lk6; do rm -rf "${DD:?}/profiles/$n"; done
+for n in lk1 lk2 lk3 lk4 lk5 lk6 lk7; do rm -rf "${DD:?}/profiles/$n"; done
+
 
 # whitelist file location: ${XDG_CONFIG_HOME:-<real home>/.config}/agyx/symlinks
 RH4=$T/rh4 XDG=$T/xdg
@@ -710,77 +643,150 @@ S7=$DD/profiles/s7/home; mkdir -p "$S7"
 eq xdg-launch-uses-file "link/absent/absent" "$(islink "$S7/mydir2" "$RH/mydir2")/$([ -e "$S7/.gitconfig" ] || echo absent)/$([ -e "$S7/ignored-by-xdg" ] || echo absent)"
 rm -rf "${DD:?}/profiles/s7"; rm -f "$DD/symlinks"
 
-# SQLite sidecars (-wal/-shm/-journal) are never linked, adopted or reported; doctor explains identical dirs
-echo db > "$G/antigravity-cli/conv.db"
-for s in -wal -shm -journal; do echo x > "$G/antigravity-cli/conv.db$s"; done
-echo top > "$G/top.sqlite-shm"
-S8=$DD/profiles/s8/home A8=$DD/profiles/s8/home/.gemini/antigravity-cli
-mkdir -p "$A8" "$G/antigravity-cli/idm" "$A8/idm" "$G/antigravity-cli/dif" "$A8/dif"
-echo mine > "$A8/own.db-wal"                                     # profile-only sidecar
-echo 1 > "$G/antigravity-cli/idm/a"; echo 1 > "$A8/idm/a"        # identical directory
-echo 1 > "$G/antigravity-cli/dif/a"; echo 2 > "$A8/dif/a"        # different directory
-eq doctor-identical-dir "1" "$(sect s8 | grep -c 'antigravity-cli/idm: real directory, will be merged into the shared one on next launch')"
-eq doctor-different-dir "1" "$(sect s8 | grep -c 'antigravity-cli/dif: real directory, will be merged into the shared one on next launch')"
-eq doctor-skips-sidecars-before "0" "$(sect s8 | grep -c -e '-wal' -e '-shm' -e '-journal')"
-launch s8 >/dev/null
-eq sidecar-launch-stderr "1" "$(grep -c . "$T/err")"
-eq sidecar-db-linked "link" "$(islink "$A8/conv.db" "$G/antigravity-cli/conv.db")"
-eq sidecars-not-linked "absent" "$(for s in -wal -shm -journal; do [ -e "$A8/conv.db$s" ] || [ -L "$A8/conv.db$s" ] && echo present; done; [ -e "$S8/.gemini/top.sqlite-shm" ] || [ -L "$S8/.gemini/top.sqlite-shm" ] || echo absent)"
-eq sidecar-not-adopted "regular/absent" "$([ -f "$A8/own.db-wal" ] && [ ! -L "$A8/own.db-wal" ] && echo regular)/$([ -e "$G/antigravity-cli/own.db-wal" ] || echo absent)"
-eq sidecar-no-drift "0" "$(find "$S8/agyx-drift" -name '*-wal*' -o -name '*-shm*' -o -name '*-journal*' 2>/dev/null | grep -c .)"
-eq identical-dir-replaced "link" "$(islink "$A8/idm" "$G/antigravity-cli/idm")"
-eq doctor-skips-sidecars-after "0" "$(sect s8 | grep -c -e '-wal' -e '-shm' -e '-journal')"
-rm -rf "${DD:?}/profiles/s8"
 
-# ---- merging a real profile directory into the shared one ----
-GA=$G/antigravity-cli
-M=$DD/profiles/m1/home MA=$DD/profiles/m1/home/.gemini/antigravity-cli
-mkdir -p "$MA"
-mk() { mkdir -p "$(dirname "$1")"; printf '%s\n' "$2" > "$1"; }
-# disjoint content
-mk "$GA/mdisj/a.txt" shared-a; mk "$MA/mdisj/b.txt" profile-b
-# identical files
-mk "$GA/mident/x.txt" same; mk "$MA/mident/x.txt" same
-# different files, each side newer
-mk "$GA/mtime/np.txt" old-shared; touch -t 202001010000 "$GA/mtime/np.txt"; mk "$MA/mtime/np.txt" new-profile; touch -t 202401010000 "$MA/mtime/np.txt"
-mk "$GA/mtime/ns.txt" new-shared; touch -t 202401010000 "$GA/mtime/ns.txt"; mk "$MA/mtime/ns.txt" old-profile; touch -t 202001010000 "$MA/mtime/ns.txt"
-# file versus directory, both ways
-mkdir -p "$GA/mfd/fd"; mk "$GA/mfd/fd/inner" in-shared; mk "$MA/mfd/fd" file-in-profile
-mk "$GA/mfd/df" file-in-shared; mk "$MA/mfd/df/inner" in-profile
-# nested directories
-mk "$GA/mnest/sub/a" sa; mk "$MA/mnest/sub/b" pb; mk "$MA/mnest/sub/deeper/c" pc; mk "$MA/mnest/new/d" pd; mk "$GA/mnest/sub/same" s; mk "$MA/mnest/sub/same" s
-# symlinks inside are moved as they are (never followed)
-mkdir -p "$GA/msym"; mk "$GA/msym/keep" k; ln -s /nonexistent-target "$MA/msym/dangling" 2>/dev/null || { mkdir -p "$MA/msym"; ln -s /nonexistent-target "$MA/msym/dangling"; }
-mk "$MA/msym/real" r
-# SQLite sidecars stay behind (and then go to drift with the remainder)
-mk "$GA/mside/x" sx; mk "$MA/mside/f" pf; mk "$MA/mside/conv.db-wal" w; mk "$MA/mside/conv.db-shm" s
-out=$(launch m1)
-dr=$M/agyx-drift/.gemini/antigravity-cli
-for d in mdisj mident mtime mfd mnest msym mside; do
-  eq "merge-linked-$d" "link" "$(islink "$MA/$d" "$GA/$d")"
+# ---- whole shared ~/.gemini: one link per profile, the token blocker, migration, email ----
+# fl PROFILE: launch in the current fresh environment ($N), trash folder under $N/trash
+fl() { fx env PATH="${FLPATH:-$SP}" AGYX_REAL_AGY="$T/fake-agy" AGYX_TRASH_DIR="$N/trash" FAKE_RUN=true "$AX" --profile "$1" </dev/null 2>"$T/err"; }
+wfresh() { N=$T/$1; rm -rf "$N"; mkdir -p "$N/rh" "$N/data/profiles/p/home"; }
+BL=.gemini/antigravity-cli/antigravity-oauth-token
+
+# a fresh profile gets the single link; the layout is exactly the target layout
+wfresh w1
+out=$(fl p)
+eq w-stdout-empty "" "$out"
+eq w-link "link" "$(islink "$N/data/profiles/p/home/.gemini" "$N/rh/.gemini")"
+eq w-link-target "$N/rh/.gemini" "$(readlink "$N/data/profiles/p/home/.gemini")"
+eq w-profile-layout "home" "$(ls -A "$N/data/profiles/p" | tr '\n' ' ' | sed 's/ $//')"
+eq w-home-layout ".config .fake-default .gemini Library" "$(ls -A "$N/data/profiles/p/home" | tr '\n' ' ' | sed 's/ $//')"
+eq w-no-drift "absent" "$(find "$N/data" -name 'agyx-drift*' | grep -c . | sed 's/^0$/absent/')"
+eq w-blocker-dir "dir/README" "$([ -d "$N/rh/$BL" ] && [ ! -L "$N/rh/$BL" ] && echo dir)/$(ls "$N/rh/$BL")"
+eq w-blocker-readme "1" "$(grep -c 'cannot write a token file' "$N/rh/$BL/README")"
+# steady state: nothing changes, nothing printed, and no helper process is started by the sync code
+before=$(snap "$N/data/profiles" "$N/rh/.gemini")
+STUBS=$T/stubs; STUBLOG=$T/stublog; rm -rf "$STUBS"; mkdir "$STUBS"; : > "$STUBLOG"
+for n in ln rm mv find date cmp mkdir ls cat sed tr head; do
+  printf '#!/bin/sh\necho %s >> "%s"\nexec %s "$@"\n' "$n" "$STUBLOG" "$(command -v "$n")" > "$STUBS/$n"
+  chmod +x "$STUBS/$n"
 done
-eq merge-stdout-empty "" "$out"
-eq merge-disjoint "shared-a profile-b" "$(cat "$GA/mdisj/a.txt") $(cat "$GA/mdisj/b.txt")"
-eq merge-disjoint-line "1" "$(grep -c "^agyx: merged $MA/mdisj into the shared $GA/mdisj: 1 entries moved, 0 to $M/agyx-drift\$" "$T/err")"
-eq merge-identical "same/0/0" "$(cat "$GA/mident/x.txt")/$(find "$M/agyx-drift" -name 'mident*' | grep -c .)/$(grep -c mident "$T/err")"
-eq merge-profile-newer "new-profile/old-shared" "$(cat "$GA/mtime/np.txt")/$(cat "$dr"/mtime/np.txt.*)"
-eq merge-shared-newer "new-shared/old-profile" "$(cat "$GA/mtime/ns.txt")/$(cat "$dr"/mtime/ns.txt.*)"
-eq merge-time-kept "202401010000" "$(stat -f %Sm -t %Y%m%d%H%M "$GA/mtime/np.txt")"
-eq merge-file-vs-dir "in-shared/file-in-profile" "$(cat "$GA/mfd/fd/inner")/$(cat "$dr"/mfd/fd.*)"
-eq merge-dir-vs-file "file-in-shared/in-profile" "$(cat "$GA/mfd/df")/$(cat "$dr"/mfd/df.*/inner)"
-eq merge-nested "sa pb pc pd s" "$(cat "$GA/mnest/sub/a" "$GA/mnest/sub/b" "$GA/mnest/sub/deeper/c" "$GA/mnest/new/d" "$GA/mnest/sub/same" | tr '\n' ' ' | sed 's/ $//')"
-eq merge-symlink-moved "link:/nonexistent-target/k r" "$([ -L "$GA/msym/dangling" ] && echo "link:$(readlink "$GA/msym/dangling")")/$(cat "$GA/msym/keep" | tr -d '\n') $(cat "$GA/msym/real")"
-eq merge-sidecars-to-drift "pf/2/absent" "$(cat "$GA/mside/f")/$(find "$dr" -name 'conv.db-*' | grep -c .)/$([ -e "$GA/mside/conv.db-wal" ] || echo absent)"
-eq merge-lines-one-per-dir "6" "$(grep -c '^agyx: merged ' "$T/err")"
-eq merge-no-real-dirs-left "0" "$(for d in mdisj mident mtime mfd mnest msym mside; do [ -d "$MA/$d" ] && [ ! -L "$MA/$d" ] && echo bad; done | grep -c .)"
-# a second launch changes nothing and prints nothing
-before=$(snap "$M" "$G"); out=$(launch m1); after=$(snap "$M" "$G")
-eq merge-second-launch "$before/0/" "$after/$(grep -c . "$T/err")/$out"
-# doctor before the merge says it will be merged
-mk "$GA/mdoc/a" a; mkdir -p "$DD/profiles/m2/home/.gemini/antigravity-cli/mdoc"; mk "$DD/profiles/m2/home/.gemini/antigravity-cli/mdoc/z" z
-eq merge-doctor "1" "$(sect m2 | grep -c 'antigravity-cli/mdoc: real directory, will be merged into the shared one on next launch')"
-eq merge-doctor-changes-nothing "present" "$([ -f "$DD/profiles/m2/home/.gemini/antigravity-cli/mdoc/z" ] && echo present)"
-rm -rf "${DD:?}/profiles/m1" "${DD:?}/profiles/m2" "$GA/mdisj" "$GA/mident" "$GA/mtime" "$GA/mfd" "$GA/mnest" "$GA/msym" "$GA/mside" "$GA/mdoc"
+out=$(FLPATH="$STUBS:$SP" fl p)
+after=$(snap "$N/data/profiles" "$N/rh/.gemini")
+eq w-steady-same "$before/0/" "$after/$(grep -c . "$T/err")/$out"
+eq w-steady-fork-free "" "$(cat "$STUBLOG")"
+# a link pointing elsewhere is replaced; a missing one is created
+rm "$N/data/profiles/p/home/.gemini"; ln -s /elsewhere "$N/data/profiles/p/home/.gemini"; fl p >/dev/null
+eq w-link-elsewhere "link" "$(islink "$N/data/profiles/p/home/.gemini" "$N/rh/.gemini")"
+rm "$N/data/profiles/p/home/.gemini"; fl p >/dev/null
+eq w-link-missing "link" "$(islink "$N/data/profiles/p/home/.gemini" "$N/rh/.gemini")"
+
+# the blocker: created when missing (doctor says so first), reported by doctor
+rm -rf "$N/rh/$BL"
+eq w-doctor-blocker-missing "1" "$(fx env PATH="$SP" "$AX" doctor </dev/null 2>/dev/null | grep -c '^token blocker: missing (created on next launch)')"
+fl p >/dev/null
+eq w-blocker-recreated "dir" "$([ -d "$N/rh/$BL" ] && echo dir)"
+eq w-doctor-blocker-ok "1" "$(fx env PATH="$SP" "$AX" doctor </dev/null 2>/dev/null | grep -c '^token blocker: ok')"
+eq w-doctor-gemini-line "1" "$(fx env PATH="$SP" "$AX" doctor </dev/null 2>/dev/null | grep -c '^  .gemini: linked to the shared ~/.gemini')"
+# a regular file at the blocker path stops every launch and nothing changes (the file is never touched)
+rm -rf "$N/rh/$BL"; printf 'SECRET-TOKEN-CONTENT\n' > "$N/rh/$BL"
+mkdir -p "$N/data/profiles/q/home"
+before=$(snap "$N/data/profiles" "$N/rh/.gemini"); : > "$LAUNCHLOG"
+for pr in p q; do
+  out=$(fl $pr); rc=$?
+  eq "w-blocking-$pr" "nonzero,empty,msg" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -q 'not starting this profile: ~/.gemini/antigravity-cli/antigravity-oauth-token exists and is not a directory' "$T/err" && grep -q 'every account could read that file' "$T/err" && grep -q 'agyx never reads, moves or deletes it' "$T/err" && grep -q 'plain agy will ask you to sign in again' "$T/err" && echo msg)"
+done
+after=$(snap "$N/data/profiles" "$N/rh/.gemini")
+eq w-blocking-nothing-changed "$before/0/SECRET-TOKEN-CONTENT" "$after/$(wc -c < "$LAUNCHLOG" | tr -d ' ')/$(cat "$N/rh/$BL")"
+eq w-blocking-not-printed "0" "$(grep -c SECRET "$T/err")"
+eq w-doctor-blocker-blocking "1" "$(fx env PATH="$SP" "$AX" doctor </dev/null 2>/dev/null | grep -c '^token blocker: BLOCKING')"
+rm -f "$N/rh/$BL"
+
+# ---- migration of profiles in the per-entry layout ----
+wmk() { mkdir -p "$(dirname "$1")"; printf '%s\n' "$2" > "$1"; }
+wfresh m1; rmdir "$N/data/profiles/p/home" "$N/data/profiles/p"
+GS=$N/rh/.gemini
+mkdir -p "$GS/antigravity-cli/log" "$GS/skills" "$GS/conversations" "$GS/antigravity-cli/mcp"
+wmk "$GS/settings.json" shared-settings; wmk "$GS/antigravity-cli/mcp.json" mcp; wmk "$GS/antigravity-cli/log/shared.log" sharedlog
+wmk "$GS/conversations/a.pb" a; wmk "$GS/same.txt" same
+wmk "$GS/c-new.txt" shared-old-c; touch -t 202001010000 "$GS/c-new.txt"
+wmk "$GS/c-old.txt" shared-new-c; touch -t 202401010000 "$GS/c-old.txt"
+mkdir -p "$GS/fd"; wmk "$GS/fd/inner" in-shared-dir
+wmk "$GS/antigravity-cli/mcp/tool.json" shared-tool
+mkold() { # profile: the per-entry layout of 0.1.0-0.1.2
+  h=$N/data/profiles/$1/home; g=$h/.gemini; a=$g/antigravity-cli
+  mkdir -p "$a/log" "$g/brain" "$g/conversations" "$a/mcp"
+  ln -s "$GS/settings.json" "$g/settings.json"; ln -s "$GS/skills" "$g/skills"; ln -s "$GS/antigravity-cli/mcp.json" "$a/mcp.json"
+  wmk "$a/log/x.log" "10:00 applyAuthResult ok email=fromlog-$1@example.com"
+  wmk "$a/cli.log" clilog; wmk "$a/jetbox_summaries_proto.pb" jb; wmk "$a/conv.db-wal" wal
+  wmk "$g/brain/b1" brain-one; wmk "$g/conversations/b.pb" b; wmk "$g/same.txt" same
+  wmk "$g/c-new.txt" profile-new-c; touch -t 202401010000 "$g/c-new.txt"
+  wmk "$g/c-old.txt" profile-old-c; touch -t 202001010000 "$g/c-old.txt"
+  wmk "$g/fd" file-in-profile
+  wmk "$a/mcp/tool.json" shared-tool; wmk "$a/mcp/own.json" own-tool
+}
+mkold old; mkold old2; mkold old3
+# old: token file + keychain item; old2: token file, no keychain item; old3: no token file, log email only
+printf '{"token":{"access_token":"SECRET-ACCESS","refresh_token":"SECRET-REFRESH"},"auth_method":"oauth","id_token_email":"fromtoken@example.com"}\n' > "$N/data/profiles/old/home/$BL"
+printf '{"token":{"access_token":"SECRET-ACCESS2"},"auth_method":"oauth"}\n' > "$N/data/profiles/old2/home/$BL"
+mkdir -p "$N/data/profiles/old/home" && : > "$N/data/profiles/old/home/.fake-item"
+: > "$N/data/profiles/old3/home/.fake-item"
+out=$(fl old); rc=$?
+OH=$N/data/profiles/old/home
+eq m-rc-stdout "0/" "$rc/$out"
+eq m-link "link" "$(islink "$OH/.gemini" "$GS")"
+eq m-layout "email home" "$(ls -A "$N/data/profiles/old" | tr '\n' ' ' | sed 's/ $//')"
+eq m-home-layout ".config .fake-default .fake-item .gemini Library" "$(ls -A "$OH" | tr '\n' ' ' | sed 's/ $//')"
+eq m-email-from-token "fromtoken@example.com" "$(cat "$N/data/profiles/old/email")"
+eq m-disjoint-moved "brain-one/b" "$(cat "$GS/brain/b1")/$(cat "$GS/conversations/b.pb")"
+eq m-shared-kept "shared-settings/a/mcp" "$(cat "$GS/settings.json")/$(cat "$GS/conversations/a.pb")/$(cat "$GS/antigravity-cli/mcp.json")"
+eq m-nested-merge "own-tool/shared-tool" "$(cat "$GS/antigravity-cli/mcp/own.json")/$(cat "$GS/antigravity-cli/mcp/tool.json")"
+eq m-identical "same" "$(cat "$GS/same.txt")"
+eq m-profile-newer-wins "profile-new-c" "$(cat "$GS/c-new.txt")"
+eq m-shared-newer-wins "shared-new-c" "$(cat "$GS/c-old.txt")"
+eq m-file-vs-dir "in-shared-dir" "$(cat "$GS/fd/inner")"
+eq m-no-links-left "2" "$(find "$N/data/profiles/old" -type l | grep -c .)"
+TR=$(echo "$N"/trash/agyx-old-*)
+eq m-trash-one-folder "1" "$(echo "$N"/trash/agyx-old-* | wc -w | tr -d ' ')"
+eq m-trash-logs "clilog/jb/wal/10:00 applyAuthResult ok email=fromlog-old@example.com" "$(cat "$TR/antigravity-cli/cli.log")/$(cat "$TR/antigravity-cli/jetbox_summaries_proto.pb")/$(cat "$TR/antigravity-cli/conv.db-wal")/$(cat "$TR/antigravity-cli/log/x.log")"
+eq m-trash-token "1" "$(grep -c SECRET-ACCESS "$TR/antigravity-cli/antigravity-oauth-token" | sed 's/^[1-9].*/1/')"
+eq m-trash-losers "profile-old-c/shared-old-c/file-in-profile" "$(cat "$TR/c-old.txt")/$(cat "$TR/c-new.txt")/$(cat "$TR/fd")"
+eq m-shared-log-untouched "sharedlog" "$(cat "$GS/antigravity-cli/log/shared.log")"
+eq m-only-private-files ".fake-default .fake-item email " "$(find "$N/data/profiles/old" -path '*/Library' -prune -o -type f -print | sed 's|.*/||' | sort | tr '\n' ' ')"
+eq m-summary-line "1" "$(grep -c "^agyx: profile old: its .gemini was merged into the shared ~/.gemini: .* entries moved, 3 old links removed, .* items to the Trash (.*/trash/agyx-old-[0-9]*)\$" "$T/err")"
+eq m-token-msg-keychain "1" "$(grep -c "^agyx: profile old: its login token file was moved to the Trash (.*). Its keychain holds a login, so nothing else is needed.\$" "$T/err")"
+eq m-no-secrets-printed "0" "$(grep -c SECRET "$T/err")"
+before=$(snap "$N/data/profiles/old" "$GS" "$N/trash"); out=$(fl old); after=$(snap "$N/data/profiles/old" "$GS" "$N/trash")
+eq m-second-launch "$before/0/" "$after/$(grep -c . "$T/err")/$out"
+# without a keychain item the message says to log in again; the log email is kept when there is no token
+fl old2 >/dev/null
+eq m-token-msg-no-keychain "1" "$(grep -c "^agyx: profile old2: its login token file was moved to the Trash (.*), and its keychain holds no login: run 'agyx profile login old2' again if agy asks you to sign in.\$" "$T/err")"
+eq m-email-old2 "fromlog-old2@example.com" "$(cat "$N/data/profiles/old2/email")"
+fl old3 >/dev/null
+eq m-email-from-log "fromlog-old3@example.com" "$(cat "$N/data/profiles/old3/email")"
+eq m-no-token-msg "0" "$(grep -c 'login token file' "$T/err")"
+fx env PATH="$SP" "$AX" profile list </dev/null 2>/dev/null > "$T/list.out"
+eq m-list-emails "old fromtoken@example.com;old2 not logged in;old3 fromlog-old3@example.com" "$(sed 's/  */ /g; s/ (default)//' "$T/list.out" | tr '\n' ';' | sed 's/;$//')"
+eq m-list-no-secret "0" "$(grep -c SECRET "$T/list.out")"
+# migration is not repeated and a shared token blocker is not needed to exist beforehand
+eq m-blocker-intact "dir" "$([ -d "$N/rh/$BL" ] && echo dir)"
+
+# ---- email after a successful login (from the shared logs written during the login) ----
+wfresh e1; rmdir "$N/data/profiles/p/home" "$N/data/profiles/p"
+wmk "$N/rh/.gemini/antigravity-cli/log/stale.log" "09:00 applyAuthResult ok email=stale@example.com"; touch -t 202001010000 "$N/rh/.gemini/antigravity-cli/log/stale.log"
+LOGIN='touch $HOME/.fake-item; sleep 1; mkdir -p $HOME/.gemini/antigravity-cli/log; echo "11:00 applyAuthResult ok email=first@example.com" > $HOME/.gemini/antigravity-cli/log/new.log; echo "11:01 applyAuthResult ok email=last@example.com" >> $HOME/.gemini/antigravity-cli/log/new.log'
+out=$(fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN="$LOGIN" "$AX" profile login acct1 2>/dev/null </dev/null)
+eq email-after-login "last@example.com" "$(cat "$N/data/profiles/acct1/email")"
+eq email-layout "email home" "$(ls -A "$N/data/profiles/acct1" | tr '\n' ' ' | sed 's/ $//')"
+eq email-in-list "acct1 last@example.com (default)" "$(fx env PATH="$SP" "$AX" profile list </dev/null 2>/dev/null | sed 's/  */ /g')"
+# a login that wrote no new log line leaves no email file (the stale shared log is ignored)
+out=$(fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN='touch $HOME/.fake-item' "$AX" profile login acct2 2>/dev/null </dev/null)
+eq email-ignores-old-logs "absent" "$([ -e "$N/data/profiles/acct2/email" ] && echo present || echo absent)"
+eq email-unknown-listed "acct2 logged in, email unknown" "$(fx env PATH="$SP" "$AX" profile list </dev/null 2>/dev/null | sed 's/  */ /g' | grep '^acct2')"
+# a failed login writes nothing
+fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN='echo "11:00 applyAuthResult ok email=nope@example.com" > $HOME/.gemini/antigravity-cli/log/z.log' "$AX" profile login acct3 >/dev/null 2>&1 </dev/null
+eq email-failed-login "absent" "$([ -e "$N/data/profiles/acct3/email" ] && echo present || echo absent)"
+eq email-no-marker-left "0" "$(find "$N/data/profiles" -name '.login-start' | grep -c .)"
+# duplicate warning uses the email files
+printf 'last@example.com\n' > "$N/data/profiles/acct2/email"
+eq email-dup-warning "1" "$(fx env PATH="$SP" "$AX" profile list </dev/null 2>/dev/null | grep -c 'WARNING: profiles acct1 acct2 are logged in to the same Google account (last@example.com)')"
 
 echo "passed: $pass, failed: $fail"
 [ "$fail" = 0 ]

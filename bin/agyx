@@ -63,32 +63,35 @@ need() {
 exists() { need "${1-}"; [ -d "$data/profiles/$1/home" ] || bad "no such profile: $1"; }
 names() { for d in "$data"/profiles/*/; do [ -d "$d" ] && basename "$d"; done; }
 dflt() { [ -f "$data/default" ] && cat "$data/default"; }
-# Email of a profile: the id_token_email field of the token file (the only field ever read from
-# it, never access/refresh tokens); else the last email= on an applyAuthResult line of the newest
-# agy log file. Empty when neither is available.
+# Email of a profile: the one line in <profile>/email (written after a successful login); else the
+# id_token_email field of a token file in the profile's own (not yet migrated) .gemini; else empty.
 email_of() {
   e=
-  [ -f "$data/profiles/$1/$tok" ] &&
-    e=$(plutil -extract id_token_email raw -o - "$data/profiles/$1/$tok" 2>/dev/null | tr -d '[:cntrl:]')
+  [ -f "$data/profiles/$1/email" ] && IFS= read -r e < "$data/profiles/$1/email"
   case $e in ''|*[[:space:]]*)
-    ld=$data/profiles/$1/home/.gemini/antigravity-cli/log
-    lf=$(ls -t "$ld" 2>/dev/null | head -n 1)
     e=
-    [ -n "$lf" ] && [ -f "$ld/$lf" ] &&
-      e=$(grep applyAuthResult "$ld/$lf" 2>/dev/null | sed -n 's/.*email=\([^][ ,;"}()]*\).*/\1/p' | tail -n 1 | tr -d '[:cntrl:]')
-    ;;
+    [ -L "$data/profiles/$1/home/.gemini" ] || e=$(agyx_email_token "$data/profiles/$1/$tok") ;;
   esac
-  case $e in *[[:space:]]*) e= ;; esac
   printf '%s' "$e"
 }
 # Does the profile keychain hold agy's login item? Never asks for the secret (no -w / -g).
-kc_has_item() {
-  _kc=$data/profiles/$1/home/Library/Keychains/login.keychain-db
-  [ -e "$_kc" ] || return 1
-  HOME=$data/profiles/$1/home "$sec" find-generic-password -s gemini -a antigravity "$_kc" >/dev/null 2>&1
-}
+kc_has_item() { agyx_kc_has_item "$1"; }
 # Logged in = token file present or the profile keychain holds agy's login item.
-logged_in() { [ -f "$data/profiles/$1/$tok" ] || kc_has_item "$1"; }
+logged_in() { { [ ! -L "$data/profiles/$1/home/.gemini" ] && [ -f "$data/profiles/$1/$tok" ]; } || kc_has_item "$1"; }
+# The account email of a login that just finished: the last email= on an applyAuthResult line in the
+# shared agy log files modified after the marker file $1 was written (older files are ignored).
+login_email() {
+  ld=$rh/.gemini/antigravity-cli/log
+  le=
+  lfl=$(find "$ld" -type f -newer "$1" 2>/dev/null)
+  [ -n "$lfl" ] || return 0
+  # shellcheck disable=SC2086,SC2045 # log file names contain no spaces or globbing characters
+  for lf in $(ls -tr $lfl 2>/dev/null); do
+    lx=$(grep applyAuthResult "$lf" 2>/dev/null | sed -n 's/.*email=\([^][ ,;"}()]*\).*/\1/p' | tail -n 1 | tr -d '[:cntrl:]')
+    case $lx in ''|*[[:space:]]*) ;; *) le=$lx ;; esac
+  done
+  printf '%s' "$le"
+}
 status() {
   if ! logged_in "$1"; then echo "not logged in"; return 0; fi
   e=$(email_of "$1")
@@ -122,9 +125,15 @@ case $cmd in
           echo "agyx: profile '$1' is already logged in ($(status "$1")). Starting agy in it anyway; sign in again from there only if you want to change the account." >&2
         fi
         # run agy as a child (not exec) to set the default afterwards; SIGINT reaches agy, not us
+        # the shared agy logs are older than this marker unless they belong to this login
+        mk=$data/profiles/$1/.login-start; : > "$mk"
         trap : INT
         "$shim" --profile "$1"; rc=$?
         trap - INT
+        if logged_in "$1"; then
+          e=$(login_email "$mk"); [ -z "$e" ] || printf '%s\n' "$e" > "$data/profiles/$1/email"
+        fi
+        rm -f "$mk"
         if logged_in "$1" && [ -z "$(dflt)" ]; then
           printf '%s\n' "$1" > "$data/default" &&
             echo "agyx: '$1' is now the default profile (change it with: agyx profile default NAME)"
@@ -174,6 +183,12 @@ case $cmd in
     case $kd in
       "$data"/*) echo "keychain: WARNING the real default keychain is inside the agyx data dir ($kd)" ;;
       *) echo "keychain: real default keychain is ${kd:-unknown}, outside the agyx data dir" ;;
+    esac
+    agyx_blocker_state
+    case $AGYX_BLOCKER_STATE in
+      ok) echo "token blocker: ok ($(agyx_tilde "$AGYX_BLOCKER") is a directory)" ;;
+      missing) echo "token blocker: missing (created on next launch): $(agyx_tilde "$AGYX_BLOCKER")" ;;
+      *) echo "token blocker: BLOCKING: $(agyx_tilde "$AGYX_BLOCKER") is not a directory (a token file shared by every account); profiles will not start until you move it away" ;;
     esac
     d=$(dflt); echo "default: ${d:-none}"
     if [ -f "$AGYX_LINKS_FILE" ]; then echo "symlinks: $AGYX_LINKS_FILE"; else echo "symlinks: $AGYX_LINKS_FILE (missing and could not be written: built-in default list in use)"; fi

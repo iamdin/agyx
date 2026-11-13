@@ -74,6 +74,9 @@ fi
 # 3. real binary
 agyx_find_real || agyx_missing_agy
 
+# 3a. the shared ~/.gemini must not be able to hold a token file (see runtime/sync.sh)
+agyx_ensure_blocker || exit 1
+
 # 3b. give the profile HOME its own empty, unlocked keychain, so agy's /usr/bin/security calls
 # succeed silently instead of showing "Keychain Not Found". Every security call sets HOME to the
 # profile home and names the keychain explicitly: the real keychain is never touched.
@@ -91,16 +94,16 @@ ensure_keychain() {
     "$sec" set-keychain-settings "$kc"
   ) >/dev/null </dev/null || {
     rm -f "$kc"
-    echo "agyx: warning: could not create the profile keychain; agy will fall back to its token file" >&2
+    echo "agyx: warning: could not create the profile keychain; agy may not be able to save its login" >&2
   }
   return 0
 }
 ensure_keychain
 
-# 3c. shared .gemini and home whitelist (symlinks only; see runtime/sync.sh)
+# 3c. the shared .gemini link and the home whitelist (symlinks only; see runtime/sync.sh)
 # shellcheck disable=SC2034 # used by the functions in sync.sh
 P=$phome
-agyx_sync_gemini
+agyx_sync_gemini "$name"
 agyx_sync_home
 
 # 4. environment (originals saved unless the caller already points at the bridge)
