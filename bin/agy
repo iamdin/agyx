@@ -72,12 +72,7 @@ if [ ! -d "$phome" ]; then
 fi
 
 # 3. real binary
-if ! agyx_find_real; then
-  if [ -n "${AGYX_REAL_AGY-}" ]; then
-    die "AGYX_REAL_AGY=$AGYX_REAL_AGY is not an executable file (or is agyx itself); set it to the real agy"
-  fi
-  die "agy is not installed: no executable named agy found on PATH. Install it, or point agyx at it with AGYX_REAL_AGY=/path/to/agy"
-fi
+agyx_find_real || agyx_missing_agy
 
 # 3b. give the profile HOME its own empty, unlocked keychain, so agy's /usr/bin/security calls
 # succeed silently instead of showing "Keychain Not Found". Every security call sets HOME to the

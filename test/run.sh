@@ -142,7 +142,7 @@ eq nested-direct "orig-zd=/zd orig-be=/be set=1" "$(ZDOTDIR=$here/runtime/zsh BA
 # real-agy pointing at the shim is never used (nor is the shim found on PATH): agy is "not installed"
 ln -sfn "$here/bin/agy" "$DD/real-agy"
 out=$(agy 2>&1); rc=$?
-eq refuse-self "1" "$([ $rc -ne 0 ] && echo "$out" | grep -q 'agy is not installed' && ! echo "$out" | grep -q HOME= && echo 1)"
+eq refuse-self "1" "$([ $rc -ne 0 ] && echo "$out" | grep -q 'needs the Antigravity CLI' && ! echo "$out" | grep -q HOME= && echo 1)"
 ln -sfn "$T/fake-agy" "$DD/real-agy"
 
 # agyx launches agy unless the first argument is one of its own subcommands
@@ -157,7 +157,6 @@ eq project-passthrough "AGY_PROFILE=work${nl}ARG=--project${nl}ARG=x" "$(agyx --
 eq project-after-profile "AGY_PROFILE=other${nl}ARG=--project${nl}ARG=x" "$(agyx --profile other --project x | grep '^AGY_PROFILE=\|^ARG=')"
 eq account-flag-is-plain-arg "AGY_PROFILE=work${nl}ARG=--account${nl}ARG=other" "$(agyx --account other | grep '^AGY_PROFILE=\|^ARG=')"
 eq account-eq-is-plain-arg "AGY_PROFILE=work${nl}ARG=--account=other" "$(agyx --account=other | grep '^AGY_PROFILE=\|^ARG=')"
-eq launch-bare-help "ARG=--help" "$(agyx --help | grep '^ARG=')"
 eq escape-dashdash "AGY_PROFILE=home${nl}ARG=foo" "$(AGY_PROFILE=home agyx -- foo | grep '^AGY_PROFILE=\|^ARG=')"
 eq launch-umask "$(umask)" "$(FAKE_RUN='umask' agyx --profile other)"
 # the old top-level list/login/use are gone: they are ordinary arguments for agy, and valid profile names
@@ -241,7 +240,7 @@ eq usage-lists-only-current "0" "$(ctl profile 2>&1 | grep -c 'setup\|shim')"
 
 # agyx subcommands never overlap with the real agy 1.5.6 subcommands/flags
 ctl_subs="doctor profile"
-agy_subs="acp agent agents changelog help install mcp mic-serve models plugin plugins remote-control update -h --help"
+agy_subs="acp agent agents changelog install mcp mic-serve models plugin plugins remote-control update"
 both=
 for a in $ctl_subs; do for b in $agy_subs; do [ "$a" = "$b" ] && both="$both $a"; done; done
 eq subcommands-disjoint "" "$both"
@@ -296,7 +295,7 @@ done
 # not installed: clear message, nothing on stdout, nothing stored
 fresh a4
 out=$(fx env PATH=/usr/bin:/bin "$AX" --profile p 2>"$T/err"); rc=$?
-eq not-installed "nonzero,empty,not-installed,how-to" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -q 'agy is not installed' "$T/err" && echo not-installed),$(grep -q 'AGYX_REAL_AGY=/path/to/agy' "$T/err" && echo how-to)"
+eq not-installed "nonzero,empty,not-installed,how-to" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -q 'needs the Antigravity CLI' "$T/err" && echo not-installed),$(grep -q 'AGYX_REAL_AGY=/path/to/agy' "$T/err" && echo how-to)"
 eq not-installed-nothing-stored "absent" "$([ -e "$N/data/real-agy" ] || [ -L "$N/data/real-agy" ] || echo absent)"
 # <data>/bin/agy: created on launch, profile and doctor runs; a dangling link is replaced
 for c in "--profile p" "profile list" doctor; do
@@ -469,6 +468,44 @@ eq version-override "agyx $ver/agy" "$(fx env PATH=/usr/bin:/bin AGYX_REAL_AGY="
 fresh v2
 eq version-doctor "agyx version: $ver" "$(fx env PATH="$SP" "$AX" doctor </dev/null 2>/dev/null | sed -n 1p)"
 eq version-doctor-before-setup "agyx version: $ver" "$(rm -rf "$N/data"; fx env PATH="$SP" "$AX" doctor </dev/null 2>/dev/null | sed -n 1p)"
+
+# ---- help forms and the missing-agy message (0.1.1) ----
+# agyx --help / -h / help: agyx's own usage; read-only, never asks, works before setup
+for h in --help -h help; do
+  gfresh h1; : > "$LAUNCHLOG"
+  out=$(fx env PATH=/usr/bin:/bin AGYX_TTY="$T/ans-y" "$AX" "$h" 2>"$T/err" </dev/null); rc=$?
+  eq "help-$h" "0,usage,agy-help-line,empty-err,yes,0" "$rc,$(echo "$out" | grep -c '^usage: agyx' | sed 's/1/usage/'),$(echo "$out" | grep -qF "any other arguments go to agy; agy's own help: agyx --profile NAME --help" && echo agy-help-line),$([ -s "$T/err" ] || echo empty-err),$(nothing_written),$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
+done
+fresh h2; : > "$LAUNCHLOG"
+eq help-after-setup-no-launch "usage/0" "$(fx env PATH="$SP" "$AX" --help </dev/null 2>&1 | grep -c '^usage: agyx' | sed 's/1/usage/')/$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
+# with a chosen profile --help still goes to agy
+eq help-profile-passthrough "AGY_PROFILE=p${nl}ARG=--help" "$(fx env PATH="$SP" "$AX" --profile p --help </dev/null 2>/dev/null | grep '^AGY_PROFILE=\|^ARG=')"
+eq help-extra-args-to-agy "AGY_PROFILE=p${nl}ARG=-h${nl}ARG=x" "$(fx env PATH="$SP" AGY_PROFILE=p "$AX" -h x </dev/null 2>/dev/null | grep '^AGY_PROFILE=\|^ARG=')"
+# agy not installed: no prompt, nothing written, the message, nonzero; for every writing command
+msgwant="agyx: agyx needs the Antigravity CLI (agy) first, and it is not installed.${nl}Install it with the official command:  curl -fsSL https://antigravity.google/cli/install.sh | bash${nl}(docs: https://antigravity.google/docs/cli/overview)${nl}Then run agyx again. If agy is installed somewhere else, set AGYX_REAL_AGY=/path/to/agy."
+for c in "--profile p" "profile login p" "profile default p"; do
+  for mode in tty assume noterm; do
+    gfresh h3; : > "$LAUNCHLOG"
+    case $mode in
+      tty) e="AGYX_TTY=$T/ans-y" ;; assume) e="AGYX_ASSUME_YES=1" ;; noterm) e="X=1" ;;
+    esac
+    # shellcheck disable=SC2086
+    out=$(fx env PATH=/usr/bin:/bin $e "$AX" $c 2>"$T/err" </dev/null); rc=$?
+    eq "noagy-$mode-$c" "nonzero,empty,msg,no-prompt,yes,0" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$([ "$(cat "$T/err")" = "$msgwant" ] && echo msg),$(grep -q 'Continue\|will set up' "$T/err" || echo no-prompt),$(nothing_written),$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
+  done
+done
+# set up already but no agy: same message (launch and profile login)
+for c in "--profile p" "profile login p"; do
+  fresh h4
+  out=$(fx env PATH=/usr/bin:/bin "$AX" $c 2>"$T/err" </dev/null); rc=$?
+  eq "noagy-setup-$c" "nonzero,empty,msg" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$([ "$(tail -n 4 "$T/err")" = "$msgwant" ] && echo msg)"
+done
+# the override pointing at something unusable keeps its own message (before setup, nothing written)
+gfresh h5
+out=$(fx env PATH="$SP" AGYX_ASSUME_YES=1 AGYX_REAL_AGY="$T/nonexistent" "$AX" --profile p 2>"$T/err" </dev/null); rc=$?
+eq noagy-bad-override "nonzero,empty,yes,1" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(nothing_written),$(grep -c 'AGYX_REAL_AGY=.*is not an executable file' "$T/err")"
+# the notice no longer has a "not found yet" branch
+eq no-not-found-yet "0" "$(grep -c 'not found yet' "$here/runtime/sync.sh")"
 
 # per-profile keychain (fake security; the real one is never called)
 H=$DD/profiles/kc/home K=$DD/profiles/kc/home/Library/Keychains/login.keychain-db

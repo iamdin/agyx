@@ -5,7 +5,7 @@
 # The sync functions use only shell builtins when everything is already correct (no forks);
 # they never write to stdout (warnings go to stderr).
 
-AGYX_VERSION=0.1.0 # the one place the version lives (the formula's url tag must match)
+AGYX_VERSION=0.1.1 # the one place the version lives (the formula's url tag must match)
 AGYX_DEFAULT_LINKS=".gitconfig .ssh .config .npm .npmrc .bun .bunfig.toml .cache .cargo .rustup go Code GitHub"
 
 # Entries that are never synced: the per-profile private set and SQLite sidecar files.
@@ -266,18 +266,38 @@ agyx_tilde() { # print $1 with the real home shown as ~ (paths outside it stay a
   esac
 }
 
+# The message for "agy is not installed" (also used when AGYX_REAL_AGY is unusable); exits.
+agyx_missing_agy() {
+  if [ -n "${AGYX_REAL_AGY-}" ]; then
+    echo "agyx: AGYX_REAL_AGY=$AGYX_REAL_AGY is not an executable file (or is agyx itself); set it to the real agy" >&2
+    exit 1
+  fi
+  {
+    echo "agyx: agyx needs the Antigravity CLI (agy) first, and it is not installed."
+    echo "Install it with the official command:  curl -fsSL https://antigravity.google/cli/install.sh | bash"
+    echo "(docs: https://antigravity.google/docs/cli/overview)"
+    echo "Then run agyx again. If agy is installed somewhere else, set AGYX_REAL_AGY=/path/to/agy."
+  } >&2
+  exit 1
+}
+
 # Nothing is written to the user's file system until the user agreed once. "Set up" = the data dir
 # exists. Commands that write call this first. Without a terminal (stdin and stderr) it refuses;
 # AGYX_ASSUME_YES=1 skips the question. AGYX_TTY=<file> is for tests only: it replaces the terminal
 # check and /dev/tty as the place the answer is read from.
 agyx_gate() {
   [ -d "$data" ] && return 0
+  # agy first: without it there is nothing to set up (no prompt, nothing written)
+  if [ -n "${AGYX_REAL_AGY-}" ]; then
+    _found=$AGYX_REAL_AGY
+    { [ -f "$_found" ] && [ -x "$_found" ] && [ ! "$_found" -ef "$AGYX_SHIM" ]; } || agyx_missing_agy
+  else
+    agyx_scan_path || agyx_missing_agy
+  fi
   if [ "${AGYX_ASSUME_YES-}" != 1 ]; then
     if [ -z "${AGYX_TTY-}" ] && { [ ! -t 0 ] || [ ! -t 2 ]; }; then
       die "agyx is not set up yet. Run agyx once in a terminal to set it up (or set AGYX_ASSUME_YES=1)."
     fi
-    if [ -n "${AGYX_REAL_AGY-}" ]; then _found=$AGYX_REAL_AGY
-    elif ! agyx_scan_path; then _found="(not found yet: install agy, or set AGYX_REAL_AGY=/path/to/agy)"; fi
     agyx_set_links_file
     {
       echo "agyx will set up:"

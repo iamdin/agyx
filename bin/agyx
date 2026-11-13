@@ -24,6 +24,16 @@ R=$rh AGYX_SHIM=$shim
 agyx_stable "$shim"
 # shellcheck disable=SC2034 # used by the functions in sync.sh
 AGYX_SHIM=$AGYX_STABLE # the entry link must survive a Homebrew upgrade
+usage="usage: agyx [--profile NAME] [agy args...]   launch agy as a profile
+       agyx profile login NAME      create profile NAME and sign in with agy's own login
+       agyx profile default [NAME]  show or set the default profile
+       agyx profile list            list profiles and their Google accounts
+       agyx doctor                  check the installation
+       any other arguments go to agy; agy's own help: agyx --profile NAME --help"
+# help: agyx's own usage (read-only; never asks, never writes, works before setup)
+if [ $# -eq 1 ]; then
+  case $1 in --help|-h|help) echo "$usage"; exit 0 ;; esac
+fi
 # --version: agyx's own version, then the real agy's when it can be found (writes nothing)
 if [ "${1-}" = --version ]; then
   echo "agyx $AGYX_VERSION"
@@ -96,11 +106,6 @@ dup_warning() {
     END { for (e in c) if (c[e] > 1) print "WARNING: profiles" p[e] " are logged in to the same Google account (" e ")" }'
 }
 
-usage="usage: agyx [--profile NAME] [agy args...]   launch agy as a profile
-       agyx profile login NAME      create profile NAME and sign in with agy's own login
-       agyx profile default [NAME]  show or set the default profile
-       agyx profile list            list profiles and their Google accounts
-       agyx doctor                  check the installation"
 bad() { echo "agyx: $*" >&2; echo "$usage" >&2; exit 2; }
 
 cmd=${1-}; [ $# -gt 0 ] && shift

@@ -10,12 +10,22 @@ POSIX `sh`, no dependencies.
 
 ## Install
 
-With Homebrew:
+agyx needs the official Antigravity CLI (`agy`) installed first. Install it with Google's command (see the [Antigravity CLI docs](https://antigravity.google/docs/cli/overview) and the [repository README](https://github.com/google-antigravity/antigravity-cli#installation)):
 
 ```sh
-brew install iamdin/tap/agyx
+curl -fsSL https://antigravity.google/cli/install.sh | bash
+```
+
+Then, with Homebrew:
+
+```sh
+brew tap iamdin/tap
+brew trust iamdin/tap     # Homebrew 7 refuses formulas from an untrusted third-party tap until this runs
+brew install agyx
 agyx profile login work   # runs agy's native login in profile "work"
 ```
+
+If `agy` is not installed, agyx prints this same pointer and exits without writing anything.
 
 Nothing is written to your file system until you agree once. The first time you run a command that writes (launching agy, `agyx profile login`, `agyx profile default NAME`) and `<data dir>` does not exist yet, agyx prints what it will create and asks on the terminal (default yes):
 
@@ -60,14 +70,14 @@ Under Homebrew, everything agyx stores or passes on survives `brew upgrade` and 
 
 Profile choice: leading `--profile NAME` > `AGY_PROFILE` > default (`agyx profile default`).
 
-`agyx` launches agy unless its first argument is one of its own management subcommands: `doctor`, `profile` (with `profile list`, `profile login NAME`, `profile default [NAME]`). None of them overlaps with a real agy subcommand (`acp`, `agent`, `agents`, `changelog`, `help`, `install`, `mcp`, `mic-serve`, `models`, `plugin`, `plugins`, `remote-control`, `update`) or flag (`-h`, `--help`), so all of those, and `agyx --help`, reach the real agy:
+`agyx` launches agy unless its first argument is one of its own management subcommands: `doctor`, `profile` (with `profile list`, `profile login NAME`, `profile default [NAME]`). `agyx --help`, `agyx -h` and `agyx help` (as the only argument) print agyx's own usage: read-only, no setup prompt, and they work before setup. None of the management subcommands overlaps with a real agy subcommand (`acp`, `agent`, `agents`, `changelog`, `install`, `mcp`, `mic-serve`, `models`, `plugin`, `plugins`, `remote-control`, `update`), so all of those reach the real agy:
 
 ```sh
 agyx                          # default profile
 agyx --profile personal -p "hello"
 AGY_PROFILE=work agyx --model x
 agyx --profile work mcp list
-agyx --help                  # agy's own help
+agyx --profile work --help   # agy's own help (a chosen profile passes --help through)
 agyx install                  # agy's own `install` subcommand
 ```
 
