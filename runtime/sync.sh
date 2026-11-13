@@ -290,58 +290,28 @@ agyx_subcommand() {
   return 1
 }
 
-# Per-profile agy logs, laid out like agy's own ~/.gemini/antigravity-cli, once per profile:
-#   <profile dir>/log/cli-YYYYMMDD_HHMMSS.log             one file per launch
-#   <profile dir>/log/acp-server-YYYYMMDD_HHMMSS-PID.log  for `agy acp` (the shim execs agy: same pid)
-#   <profile dir>/cli.log -> log/<newest cli file>         as agy keeps it
+# Per-profile agy log: <profile dir>/log/cli-YYYYMMDD_HHMMSS.log, a new file per launch. agyx only
+# says where agy writes (--log-file); it never reads, links or prunes these files.
 # agy takes --log-file only BEFORE its subcommand (`agy --log-file F models` works, `agy models
-# --log-file F` is rejected). These never write a log, so no file is made for them; a log file the
-# caller chose is left alone.
+# --log-file F` is rejected). The commands below never write a log, so no file is made for them; a
+# log file the caller chose is left alone.
 agyx_wants_log() {
   case ${1-} in help|changelog|mcp|update|--help|-h|--version) return 1 ;; esac
   for _a in "$@"; do case $_a in --log-file|--log-file=*) return 1 ;; esac; done
   return 0
 }
-# Days since 1970-01-01 of a YYYYMMDD date, in shell arithmetic only (no process): sets AGYX_DAYS.
-agyx_days() {
-  _y=${1%????}; _m=${1#"$_y"}; _d=${_m#??}; _m=${_m%??}; _m=${_m#0}; _d=${_d#0}
-  [ "$_m" -gt 2 ] || _y=$((_y - 1))
-  _yoe=$((_y % 400)); _mp=$((_m > 2 ? _m - 3 : _m + 9))
-  _doy=$(((153 * _mp + 2) / 5 + _d - 1))
-  AGYX_DAYS=$((_y / 400 * 146097 + _yoe * 365 + _yoe / 4 - _yoe / 100 + _doy - 719468))
-}
-# agy itself deletes log files whose mtime is more than 7 days old when it starts interactively.
-# Same rule here, at launch. Files are judged by their names first (globbing and
-# arithmetic only); a process (find) is started only when a file may be old enough, and it
-# applies the real mtime test. $1 = log dir, $2 = YYYYMMDD_HHMMSS of now.
-agyx_prune_logs() {
-  agyx_days "${2%%_*}"; _today=$AGYX_DAYS; _old=0
-  for _p in "$1"/cli-*.log "$1"/acp-server-*.log; do
-    [ -e "$_p" ] || continue
-    _n=${_p##*/}; _n=${_n#cli-}; _n=${_n#acp-server-}; _n=${_n%%_*}
-    case $_n in [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;; *) continue ;; esac
-    agyx_days "$_n"
-    if [ $((_today - AGYX_DAYS)) -ge 7 ]; then _old=1; break; fi
-  done
-  [ "$_old" = 1 ] || return 0
-  find "$1" -type f \( -name 'cli-*.log' -o -name 'acp-server-*.log' \) -mmin +10080 ! -name "${AGYX_LOGFILE##*/}" -delete 2>/dev/null
-  return 0
-}
-# $1 = profile dir, $2 = cli or acp. Creates a new empty log file (never one that exists: a second
-# launch in the same second gets _02, _03 ...), sets AGYX_LOGFILE, points cli.log at it (cli only)
-# and prunes. Forks: date (the name), ln (cli.log). AGYX_LOG_STAMP replaces the timestamp (tests).
+# $1 = profile dir. Creates a new empty log file (never one that exists: a second launch in the
+# same second gets _02, _03 ...) and sets AGYX_LOGFILE. Forks only for the date.
+# AGYX_LOG_STAMP replaces the timestamp (tests).
 agyx_new_log() {
   _ld=$1/log
   [ -d "$_ld" ] || (umask 077; mkdir -p "$_ld") || return 1
-  _st=${AGYX_LOG_STAMP:-$(date +%Y%m%d_%H%M%S)}
-  case $2 in acp) _b=$_ld/acp-server-$_st-$$ ;; *) _b=$_ld/cli-$_st ;; esac
+  _b=$_ld/cli-${AGYX_LOG_STAMP:-$(date +%Y%m%d_%H%M%S)}
   AGYX_LOGFILE=$_b.log; _i=1
   while ! (umask 077; set -C; : > "$AGYX_LOGFILE") 2>/dev/null; do
     _i=$((_i + 1)); [ "$_i" -lt 100 ] || return 1
     AGYX_LOGFILE=${_b}_$(printf %02d "$_i").log
   done
-  [ "$2" = acp ] || ln -sfn "log/${AGYX_LOGFILE##*/}" "$1/cli.log" 2>/dev/null || :
-  agyx_prune_logs "$_ld" "$_st"
   return 0
 }
 
