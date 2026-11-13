@@ -21,6 +21,19 @@ data=${AGYX_DATA_DIR:-$rh/.local/share/agyx}
 R=$rh AGYX_SHIM=$shim
 # shellcheck source=../runtime/sync.sh
 . "${me%/*}/../runtime/sync.sh"
+agyx_stable "$shim"
+# shellcheck disable=SC2034 # used by the functions in sync.sh
+AGYX_SHIM=$AGYX_STABLE # the entry link must survive a Homebrew upgrade
+# --version: agyx's own version, then the real agy's when it can be found (writes nothing)
+if [ "${1-}" = --version ]; then
+  echo "agyx $AGYX_VERSION"
+  # shellcheck disable=SC2154 # real and _found are set by agyx_find_real / agyx_scan_path
+  if [ -d "$data" ]; then agyx_find_real && _r=$real || _r=
+  elif [ -n "${AGYX_REAL_AGY-}" ]; then _r=$AGYX_REAL_AGY
+  else agyx_scan_path && _r=$_found || _r=; fi
+  [ -n "$_r" ] && [ -x "$_r" ] && echo "agy $(AGY_CLI_DISABLE_AUTO_UPDATE=true "$_r" --version 2>&1 | head -n 1)"
+  exit 0
+fi
 # Anything that is not one of our own subcommands launches agy (none of them overlaps with an
 # agy subcommand or flag, including -h/--help). umask is untouched so agy inherits the caller's.
 agyx_subcommand "${1-}" || exec "$shim" "$@"
@@ -135,6 +148,7 @@ case $cmd in
     ;;
   doctor)
     [ $# -eq 0 ] || bad "doctor takes no arguments"
+    echo "agyx version: $AGYX_VERSION"
     [ -d "$data" ] || notyet
     # shellcheck disable=SC2154 # real is set by agyx_find_real
     if agyx_find_real; then

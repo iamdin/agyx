@@ -52,6 +52,10 @@ ln -s "$PWD/bin/agyx" ~/.local/bin/agyx   # put bin/agyx on PATH
 
 Keep `bin/` and `runtime/` (including `runtime/sync.sh`) together; the scripts locate each other by resolving their own real path (symlinks are fine).
 
+Under Homebrew, everything agyx stores or passes on survives `brew upgrade` and `brew cleanup`: when its own resolved path is inside `<prefix>/Cellar/agyx/<version>/`, agyx uses the stable `<prefix>/opt/agyx/` path instead (for the `<data dir>/bin/agy` link and for the `ZDOTDIR` and `BASH_ENV` given to long-running agy processes). From a git checkout the resolved checkout path is used as it is. On every run, a `<data dir>/bin/agy` link that is dangling or points at another agyx location is repointed to the current entry; anything that is not an agyx entry is left alone and flagged by `agyx doctor`.
+
+`agyx --version` prints `agyx <version>` and, when the real agy is found, its version too; `agyx doctor` prints the agyx version.
+
 ## Use
 
 Profile choice: leading `--profile NAME` > `AGY_PROFILE` > default (`agyx profile default`).
@@ -137,3 +141,7 @@ sh test/run.sh      # uses a fake agy; never runs the real one
 - Settings changed in one running instance reach other profiles only when the change goes through the shared files; if agy replaced a link by rename, the change stays in that profile until its next launch, when the sync makes it shared (the older version is kept in `agyx-drift`).
 - agy still keeps its token file (`<profile home>/.gemini/antigravity-cli/antigravity-oauth-token`) and loads from it when the profile keychain has no item; `agyx profile list` reads the email from that file only. A profile that is logged in only through its keychain would show "not logged in" there; agyx does not read keychain items.
 - Token refresh, logout, and agy upgrades are not yet verified. If creating the profile keychain fails, agyx only warns and agy falls back to the token file (with the old 5-second wait and dialog).
+
+## License
+
+MIT, see [LICENSE](LICENSE).

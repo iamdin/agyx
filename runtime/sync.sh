@@ -1,10 +1,11 @@
 # shellcheck shell=sh
-# shellcheck disable=SC2154 # R, P and data are set by the sourcing script
+# shellcheck disable=SC2154,SC2034 # R, P and data are set by the sourcing script; AGYX_* are read by the callers
 # Sourced by bin/agy (sync on every launch) and bin/agyx (doctor, setup).
 # R = real home, P = profile home, data = agyx data dir; all set by the caller.
 # The sync functions use only shell builtins when everything is already correct (no forks);
 # they never write to stdout (warnings go to stderr).
 
+AGYX_VERSION=0.1.0 # the one place the version lives (the formula's url tag must match)
 AGYX_DEFAULT_LINKS=".gitconfig .ssh .config .npm .npmrc .bun .bunfig.toml .cache .cargo .rustup go Code GitHub"
 
 # Entries that are never synced: the per-profile private set and SQLite sidecar files.
@@ -213,10 +214,32 @@ agyx_find_real() {
 
 # <data>/bin/agy: the path to give apps that need a binary named agy (it is the shim).
 agyx_ensure_entry() {
-  [ -e "$data/bin/agy" ] && return 0
+  [ "$data/bin/agy" -ef "$AGYX_SHIM" ] && return 0
+  if [ -L "$data/bin/agy" ]; then
+    if [ -e "$data/bin/agy" ]; then
+      _t=$(readlink "$data/bin/agy")
+      case $_t in /*) ;; *) _t=$data/bin/$_t ;; esac
+      [ "${_t##*/}" = agy ] && [ -f "${_t%/*}/../runtime/sync.sh" ] || return 0
+    fi
+  elif [ -e "$data/bin/agy" ]; then
+    return 0
+  fi
   (umask 077; mkdir -p "$data/bin") && ln -sfn "$AGYX_SHIM" "$data/bin/agy" 2>/dev/null ||
     echo "agyx: warning: could not create $data/bin/agy" >&2
   return 0
+}
+
+# Sets AGYX_STABLE to the path agyx stores or passes on for itself. Homebrew keeps each version in
+# its own Cellar directory and deletes old ones, while <prefix>/opt/agyx is a stable link to the
+# current version: <prefix>/Cellar/agyx/<version>/<rest> maps to <prefix>/opt/agyx/<rest> when that
+# exists. Any other (resolved) path is kept as it is, e.g. a git checkout.
+agyx_stable() {
+  case $1 in
+    */Cellar/agyx/*/*)
+      _pre=${1%%/Cellar/agyx/*}; _rest=${1#*/Cellar/agyx/}; _rest=${_rest#*/}
+      if [ -e "$_pre/opt/agyx/$_rest" ]; then AGYX_STABLE=$_pre/opt/agyx/$_rest; return 0; fi ;;
+  esac
+  AGYX_STABLE=$1
 }
 
 # The whitelist file, written with the default list when missing (one stderr line, never stdout).

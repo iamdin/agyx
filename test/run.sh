@@ -407,6 +407,65 @@ rm -f "$N/data/bin/agy"; : > "$T/err"
 fx env PATH="$SP" AGYX_TTY="$T/ans-n" "$AX" doctor >/dev/null 2>"$T/err" </dev/null
 eq gate-repair-silent "present/0" "$([ -L "$N/data/bin/agy" ] && echo present)/$(grep -c . "$T/err")"
 
+# ---- Homebrew layout: Cellar paths map to the stable opt path; the entry link is repointed ----
+ver=$(sed -n 's/^AGYX_VERSION=\([0-9.]*\).*/\1/p' "$here/runtime/sync.sh")
+brewlayout() { # prefix version: a Cellar install with the opt link and bin link, as Homebrew makes it
+  mkdir -p "$1/Cellar/agyx/$2/libexec" "$1/bin" "$1/opt"
+  cp -R "$here/bin" "$here/runtime" "$1/Cellar/agyx/$2/libexec/"
+  ln -sfn "../Cellar/agyx/$2" "$1/opt/agyx"
+  ln -sfn "../Cellar/agyx/$2/libexec/bin/agyx" "$1/bin/agyx"
+}
+ustable() { ( . "$here/runtime/sync.sh"; agyx_stable "$1"; printf %s "$AGYX_STABLE" ); }
+TP=$(cd "$T" && pwd -P); HB=$TP/hb; brewlayout "$HB" 0.1.0
+eq stable-cellar-mapped "$HB/opt/agyx/libexec/bin/agy" "$(ustable "$HB/Cellar/agyx/0.1.0/libexec/bin/agy")"
+eq stable-cellar-no-opt "$T/nope/Cellar/agyx/0.1.0/libexec/bin/agy" "$(ustable "$T/nope/Cellar/agyx/0.1.0/libexec/bin/agy")"
+eq stable-checkout-kept "$here/bin/agy" "$(ustable "$here/bin/agy")"
+eq stable-other-cellar-formula-kept "$HB/Cellar/agyxfoo/1/bin/agy" "$(ustable "$HB/Cellar/agyxfoo/1/bin/agy")"
+fresh h1; mkdir -p "$N/data/bin"
+out=$(fx env PATH=/usr/bin:/bin AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN='echo ZD=$ZDOTDIR; echo BE=$BASH_ENV' "$HB/bin/agyx" --profile p 2>/dev/null </dev/null)
+eq cellar-entry-opt "$HB/opt/agyx/libexec/bin/agy" "$(readlink "$N/data/bin/agy")"
+eq cellar-zdotdir-bashenv "ZD=$HB/opt/agyx/libexec/runtime/zsh${nl}BE=$HB/opt/agyx/libexec/runtime/bash_env" "$out"
+eq cellar-doctor-entry-ok "1" "$(fx env PATH=/usr/bin:/bin "$HB/bin/agyx" doctor </dev/null 2>&1 | grep -c "^agy entry: $N/data/bin/agy (in place")"
+# an upgrade replaces the Cellar directory and the opt link; the stored paths keep working
+brewlayout "$HB" 0.2.0; rm -rf "${HB:?}/Cellar/agyx/0.1.0"
+eq upgrade-entry-still-works "AGY_PROFILE=p" "$(fx env PATH=/usr/bin:/bin AGYX_REAL_AGY="$T/fake-agy" "$N/data/bin/agy" --profile p 2>/dev/null </dev/null | grep '^AGY_PROFILE=')"
+eq upgrade-link-unchanged "$HB/opt/agyx/libexec/bin/agy" "$(readlink "$N/data/bin/agy")"
+# a link to an old Cellar location (as an older agyx stored it) is repointed on any run
+rm "$N/data/bin/agy"; mkdir -p "$T/oldcell/Cellar/agyx/0.0.9/libexec"; cp -R "$here/bin" "$here/runtime" "$T/oldcell/Cellar/agyx/0.0.9/libexec/"
+ln -s "$T/oldcell/Cellar/agyx/0.0.9/libexec/bin/agy" "$N/data/bin/agy"
+fx env PATH=/usr/bin:/bin "$HB/bin/agyx" profile list >/dev/null 2>&1 </dev/null
+eq repoint-other-agyx "$HB/opt/agyx/libexec/bin/agy" "$(readlink "$N/data/bin/agy")"
+# ... a dangling link too
+rm "$N/data/bin/agy"; ln -s "$T/oldcell/Cellar/agyx/0.0.1/libexec/bin/agy" "$N/data/bin/agy"
+fx env PATH=/usr/bin:/bin AGYX_REAL_AGY="$T/fake-agy" "$HB/bin/agyx" --profile p >/dev/null 2>&1 </dev/null
+eq repoint-dangling "$HB/opt/agyx/libexec/bin/agy" "$(readlink "$N/data/bin/agy")"
+# ... but a link that is not an agyx entry stays (a file named agy without agyx's runtime beside it, a file)
+mkdir -p "$T/notagyx/bin"; echo x > "$T/notagyx/bin/agy"
+rm "$N/data/bin/agy"; ln -s "$T/notagyx/bin/agy" "$N/data/bin/agy"
+fx env PATH=/usr/bin:/bin "$HB/bin/agyx" profile list >/dev/null 2>&1 </dev/null
+eq no-repoint-foreign-link "$T/notagyx/bin/agy" "$(readlink "$N/data/bin/agy")"
+rm "$N/data/bin/agy"; echo mine > "$N/data/bin/agy"
+fx env PATH=/usr/bin:/bin "$HB/bin/agyx" profile list >/dev/null 2>&1 </dev/null
+eq no-repoint-regular-file "mine" "$(cat "$N/data/bin/agy")"
+# a Cellar install without an opt link keeps the resolved path
+HC=$TP/hc; brewlayout "$HC" 0.1.0; rm "$HC/opt/agyx"
+fresh h2
+fx env PATH=/usr/bin:/bin "$HC/bin/agyx" profile list >/dev/null 2>&1 </dev/null
+eq cellar-without-opt-kept "$HC/Cellar/agyx/0.1.0/libexec/bin/agy" "$(readlink "$N/data/bin/agy")"
+# version: one place, shown by --version and doctor
+eq version-one-place "1" "$(grep -rl '^AGYX_VERSION=' "$here/bin" "$here/runtime" "$here/Formula" | wc -l | tr -d ' ')"
+eq version-format "yes" "$(echo "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' && echo yes)"
+eq version-formula-tag "1" "$(grep -c "archive/refs/tags/v$ver.tar.gz" "$here/Formula/agyx.rb")"
+fresh v1
+out=$(fx env PATH="$SP" "$AX" --version </dev/null 2>&1)
+eq version-both "agyx $ver/agy" "$(echo "$out" | sed -n 1p)/$(echo "$out" | sed -n 2p | cut -d' ' -f1)"
+eq version-writes-nothing "yes" "$(rm -rf "$N/data"; fx env PATH="$SP" "$AX" --version >/dev/null 2>&1 </dev/null; [ ! -e "$N/data" ] && [ ! -e "$N/rh/.config" ] && echo yes)"
+eq version-no-agy "agyx $ver" "$(fx env PATH=/usr/bin:/bin "$AX" --version </dev/null 2>&1)"
+eq version-override "agyx $ver/agy" "$(fx env PATH=/usr/bin:/bin AGYX_REAL_AGY="$T/fake-agy" "$AX" --version </dev/null 2>&1 | tr '\n' / | cut -d/ -f1)/$(fx env AGYX_REAL_AGY="$T/fake-agy" "$AX" --version </dev/null 2>&1 | sed -n 2p | cut -d' ' -f1)"
+fresh v2
+eq version-doctor "agyx version: $ver" "$(fx env PATH="$SP" "$AX" doctor </dev/null 2>/dev/null | sed -n 1p)"
+eq version-doctor-before-setup "agyx version: $ver" "$(rm -rf "$N/data"; fx env PATH="$SP" "$AX" doctor </dev/null 2>/dev/null | sed -n 1p)"
+
 # per-profile keychain (fake security; the real one is never called)
 H=$DD/profiles/kc/home K=$DD/profiles/kc/home/Library/Keychains/login.keychain-db
 mkdir -p "$H"; : > "$SECLOG"

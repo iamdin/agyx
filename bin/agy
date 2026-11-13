@@ -21,6 +21,9 @@ data=${AGYX_DATA_DIR:-$rh/.local/share/agyx}
 R=$rh AGYX_SHIM=$self
 # shellcheck source=../runtime/sync.sh
 . "$runtime/sync.sh"
+# what we store or pass on (entry link, ZDOTDIR, BASH_ENV) must survive a Homebrew upgrade
+agyx_stable "$self"; AGYX_SHIM=$AGYX_STABLE
+runtime_stable=${AGYX_SHIM%/*/*}/runtime
 # ask once before the first write; then automatic repairs (stderr only, never stdout)
 agyx_gate
 agyx_ensure_entry
@@ -106,7 +109,7 @@ agyx_sync_gemini
 agyx_sync_home
 
 # 4. environment (originals saved unless the caller already points at the bridge)
-bz=$runtime/zsh bb=$runtime/bash_env
+bz=$runtime_stable/zsh bb=$runtime_stable/bash_env
 if [ "${ZDOTDIR-}" != "$bz" ]; then
   if [ "${ZDOTDIR+x}" ]; then AGYX_ORIG_ZDOTDIR_SET=1 AGYX_ORIG_ZDOTDIR=$ZDOTDIR
   else AGYX_ORIG_ZDOTDIR_SET=0 AGYX_ORIG_ZDOTDIR=; fi

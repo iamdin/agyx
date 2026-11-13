@@ -1,19 +1,24 @@
-# Draft formula: move to the tap repo (iamdin/homebrew-tap, Formula/agyx.rb).
+# frozen_string_literal: true
+
+# This file is published in the tap repository iamdin/homebrew-tap (Formula/agyx.rb).
 class Agyx < Formula
   desc "Run several Google Antigravity (agy) CLI profiles side by side"
   homepage "https://github.com/iamdin/agyx"
-  url "https://github.com/iamdin/agyx/archive/refs/tags/vX.Y.Z.tar.gz" # TODO: real release
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000" # TODO: real sha256
-  # license "..." # TODO: add a LICENSE to the repo, then declare it here
+  url "https://github.com/iamdin/agyx/archive/refs/tags/v0.1.0.tar.gz"
+  # PLACEHOLDER: fill in after the v0.1.0 tag exists (`brew fetch --build-from-source` prints it).
+  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  license "MIT"
 
   def install
-    # Scripts find their siblings (agy shim, runtime/) by resolving their own real path,
-    # so keep bin/ and runtime/ together in libexec and expose only agyx.
+    # The scripts find their siblings (agy shim, runtime/) by resolving their own real path, so
+    # keep bin/ and runtime/ together in libexec and expose only agyx. They store the
+    # opt_prefix path (not this versioned Cellar directory) wherever a path must survive upgrades.
     libexec.install "bin", "runtime"
     bin.install_symlink libexec/"bin/agyx"
   end
 
   test do
+    assert_match "agyx #{version}", shell_output("#{bin}/agyx --version")
     # misuse of a management subcommand prints the usage and exits 2
     assert_match "usage: agyx", shell_output("#{bin}/agyx profile list extra 2>&1", 2)
     assert_path_exists libexec/"bin/agy"
@@ -28,7 +33,8 @@ class Agyx < Formula
     (testpath/"data/profiles/work/home").mkpath
     # anything that is not an agyx subcommand launches agy via the shim
     system bin/"agyx", "--profile", "work"
-    assert_equal (libexec/"bin/agy").realpath, (testpath/"data/bin/agy").realpath
+    # the entry link goes through opt_prefix, so it survives upgrades
+    assert_equal opt_libexec/"bin/agy", Pathname(File.readlink(testpath/"data/bin/agy"))
     assert_path_exists testpath/".config/agyx/symlinks"
   end
 end
