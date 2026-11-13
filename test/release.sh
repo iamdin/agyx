@@ -78,24 +78,17 @@ eq dry-run-no-install "0" "$(grep -c 'brew install' "$STUBLOG")"
 
 # each failed check refuses and changes nothing
 mk; git -C "$W" switch -q -c feature; refuses check-not-main 0.1.3
-mk; echo z >> "$W/more"; refuses check-dirty 0.1.3
-mk; echo z > "$W/untracked"; refuses check-untracked 0.1.3
-mk; git -C "$W" reset -q --hard HEAD~1; refuses check-behind-origin 0.1.3
-mk; echo z >> "$W/more"; git -C "$W" commit -q -am local; refuses check-ahead-of-origin 0.1.3
 mk; printf 'AGYX_VERSION=0.1.4\n' > "$W/runtime/sync.sh"; git -C "$W" commit -q -am v; git -C "$W" push -q origin main; refuses check-agyx-version 0.1.3
 mk; sed -i.bak 's/v0.1.3.tar/v0.1.4.tar/' "$W/Formula/agyx.rb"; rm "$W/Formula/agyx.rb.bak"; git -C "$W" commit -q -am f; git -C "$W" push -q origin main; refuses check-formula-tag 0.1.3
 mk; git -C "$W" tag v0.1.3; refuses check-tag-exists 0.1.3
 mk; printf 'exit 1\n' > "$W/test/run.sh"; git -C "$W" commit -q -am t; git -C "$W" push -q origin main; refuses check-tests-fail 0.1.3
 mk; export STUB_SC=1; refuses check-shellcheck-fails 0.1.3; unset STUB_SC
-mk; git -C "$W" -c user.email=me@example.com commit -q --allow-empty -m other; git -C "$W" push -q origin main; refuses check-foreign-email 0.1.3
-eq check-foreign-email-listed "1" "$(grep -c 'me@example.com' "$T/out")"
 mk; export AGYX_TAP_DIR=$E/nope; refuses check-tap-missing 0.1.3; unset AGYX_TAP_DIR
-mk; echo z > "$E/homebrew-tap/dirty"; refuses check-tap-dirty 0.1.3
-# the email check covers only commits after the previous tag
-mk; git -C "$W" -c user.email=old@example.com commit -q --allow-empty -m old; git -C "$W" push -q origin main
-rel --dry-run 0.1.3; eq email-after-prev-tag-checked "1" "$?"
-mk; git -C "$W" -c user.email=old@example.com commit -q --allow-empty -m old; git -C "$W" push -q origin main; git -C "$W" tag -f v0.1.2 >/dev/null; git -C "$W" push -q -f origin v0.1.2 2>/dev/null
-rel --dry-run 0.1.3; eq email-before-prev-tag-ignored "0" "$?"
+# non-code state is not checked: dirty tree, behind/ahead of origin, a foreign commit email, a dirty tap, no changelog
+mk; echo z >> "$W/more"; echo z > "$W/untracked"; echo z > "$E/homebrew-tap/dirty"
+git -C "$W" -c user.email=me@example.com commit -q --allow-empty -m other
+rel --dry-run 0.1.3; eq not-checked-dirty-foreign-email "0,0" "$?,$(grep -ci 'email\|changelog\|clean' "$T/out")"
+mk; git -C "$W" reset -q --hard HEAD~1; rel --dry-run 0.1.3; eq not-checked-behind-origin "0" "$?"
 
 # real run: answering no cancels
 mk; printf 'n\n' > "$E/ans"

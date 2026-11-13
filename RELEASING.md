@@ -21,7 +21,9 @@ Maintainer notes. A release is one checked command: `scripts/release.sh VERSION`
    scripts/release.sh 0.1.3
    ```
 
-   It refuses unless: on `main` with a clean tree equal to `origin/main`; `VERSION` matches `AGYX_VERSION` and the formula tag; the tag does not exist; the tap checkout (`AGYX_TAP_DIR`, default `../homebrew-tap`) exists and is clean; tests and shellcheck pass; every commit since the previous tag uses your configured `git config user.email` (the noreply address). It then asks `Release VERSION? [y/N]`, tags `vVERSION` (annotated), pushes `main` and the tag (retrying over HTTPS when SSH fails), runs `gh release create vVERSION --generate-notes`, downloads the tag tarball, writes the formula with the real sha256 into the tap, commits `agyx VERSION`, pushes, and runs `brew update && brew audit --strict --online iamdin/tap/agyx`. It never installs agyx on the machine.
+   It refuses unless: you are on `main`; `VERSION` equals `AGYX_VERSION` and the tag in the formula url; the tag does not exist; the tap checkout (`AGYX_TAP_DIR`, default `../homebrew-tap`) exists; tests and shellcheck pass. It checks nothing else. It then asks `Release VERSION? [y/N]`, tags `vVERSION` (annotated), pushes `main` and the tag (retrying over HTTPS when SSH fails), runs `gh release create vVERSION --generate-notes`, downloads the tag tarball, writes the formula with the real sha256 into the tap, commits `agyx VERSION`, pushes, and runs `brew update && brew audit --strict --online iamdin/tap/agyx`. It never installs agyx on the machine.
+
+Your own checklist, because the script does not check it: working tree clean and `main` pushed (the tag is made on your local `main`); commits use your noreply email (`git log --format='%h %ae %ce' vPREV..HEAD`); README and docs are up to date; the tap checkout is clean and current.
 
 Set up yourself first: `gh auth login` with a token that may create releases on `iamdin/agyx` (the `repo` scope, or fine-grained Contents: write), push access to both `iamdin/agyx` and `iamdin/homebrew-tap`, and a clone of the tap next to the repo.
 
