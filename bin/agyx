@@ -126,19 +126,24 @@ case $cmd in
           echo "agyx: profile '$1' is already logged in ($(status "$1")). Starting agy in it anyway; sign in again from there only if you want to change the account." >&2
         fi
         # run agy as a child (not exec) to set the default afterwards; SIGINT reaches agy, not us
-        # agy writes this login's log to its own file (--log-file), so the email read afterwards
-        # cannot come from another instance sharing a log; if agy did not create the file, fall back
-        # to the shared logs modified after a marker file
-        mk=$data/profiles/$1/.login-start lg=$data/profiles/$1/.login-log
-        rm -f "$lg"; : > "$mk"
+        # the shim gives every launch its own log file in <profile>/logs, so the email read
+        # afterwards comes from the files created since the marker, not from another instance;
+        # if agy wrote nothing there, fall back to the shared logs modified after the marker
+        mk=$data/profiles/$1/.login-start ld=$data/profiles/$1/logs
+        : > "$mk"
         trap : INT
-        "$shim" --profile "$1" --log-file "$lg"; rc=$?
+        "$shim" --profile "$1"; rc=$?
         trap - INT
         if logged_in "$1"; then
-          if [ -f "$lg" ]; then e=$(agyx_email_file "$lg"); else e=$(login_email "$mk"); fi
+          e=
+          lfl=$(find "$ld" -name 'cli-*.log' -newer "$mk" -size +0c 2>/dev/null)
+          if [ -n "$lfl" ]; then
+            # shellcheck disable=SC2086,SC2045 # our own log names contain no spaces
+            for lf in $(ls -tr $lfl); do lx=$(agyx_email_file "$lf"); [ -z "$lx" ] || e=$lx; done
+          else e=$(login_email "$mk"); fi
           [ -z "$e" ] || printf '%s\n' "$e" > "$data/profiles/$1/email"
         fi
-        rm -f "$mk" "$lg"
+        rm -f "$mk"
         if logged_in "$1" && [ -z "$(dflt)" ]; then
           printf '%s\n' "$1" > "$data/default" &&
             echo "agyx: '$1' is now the default profile (change it with: agyx profile default NAME)"
@@ -266,6 +271,8 @@ case $cmd in
       # shellcheck disable=SC2034 # used by the functions in sync.sh
       P=$p/home
       agyx_report
+      nl=$(ls -t "$p"/logs/cli-*.log 2>/dev/null | head -n 1); nl=${nl##*/}
+      echo "  logs: $(agyx_tilde "$p/logs")/, newest: ${nl:-none yet}"
     done
     dup_warning
     ;;

@@ -290,6 +290,34 @@ agyx_subcommand() {
   return 1
 }
 
+# Per-profile agy log files: <profile dir>/logs/cli-YYYYMMDD_HHMMSS.log, a new one per launch.
+# agy takes --log-file only BEFORE its subcommand (`agy --log-file F models` works, `agy models
+# --log-file F` is rejected). These never write a log, so no file is made for them; a log file the
+# caller chose is left alone.
+agyx_wants_log() {
+  case ${1-} in help|changelog|mcp|update|--help|-h|--version) return 1 ;; esac
+  for _a in "$@"; do case $_a in --log-file|--log-file=*) return 1 ;; esac; done
+  return 0
+}
+# $1 = logs dir. Creates a new empty log file (never one that exists: two launches in the same
+# second get _02, _03 ... suffixes), sets AGYX_LOGFILE, and keeps the newest 10 files by mtime. Counting uses globbing only; a process is forked only to delete.
+# AGYX_LOG_STAMP replaces the timestamp (tests).
+agyx_new_log() {
+  [ -d "$1" ] || (umask 077; mkdir -p "$1") || return 1
+  _b=$1/cli-${AGYX_LOG_STAMP:-$(date +%Y%m%d_%H%M%S)}
+  AGYX_LOGFILE=$_b.log; _i=1
+  while ! (umask 077; set -C; : > "$AGYX_LOGFILE") 2>/dev/null; do
+    _i=$((_i + 1)); [ "$_i" -lt 100 ] || return 1
+    AGYX_LOGFILE=${_b}_$(printf %02d "$_i").log
+  done
+  set -- "$1"/cli-*.log
+  if [ $# -gt 10 ]; then
+    # shellcheck disable=SC2012 # names are ours (no spaces); newest first by mtime
+    ls -t "$@" | tail -n +11 | while read -r _o; do [ "$_o" = "$AGYX_LOGFILE" ] || rm -f "$_o"; done
+  fi
+  return 0
+}
+
 # Sets _found to the first executable `agy` on PATH that is not agyx's own entry point (absolute).
 agyx_scan_path() {
   _found=
