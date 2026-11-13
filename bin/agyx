@@ -126,10 +126,10 @@ case $cmd in
           echo "agyx: profile '$1' is already logged in ($(status "$1")). Starting agy in it anyway; sign in again from there only if you want to change the account." >&2
         fi
         # run agy as a child (not exec) to set the default afterwards; SIGINT reaches agy, not us
-        # the shim gives every launch its own log file in <profile>/logs, so the email read
+        # the shim gives every launch its own log file in <profile>/log, so the email read
         # afterwards comes from the files created since the marker, not from another instance;
         # if agy wrote nothing there, fall back to the shared logs modified after the marker
-        mk=$data/profiles/$1/.login-start ld=$data/profiles/$1/logs
+        mk=$data/profiles/$1/.login-start ld=$data/profiles/$1/log
         : > "$mk"
         trap : INT
         "$shim" --profile "$1"; rc=$?
@@ -271,8 +271,8 @@ case $cmd in
       # shellcheck disable=SC2034 # used by the functions in sync.sh
       P=$p/home
       agyx_report
-      nl=$(ls -t "$p"/logs/cli-*.log 2>/dev/null | head -n 1); nl=${nl##*/}
-      echo "  logs: $(agyx_tilde "$p/logs")/, newest: ${nl:-none yet}"
+      nl=$(ls -t "$p"/log/*.log 2>/dev/null | head -n 1); nl=${nl##*/}
+      echo "  logs: $(agyx_tilde "$p/log")/, newest: ${nl:-none yet}"
     done
     dup_warning
     ;;

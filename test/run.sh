@@ -556,7 +556,7 @@ G=$RH/.gemini
 launch() { FAKE_RUN=true agyx --profile "$1" 2>"$T/err"; }
 islink() { [ -L "$1" ] && [ "$1" -ef "$2" ] && echo link || echo "not-link"; }
 # the per-launch log files change on every launch and are not part of what the snapshots compare
-snap() { find "$@" -path '*/logs/cli-*.log' -delete 2>/dev/null; ls -lRA "$@"; }
+snap() { find "$@" \( -path '*/log/cli-*.log' -o -path '*/profiles/*/cli.log' \) -delete 2>/dev/null; ls -lRA "$@"; }
 mkdir -p "$G/antigravity-cli"
 # whitelist: default list when symlinks is missing
 HL=$RH/.config/agyx/symlinks   # the whitelist file lives in the real home's config dir
@@ -667,7 +667,7 @@ out=$(fl p)
 eq w-stdout-empty "" "$out"
 eq w-link "link" "$(islink "$N/data/profiles/p/home/.gemini" "$N/rh/.gemini")"
 eq w-link-target "$N/rh/.gemini" "$(readlink "$N/data/profiles/p/home/.gemini")"
-eq w-profile-layout "home logs" "$(ls -A "$N/data/profiles/p" | tr '\n' ' ' | sed 's/ $//')"
+eq w-profile-layout "cli.log home log" "$(ls -A "$N/data/profiles/p" | tr '\n' ' ' | sed 's/ $//')"
 eq w-home-layout ".config .fake-default .gemini Library" "$(ls -A "$N/data/profiles/p/home" | tr '\n' ' ' | sed 's/ $//')"
 eq w-no-drift "absent" "$(find "$N/data" -name 'agyx-drift*' | grep -c . | sed 's/^0$/absent/')"
 eq w-blocker-dir "dir/README" "$([ -d "$N/rh/$BL" ] && [ ! -L "$N/rh/$BL" ] && echo dir)/$(ls "$N/rh/$BL")"
@@ -684,7 +684,7 @@ out=$(FLPATH="$STUBS:$SP" fl p)
 unset AGYX_LOG_STAMP
 after=$(snap "$N/data/profiles" "$N/rh/.gemini")
 eq w-steady-same "$before/0/" "$after/$(grep -c . "$T/err")/$out"
-eq w-steady-fork-free "" "$(cat "$STUBLOG")"
+eq w-steady-fork-free "ln" "$(cat "$STUBLOG")" # the one process is the cli.log link of the new log file
 # a link pointing elsewhere is replaced; a missing one is created
 rm "$N/data/profiles/p/home/.gemini"; ln -s /elsewhere "$N/data/profiles/p/home/.gemini"; fl p >/dev/null
 eq w-link-elsewhere "link" "$(islink "$N/data/profiles/p/home/.gemini" "$N/rh/.gemini")"
@@ -745,7 +745,7 @@ out=$(fl old); rc=$?
 OH=$N/data/profiles/old/home
 eq m-rc-stdout "0/" "$rc/$out"
 eq m-link "link" "$(islink "$OH/.gemini" "$GS")"
-eq m-layout "email home logs" "$(ls -A "$N/data/profiles/old" | tr '\n' ' ' | sed 's/ $//')"
+eq m-layout "cli.log email home log" "$(ls -A "$N/data/profiles/old" | tr '\n' ' ' | sed 's/ $//')"
 eq m-home-layout ".config .fake-default .fake-item .gemini Library" "$(ls -A "$OH" | tr '\n' ' ' | sed 's/ $//')"
 eq m-email-from-token "fromtoken@example.com" "$(cat "$N/data/profiles/old/email")"
 eq m-disjoint-moved "brain-one/b" "$(cat "$GS/brain/b1")/$(cat "$GS/conversations/b.pb")"
@@ -755,14 +755,14 @@ eq m-identical "same" "$(cat "$GS/same.txt")"
 eq m-profile-newer-wins "profile-new-c" "$(cat "$GS/c-new.txt")"
 eq m-shared-newer-wins "shared-new-c" "$(cat "$GS/c-old.txt")"
 eq m-file-vs-dir "in-shared-dir" "$(cat "$GS/fd/inner")"
-eq m-no-links-left "2" "$(find "$N/data/profiles/old" -type l | grep -c .)"
+eq m-no-links-left "2" "$(find "$N/data/profiles/old" -type l ! -name cli.log | grep -c .)"
 TR=$(echo "$N"/trash/agyx-old-*)
 eq m-trash-one-folder "1" "$(echo "$N"/trash/agyx-old-* | wc -w | tr -d ' ')"
 eq m-trash-logs "clilog/jb/wal/10:00 applyAuthResult ok email=fromlog-old@example.com" "$(cat "$TR/antigravity-cli/cli.log")/$(cat "$TR/antigravity-cli/jetbox_summaries_proto.pb")/$(cat "$TR/antigravity-cli/conv.db-wal")/$(cat "$TR/antigravity-cli/log/x.log")"
 eq m-trash-token "1" "$(grep -c SECRET-ACCESS "$TR/antigravity-cli/antigravity-oauth-token" | sed 's/^[1-9].*/1/')"
 eq m-trash-losers "profile-old-c/shared-old-c/file-in-profile" "$(cat "$TR/c-old.txt")/$(cat "$TR/c-new.txt")/$(cat "$TR/fd")"
 eq m-shared-log-untouched "sharedlog" "$(cat "$GS/antigravity-cli/log/shared.log")"
-eq m-only-private-files ".fake-default .fake-item email " "$(find "$N/data/profiles/old" -path '*/Library' -prune -o -path '*/logs' -prune -o -type f -print | sed 's|.*/||' | sort | tr '\n' ' ')"
+eq m-only-private-files ".fake-default .fake-item email " "$(find "$N/data/profiles/old" -path '*/Library' -prune -o -path '*/log' -prune -o -type f -print | sed 's|.*/||' | sort | tr '\n' ' ')"
 eq m-summary-line "1" "$(grep -c "^agyx: profile old: its .gemini was merged into the shared ~/.gemini: .* entries moved, 3 old links removed, .* items to the Trash (.*/trash/agyx-old-[0-9]*)\$" "$T/err")"
 eq m-token-msg-keychain "1" "$(grep -c "^agyx: profile old: its login token file was moved to the Trash (.*). Its keychain holds a login, so nothing else is needed.\$" "$T/err")"
 eq m-no-secrets-printed "0" "$(grep -c SECRET "$T/err")"
@@ -787,7 +787,7 @@ wmk "$N/rh/.gemini/antigravity-cli/log/stale.log" "09:00 applyAuthResult ok emai
 LOGIN='touch $HOME/.fake-item; sleep 1; mkdir -p $HOME/.gemini/antigravity-cli/log; echo "11:00 applyAuthResult ok email=first@example.com" > $HOME/.gemini/antigravity-cli/log/new.log; echo "11:01 applyAuthResult ok email=last@example.com" >> $HOME/.gemini/antigravity-cli/log/new.log'
 out=$(fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN="$LOGIN" "$AX" profile login acct1 2>/dev/null </dev/null)
 eq email-after-login "last@example.com" "$(cat "$N/data/profiles/acct1/email")"
-eq email-layout "email home logs" "$(ls -A "$N/data/profiles/acct1" | tr '\n' ' ' | sed 's/ $//')"
+eq email-layout "cli.log email home log" "$(ls -A "$N/data/profiles/acct1" | tr '\n' ' ' | sed 's/ $//')"
 eq email-in-list "acct1 last@example.com (default)" "$(fx env PATH="$SP" "$AX" profile list </dev/null 2>/dev/null | sed 's/  */ /g')"
 # a login that wrote no new log line leaves no email file (the stale shared log is ignored)
 out=$(fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN='touch $HOME/.fake-item' "$AX" profile login acct2 2>/dev/null </dev/null)
@@ -809,7 +809,7 @@ OWN='touch $HOME/.fake-item; sleep 1; mkdir -p $HOME/.gemini/antigravity-cli/log
 out=$(fx env PATH="$SP" N_LOGPATH="$T/logpath" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN="$OWN" "$AX" profile login own1 2>/dev/null </dev/null)
 eq login-own-log-email "mine@example.com" "$(cat "$N/data/profiles/own1/email")"
 lp=$(cat "$T/logpath")
-eq login-own-log-path "$N/data/profiles/own1/logs" "$(dirname "$lp")"
+eq login-own-log-path "$N/data/profiles/own1/log" "$(dirname "$lp")"
 eq login-own-log-name "yes" "$(basename "$lp" | grep -Eq '^cli-[0-9]{8}_[0-9]{6}\.log$' && echo yes)"
 eq login-own-log-deleted "0" "$(find "$N/data/profiles" -name '.login-*' | grep -c .)"
 # the file exists but has no email: unknown, not the shared log
@@ -907,21 +907,32 @@ N=$T/u8; rm -rf "$N"; mkdir -p "$N/rh"
 out=$(ux env AGYX_ASSUME_YES=1 "$T/otherinst/bin/agyx" uninstall 2>"$T/err" </dev/null); rc=$?
 eq uninstall-empty "0,nothing-created" "$rc,$([ ! -e "$N/rh/.local" ] && [ ! -e "$N/rh/.config" ] && [ ! -e "$N/rh/.gemini" ] && echo nothing-created)"
 
-# ---- per-profile log files: <profile dir>/logs/cli-YYYYMMDD_HHMMSS.log, one per launch ----
-LD() { echo "$N/data/profiles/${1:-p}/logs"; }
+# ---- per-profile logs, laid out like agy's own: <profile>/log/ and <profile>/cli.log -> log/<newest> ----
+LD() { echo "$N/data/profiles/${1:-p}/log"; }
+PD() { echo "$N/data/profiles/${1:-p}"; }
 ll() { fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" "$AX" --profile p "$@" </dev/null 2>"$T/err"; }
-wfresh l1; ll true >/dev/null
+llq() { FAKE_RUN=true ll "$@"; }
+wfresh l1
 # the flag comes first, then the user's arguments untouched
-rm -rf "$(LD)"; AGYX_LOG_STAMP=20260101_120000; export AGYX_LOG_STAMP
-out=$(ll -c); rm -f "$LAUNCHLOG"
+AGYX_LOG_STAMP=20260101_120000; export AGYX_LOG_STAMP
+out=$(ll -c)
 eq log-flag-first "LOGFIRST=$(LD)/cli-20260101_120000.log" "$(echo "$out" | grep '^LOGFIRST=')"
 eq log-flag-args-untouched "ARG=-c" "$(echo "$out" | grep '^ARG=')"
 eq log-file-created-empty "0" "$(wc -c < "$(LD)/cli-20260101_120000.log" | tr -d ' ')"
+eq log-cli-symlink "log/cli-20260101_120000.log" "$(readlink "$(PD)/cli.log")"
+eq log-cli-symlink-resolves "yes" "$([ -f "$(PD)/cli.log" ] && echo yes)"
 out=$(ll models); eq log-flag-before-subcommand "ARG=models" "$(echo "$out" | grep '^ARG=')"
 out=$(ll -p hello); eq log-flag-print-mode "ARG=-p ARG=hello" "$(echo "$out" | grep '^ARG=' | tr '\n' ' ' | sed 's/ $//')"
-# no two launches share a file, even in the same second (the suffix sorts after the plain name)
+# no two launches share a file, even in the same second
 LC_ALL=C ls "$(LD)" > "$T/names"
 eq log-unique-same-second "cli-20260101_120000.log cli-20260101_120000_02.log cli-20260101_120000_03.log" "$(tr '\n' ' ' < "$T/names" | sed 's/ $//')"
+eq log-cli-symlink-newest "log/cli-20260101_120000_03.log" "$(readlink "$(PD)/cli.log")"
+# acp writes acp-server-<stamp>-<pid>.log (the shim execs agy, so the pid is agy's) and leaves cli.log alone
+out=$(ll acp)
+al=$(echo "$out" | sed -n 's/^LOGFIRST=//p')
+eq log-acp-name "yes" "$(basename "$al" | grep -Eq '^acp-server-20260101_120000-[0-9]+\.log$' && echo yes)"
+eq log-acp-keeps-cli-link "log/cli-20260101_120000_03.log" "$(readlink "$(PD)/cli.log")"
+eq log-acp-arg "ARG=acp" "$(echo "$out" | grep '^ARG=')"
 # subcommands that never write a log get no file and no flag; a log file chosen by the caller is kept
 before=$(ls "$(LD)" | wc -l | tr -d ' ')
 res=
@@ -934,40 +945,57 @@ out=$(ll models --log-file /x/own.log)
 eq log-own-flag-respected "no-first/ARG=models ARG=--log-file ARG=/x/own.log" "$([ -z "$(echo "$out" | grep '^LOGFIRST=')" ] && echo no-first)/$(echo "$out" | grep '^ARG=' | tr '\n' ' ' | sed 's/ $//')"
 eq log-no-file-for-those "$before" "$(ls "$(LD)" | wc -l | tr -d ' ')"
 unset AGYX_LOG_STAMP
-# the name is the launch time, like agy's own files
-rm -rf "$(LD)"; ll true >/dev/null
+# the name is the launch time, like agy's own files; private modes
+rm -rf "$(LD)" "$(PD)/cli.log"; llq >/dev/null
 eq log-name-format "yes" "$(basename "$(echo "$(LD)"/cli-*.log)" | grep -Eq '^cli-[0-9]{8}_[0-9]{6}\.log$' && echo yes)"
 eq log-private-mode "drwx------/-rw-------" "$(ls -ld "$(LD)" | cut -c1-10)/$(ls -l "$(LD)"/cli-*.log | cut -c1-10)"
-# stdout stays agy's own
-FAKE_RUN=true; export FAKE_RUN; out=$(ll true); unset FAKE_RUN; eq log-stdout-empty "" "$out"
-# keep the newest 10: nothing is pruned up to 10 files; above 10 the oldest go
-rm -rf "$(LD)"; mkdir -p "$(LD)"; i=1
-while [ $i -le 9 ]; do touch -t "2025010100$(printf %02d $i)" "$(LD)/cli-2025010100$(printf %02d $i).log"; i=$((i + 1)); done
-rm -f "$STUBLOG"; : > "$STUBLOG"; rm -rf "$T/pstubs"; mkdir "$T/pstubs"
-for n in rm ls; do printf '#!/bin/sh\necho %s >> "%s"\nexec %s "$@"\n' "$n" "$STUBLOG" "$(command -v "$n")" > "$T/pstubs/$n"; chmod +x "$T/pstubs/$n"; done
-FLPATH=$T/pstubs:$SP; AGYX_LOG_STAMP=20260101_130000; export AGYX_LOG_STAMP
-fx env PATH="$FLPATH" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN=true "$AX" --profile p </dev/null 2>/dev/null
-eq log-prune-none-at-10 "10,0" "$(ls "$(LD)" | wc -l | tr -d ' '),$(grep -c 'rm\|ls' "$STUBLOG")"
-AGYX_LOG_STAMP=20260101_130001; export AGYX_LOG_STAMP
-fx env PATH="$FLPATH" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN=true "$AX" --profile p </dev/null 2>/dev/null
-eq log-prune-at-11 "10,gone,kept" "$(ls "$(LD)" | wc -l | tr -d ' '),$([ ! -e "$(LD)/cli-202501010001.log" ] && echo gone),$([ -e "$(LD)/cli-20260101_130001.log" ] && echo kept)"
-eq log-prune-forks-only-to-delete "1" "$(grep -c '^ls$' "$STUBLOG")"
-i=1; while [ $i -le 5 ]; do
-  AGYX_LOG_STAMP=20260101_1400$(printf %02d $i); export AGYX_LOG_STAMP
-  fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN=true "$AX" --profile p </dev/null 2>/dev/null; i=$((i + 1))
+out=$(llq true); eq log-stdout-empty "" "$out"
+# nothing goes to the shared ~/.gemini log dir or cli.log
+eq log-shared-untouched "absent/absent" "$([ -e "$N/rh/.gemini/antigravity-cli/log" ] && echo present || echo absent)/$([ -e "$N/rh/.gemini/antigravity-cli/cli.log" ] && echo present || echo absent)"
+# retention mirrors agy: files whose mtime is more than 7 days old are deleted at launch, nothing else
+NOWS=$(date +%Y%m%d_%H%M%S)
+agedlog() { # name hours-old: a log file with that name and mtime
+  : > "$(LD)/$1"; touch -t "$(date -v-"$2"H +%Y%m%d%H%M.%S)" "$(LD)/$1"
+}
+rm -rf "$(LD)"; mkdir -p "$(LD)"
+n160=cli-$(date -v-160H +%Y%m%d_%H%M%S).log n170=cli-$(date -v-170H +%Y%m%d_%H%M%S).log
+agedlog "$n160" 160; agedlog "$n170" 170
+agedlog "acp-server-$(date -v-400H +%Y%m%d_%H%M%S)-77.log" 400
+agedlog "cli-$(date -v-400H +%Y%m%d_%H%M%S)_02.log" 20     # old name, recent mtime: kept (mtime decides)
+echo keep > "$(LD)/notes.txt"; touch -t 200001010000 "$(LD)/notes.txt"
+AGYX_LOG_STAMP=$NOWS; export AGYX_LOG_STAMP
+llq >/dev/null; unset AGYX_LOG_STAMP
+eq log-prune-7-days "kept/gone/gone/kept/kept/kept" "$([ -e "$(LD)/$n160" ] && echo kept)/$([ ! -e "$(LD)/$n170" ] && echo gone)/$(ls "$(LD)"/acp-server-*-77.log >/dev/null 2>&1 && echo present || echo gone)/$(ls "$(LD)"/cli-*_02.log >/dev/null 2>&1 && echo kept)/$([ -e "$(LD)/notes.txt" ] && echo kept)/$([ -e "$(LD)/cli-$NOWS.log" ] && echo kept)"
+# pruning starts no process unless a file may be old enough; then exactly one find
+rm -rf "$T/pstubs"; mkdir "$T/pstubs"; : > "$STUBLOG"
+for x in find rm ls head tail; do printf '#!/bin/sh\necho %s >> "%s"\nexec %s "$@"\n' "$x" "$STUBLOG" "$(command -v "$x")" > "$T/pstubs/$x"; chmod +x "$T/pstubs/$x"; done
+rm -rf "$(LD)"; mkdir -p "$(LD)"; agedlog "cli-$(date -v-100H +%Y%m%d_%H%M%S).log" 100
+fx env PATH="$T/pstubs:$SP" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN=true "$AX" --profile p </dev/null 2>/dev/null
+eq log-prune-no-fork-when-recent "" "$(cat "$STUBLOG")"
+agedlog "cli-$(date -v-200H +%Y%m%d_%H%M%S).log" 200
+fx env PATH="$T/pstubs:$SP" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN=true "$AX" --profile p </dev/null 2>/dev/null
+eq log-prune-one-find-when-old "find" "$(cat "$STUBLOG")"
+eq log-prune-old-removed "3" "$(ls "$(LD)" | wc -l | tr -d ' ')"
+# a log that agy keeps writing is not deleted just because its name is old (the find test is the mtime)
+rm -rf "$(LD)"; mkdir -p "$(LD)"; agedlog "cli-$(date -v-300H +%Y%m%d_%H%M%S).log" 1
+llq >/dev/null
+eq log-prune-active-old-name-kept "2" "$(ls "$(LD)" | wc -l | tr -d ' ')"
+# the day arithmetic behind the pre-check agrees with date(1)
+res=
+for d in 19700101 20000229 20240229 20241231 20260101 20261113 20991231; do
+  got=$(sh -c '. "$1"; agyx_days "$2"; echo $AGYX_DAYS' sh "$here/runtime/sync.sh" "$d")
+  want=$(( $(date -j -u -f %Y%m%d%H%M%S "${d}000000" +%s) / 86400 ))
+  [ "$got" = "$want" ] || res="$res $d:$got/$want"
 done
-unset AGYX_LOG_STAMP
-eq log-prune-keeps-newest-10 "10,cli-20260101_140005.log" "$(ls "$(LD)" | wc -l | tr -d ' '),$(ls "$(LD)" | tail -n 1)"
-# files of other names in the logs dir are never counted or deleted
-touch "$(LD)/notes.txt"; ll true >/dev/null; ll true >/dev/null
-eq log-prune-only-own-names "kept" "$([ -e "$(LD)/notes.txt" ] && echo kept)"
+eq log-days-arithmetic "" "$res"
 # logs are per profile
-mkdir -p "$N/data/profiles/q/home"; fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN=true "$AX" --profile q </dev/null 2>/dev/null
-eq log-per-profile "1,10" "$(ls "$(LD q)" | wc -l | tr -d ' '),$(ls "$(LD p)"/cli-*.log | wc -l | tr -d ' ')"
-# doctor shows the logs dir and the newest file per profile
+mkdir -p "$N/data/profiles/q/home"; FAKE_RUN=true; export FAKE_RUN
+fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" "$AX" --profile q </dev/null 2>/dev/null; unset FAKE_RUN
+eq log-per-profile "1,1,q" "$(ls "$(LD q)"/cli-*.log | wc -l | tr -d ' '),$(ls "$(PD q)"/cli.log | wc -l | tr -d ' '),$(cd "$(PD q)" && cd -P "$(dirname "$(readlink cli.log)")" && basename "$(dirname "$PWD")")"
+# doctor shows the log dir and the newest file per profile
 d=$(fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" "$AX" doctor </dev/null 2>/dev/null)
-eq doctor-logs "1" "$(echo "$d" | grep -c "^  logs: $(LD p)/, newest: $(basename "$(ls -t "$(LD p)"/cli-*.log | head -n 1)")\$")"
-rm -rf "$N/data/profiles/q/logs"
+eq doctor-logs "1" "$(echo "$d" | grep -c "^  logs: $(LD p)/, newest: $(basename "$(ls -t "$(LD p)"/*.log | head -n 1)")\$")"
+rm -rf "$(LD q)"
 d=$(fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" "$AX" doctor </dev/null 2>/dev/null)
 eq doctor-logs-none "1" "$(echo "$d" | grep -c "^  logs: $(LD q)/, newest: none yet\$")"
 
