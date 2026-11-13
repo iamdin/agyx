@@ -7,8 +7,11 @@
 
 AGYX_DEFAULT_LINKS=".gitconfig .ssh .config .npm .npmrc .bun .bunfig.toml .cache .cargo .rustup go Code GitHub"
 
-# Entries of <gemini>/antigravity-cli that stay real files/dirs in the profile.
+# Entries that are never synced: the per-profile private set and SQLite sidecar files.
 agyx_private() { # rel-dir name
+  case $2 in # SQLite sidecars sit next to the real database (opened through the link); never sync them
+    *-wal|*-shm|*-journal) return 0 ;;
+  esac
   case $1/$2 in
     .gemini/antigravity-cli/antigravity-oauth-token|.gemini/antigravity-cli/log|.gemini/antigravity-cli/cli.log|.gemini/antigravity-cli/jetbox_summaries_proto.pb) return 0 ;;
   esac
@@ -150,7 +153,9 @@ agyx_report_dir() { # rel dir
     [ "$_n" = antigravity-cli ] && [ "$1" = .gemini ] && continue
     agyx_private "$1" "$_n" && continue
     if [ -L "$_pd/$_n" ] && [ "$_pd/$_n" -ef "$_f" ]; then continue
-    elif [ -d "$_pd/$_n" ] && [ ! -L "$_pd/$_n" ]; then echo "  shared $1/$_n: real directory in the profile (not merged)"
+    elif [ -d "$_pd/$_n" ] && [ ! -L "$_pd/$_n" ]; then
+      if [ -d "$_f" ] && diff -rq "$_f" "$_pd/$_n" >/dev/null 2>&1; then echo "  shared $1/$_n: real directory, identical, replaced by a link on next launch"
+      else echo "  shared $1/$_n: real directory in the profile (not merged)"; fi
     elif [ -f "$_pd/$_n" ] && [ ! -L "$_pd/$_n" ]; then echo "  shared $1/$_n: drift (regular file in the profile)"
     else echo "  shared $1/$_n: not linked (fixed on next launch)"; fi
   done

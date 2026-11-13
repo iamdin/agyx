@@ -96,6 +96,8 @@ A profile differs from your real home only in which Google account is logged in.
 
 **Private to each profile** (never linked, moved or adopted): `antigravity-cli/antigravity-oauth-token` (the login), `antigravity-cli/log`, `antigravity-cli/cli.log` (agy keeps only a few log files per directory, so instances would evict each other) and `antigravity-cli/jetbox_summaries_proto.pb` (agy saves it by rename, so a link cannot survive).
 
+SQLite sidecar files (names ending in `-wal`, `-shm` or `-journal`) are never synced either, in any shared directory: SQLite opens the shared database through the profile symlink, resolves it, and creates those files next to the real database, so linking them would only produce links that dangle after a checkpoint.
+
 **Home whitelist.** `${XDG_CONFIG_HOME:-$HOME/.config}/agyx/home-links` (resolved from your real home, never from a profile home; `XDG_CONFIG_HOME` counts only when it is an absolute path) lists names in your real home that are linked into every profile home, so programs agy starts directly (MCP servers) find your git, ssh, npm, bun, cargo and similar configuration. `agyx setup` writes the file with the default list (creating the `agyx` directory) if it does not exist, and the same default is used when the file is missing; `agyx doctor` prints the resolved path. The file used to be read from the data dir; that location is no longer read:
 
 ```
@@ -104,7 +106,7 @@ A profile differs from your real home only in which Google account is logged in.
 
 Edit the file to change the list: one name per line, `#` starts a comment line, blank lines are ignored. A name must be a single path component; `.`, `..`, names containing `/`, `.gemini`, `Library` and `.local` are skipped with a warning (`.local` holds the agyx data dir, so linking it would create a loop). On each launch a link is created when the real entry exists and the profile entry does not; a link whose real entry has disappeared is removed; anything else already in the profile home (a real file or directory, or a link elsewhere) is left untouched and reported as a conflict by `agyx doctor`. Links for names you later remove from the list stay in place.
 
-`agyx doctor` also reports, per profile, shared `.gemini` entries that are not correct links (drift and real directories), the number of files in `agyx-drift`, and each whitelist name as linked, missing in the real home, not linked yet, or a conflict. In the steady state (everything already correct) the sync uses only shell builtins, no extra processes.
+`agyx doctor` also reports, per profile, shared `.gemini` entries that are not correct links (drift and real directories) (a real directory identical to the shared one is reported as "identical, replaced by a link on next launch"), the number of files in `agyx-drift`, and each whitelist name as linked, missing in the real home, not linked yet, or a conflict. In the steady state (everything already correct) the sync uses only shell builtins, no extra processes.
 
 ## The "Keychain Not Found" dialog
 

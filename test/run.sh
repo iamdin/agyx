@@ -475,5 +475,27 @@ S7=$DD/profiles/s7/home; mkdir -p "$S7"
 eq xdg-launch-uses-file "link/absent/absent" "$(islink "$S7/mydir2" "$RH/mydir2")/$([ -e "$S7/.gitconfig" ] || echo absent)/$([ -e "$S7/ignored-by-xdg" ] || echo absent)"
 rm -rf "${DD:?}/profiles/s7"; rm -f "$DD/home-links"
 
+# SQLite sidecars (-wal/-shm/-journal) are never linked, adopted or reported; doctor explains identical dirs
+echo db > "$G/antigravity-cli/conv.db"
+for s in -wal -shm -journal; do echo x > "$G/antigravity-cli/conv.db$s"; done
+echo top > "$G/top.sqlite-shm"
+S8=$DD/profiles/s8/home A8=$DD/profiles/s8/home/.gemini/antigravity-cli
+mkdir -p "$A8" "$G/antigravity-cli/idm" "$A8/idm" "$G/antigravity-cli/dif" "$A8/dif"
+echo mine > "$A8/own.db-wal"                                     # profile-only sidecar
+echo 1 > "$G/antigravity-cli/idm/a"; echo 1 > "$A8/idm/a"        # identical directory
+echo 1 > "$G/antigravity-cli/dif/a"; echo 2 > "$A8/dif/a"        # different directory
+eq doctor-identical-dir "1" "$(sect s8 | grep -c 'antigravity-cli/idm: real directory, identical, replaced by a link on next launch')"
+eq doctor-different-dir "1" "$(sect s8 | grep -c 'antigravity-cli/dif: real directory in the profile (not merged)')"
+eq doctor-skips-sidecars-before "0" "$(sect s8 | grep -c -e '-wal' -e '-shm' -e '-journal')"
+launch s8 >/dev/null
+eq sidecar-launch-stderr "1" "$(grep -c . "$T/err")"
+eq sidecar-db-linked "link" "$(islink "$A8/conv.db" "$G/antigravity-cli/conv.db")"
+eq sidecars-not-linked "absent" "$(for s in -wal -shm -journal; do [ -e "$A8/conv.db$s" ] || [ -L "$A8/conv.db$s" ] && echo present; done; [ -e "$S8/.gemini/top.sqlite-shm" ] || [ -L "$S8/.gemini/top.sqlite-shm" ] || echo absent)"
+eq sidecar-not-adopted "regular/absent" "$([ -f "$A8/own.db-wal" ] && [ ! -L "$A8/own.db-wal" ] && echo regular)/$([ -e "$G/antigravity-cli/own.db-wal" ] || echo absent)"
+eq sidecar-no-drift "0" "$(find "$S8/agyx-drift" -name '*-wal*' -o -name '*-shm*' -o -name '*-journal*' 2>/dev/null | grep -c .)"
+eq identical-dir-replaced "link" "$(islink "$A8/idm" "$G/antigravity-cli/idm")"
+eq doctor-skips-sidecars-after "0" "$(sect s8 | grep -c -e '-wal' -e '-shm' -e '-journal')"
+rm -rf "${DD:?}/profiles/s8"
+
 echo "passed: $pass, failed: $fail"
 [ "$fail" = 0 ]
