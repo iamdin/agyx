@@ -218,6 +218,7 @@ for c in "profile list" "profile default work" doctor; do
 done
 eq mgmt-never-launches "0" "$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
 # no profiles yet
+mkdir -p "$T/empty"
 eq ctl-empty-list "no profiles yet; run: agyx profile login NAME/0" "$(AGYX_DATA_DIR=$T/empty ctl profile list)/$(AGYX_DATA_DIR=$T/empty ctl profile list >/dev/null; echo $?)"
 # misuse of a management subcommand prints the usage (exit 2) and never launches agy
 : > "$LAUNCHLOG"
@@ -364,6 +365,48 @@ eq login-failed-rc-no-default "3/absent" "$rc/$([ -e "$N/data/default" ] || echo
 fx env FAKE_RUN='touch $HOME/.fake-item' PATH="$SP" "$AX" profile login viakc >/dev/null 2>&1
 eq login-keychain-sets-default "viakc" "$(cat "$N/data/default" 2>/dev/null)"
 
+# ---- ask once before the first write (data dir absent = not set up) ----
+gfresh() { N=$T/$1; rm -rf "$N"; mkdir -p "$N/rh"; }
+nothing_written() { [ ! -e "$N/data" ] && [ ! -e "$N/rh/.config" ] && echo yes || echo no; }
+for c in "--profile p" "profile login p" "profile default p"; do
+  gfresh g1; : > "$LAUNCHLOG"
+  # shellcheck disable=SC2086
+  out=$(fx env PATH="$SP" "$AX" $c 2>"$T/err" </dev/null); rc=$?
+  eq "gate-noterm-$c" "nonzero,empty,1,msg,yes,0" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -c . "$T/err"),$(grep -q 'not set up yet.*once in a terminal.*AGYX_ASSUME_YES=1' "$T/err" && echo msg),$(nothing_written),$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
+done
+# read-only commands never ask and never create anything
+for c in doctor "profile list" "profile default"; do
+  gfresh g2
+  # shellcheck disable=SC2086
+  out=$(fx env PATH="$SP" "$AX" $c 2>"$T/err" </dev/null); rc=$?
+  eq "gate-readonly-$c" "0,notyet,empty-err,yes" "$rc,$(echo "$out" | grep -c 'not set up yet' | sed 's/1/notyet/'),$([ -s "$T/err" ] || echo empty-err),$(nothing_written)"
+done
+# AGYX_ASSUME_YES=1 skips the question
+gfresh g3
+out=$(fx env PATH="$SP" AGYX_ASSUME_YES=1 FAKE_RUN="$mktok" "$AX" profile login w 2>"$T/err" </dev/null)
+eq gate-assume-yes "w/$here/bin/agy/present/1" "$(cat "$N/data/default")/$(readlink "$N/data/bin/agy")/$([ -f "$N/rh/.config/agyx/symlinks" ] && echo present)/$(grep -c 'Continue' "$T/err" | sed 's/0/1/')"
+# the prompt: answers come from AGYX_TTY (tests only); yes, empty line (default yes), no, EOF
+printf 'y\n' > "$T/ans-y"; printf '\n' > "$T/ans-enter"; printf 'n\n' > "$T/ans-n"; : > "$T/ans-eof"
+for a in y enter; do
+  gfresh g4
+  out=$(fx env PATH="$SP" AGYX_TTY="$T/ans-$a" FAKE_RUN="$mktok" "$AX" profile login w 2>"$T/err" </dev/null); rc=$?
+  eq "gate-prompt-$a" "0/w/$here/bin/agy/present" "$rc/$(cat "$N/data/default" 2>/dev/null)/$(readlink "$N/data/bin/agy")/$([ -f "$N/rh/.config/agyx/symlinks" ] && echo present)"
+done
+eq gate-prompt-text "agyx will set up:|  $N/data/  profiles (one HOME and keychain per account), a link to agy at $T/fakebin/agy|  $N/data/bin/agy  entry for apps that need a binary named agy|  $N/rh/.config/agyx/symlinks  home entries linked into every profile (editable)|Profiles share your ~/.gemini settings and history; your login keychain is not touched.|Continue? [Y/n] " "$(sed -n '/^agyx will set up/,/Continue/p' "$T/err" | tr '\n' '|' | sed -e 's/|$//' -e 's/Continue.*/Continue? [Y\/n] /')"
+eq gate-prompt-continues "1" "$(echo "$out" | grep -c "'w' is now the default profile")"
+for a in n eof; do
+  gfresh g5; : > "$LAUNCHLOG"
+  out=$(fx env PATH="$SP" AGYX_TTY="$T/ans-$a" "$AX" --profile p 2>"$T/err" </dev/null); rc=$?
+  eq "gate-prompt-$a" "nonzero,empty,yes,0" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(nothing_written),$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
+done
+# an existing data dir is never asked
+fresh g6
+eq gate-existing-not-asked "AGY_PROFILE=p/0" "$(fx env PATH="$SP" AGYX_TTY="$T/ans-n" "$AX" --profile p 2>"$T/err" </dev/null | grep '^AGY_PROFILE=')/$(grep -c 'Continue' "$T/err")"
+# after setup, repairs are silent
+rm -f "$N/data/bin/agy"; : > "$T/err"
+fx env PATH="$SP" AGYX_TTY="$T/ans-n" "$AX" doctor >/dev/null 2>"$T/err" </dev/null
+eq gate-repair-silent "present/0" "$([ -L "$N/data/bin/agy" ] && echo present)/$(grep -c . "$T/err")"
+
 # per-profile keychain (fake security; the real one is never called)
 H=$DD/profiles/kc/home K=$DD/profiles/kc/home/Library/Keychains/login.keychain-db
 mkdir -p "$H"; : > "$SECLOG"
@@ -495,6 +538,7 @@ eq default-use-gone "1" "$(ctl profile use other >/dev/null 2>&1 || echo 1)"
 printf work > "$DD/default"
 # doctor (any run) writes the default list once and never overwrites it
 D2=$T/d2 RH3=$T/rh3
+mkdir -p "$D2"
 (AGYX_REAL_HOME=$RH3 AGYX_DATA_DIR=$D2 ctl doctor >/dev/null 2>&1)
 L3=$RH3/.config/agyx/symlinks
 eq doctor-writes-list ".gitconfig .ssh .config .npm .npmrc .bun .bunfig.toml .cache .cargo .rustup go Code GitHub " "$(grep -v '^#' "$L3" | tr '\n' ' ')"
@@ -547,6 +591,7 @@ for n in lk1 lk2 lk3 lk4 lk5 lk6; do rm -rf "${DD:?}/profiles/$n"; done
 
 # whitelist file location: ${XDG_CONFIG_HOME:-<real home>/.config}/agyx/symlinks
 RH4=$T/rh4 XDG=$T/xdg
+mkdir -p "$T/d3"
 (AGYX_REAL_HOME=$RH4 XDG_CONFIG_HOME=$XDG AGYX_DATA_DIR=$T/d3 ctl doctor >/dev/null 2>&1)
 eq xdg-abs-written "present/absent" "$([ -f "$XDG/agyx/symlinks" ] && echo present)/$([ -e "$RH4/.config/agyx/symlinks" ] || echo absent)"
 mkdir -p "$T/cwd"

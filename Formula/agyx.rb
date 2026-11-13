@@ -24,6 +24,7 @@ class Agyx < Formula
     ENV["AGYX_DATA_DIR"] = testpath/"data"
     ENV["AGYX_REAL_HOME"] = testpath
     ENV["AGYX_REAL_AGY"] = "/usr/bin/true"
+    ENV["AGYX_ASSUME_YES"] = "1" # skip the first-run question
     (testpath/"data/profiles/work/home").mkpath
     # anything that is not an agyx subcommand launches agy via the shim
     system bin/"agyx", "--profile", "work"

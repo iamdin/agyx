@@ -178,6 +178,20 @@ agyx_subcommand() {
   return 1
 }
 
+# Sets _found to the first executable `agy` on PATH that is not agyx's own entry point (absolute).
+agyx_scan_path() {
+  _found=
+  _ifs=$IFS; IFS=:
+  for _p in $PATH; do
+    if [ -n "$_p" ] && [ -f "$_p/agy" ] && [ -x "$_p/agy" ] && [ ! "$_p/agy" -ef "$AGYX_SHIM" ]; then
+      _found=$_p/agy; break
+    fi
+  done
+  IFS=$_ifs
+  [ -n "$_found" ] || return 1
+  case $_found in /*) ;; *) _found=$PWD/$_found ;; esac
+}
+
 # Sets $real to the real agy. AGYX_REAL_AGY (absolute path) overrides everything and is not stored.
 # Otherwise <data>/real-agy is used; when it is missing, not executable or points at the shim, the
 # first executable `agy` on PATH that is not agyx's own entry point is found and stored there.
@@ -190,16 +204,7 @@ agyx_find_real() {
   fi
   real=$data/real-agy
   if [ -x "$real" ] && [ ! "$real" -ef "$AGYX_SHIM" ]; then return 0; fi
-  _found=
-  _ifs=$IFS; IFS=:
-  for _p in $PATH; do
-    if [ -n "$_p" ] && [ -f "$_p/agy" ] && [ -x "$_p/agy" ] && [ ! "$_p/agy" -ef "$AGYX_SHIM" ]; then
-      _found=$_p/agy; break
-    fi
-  done
-  IFS=$_ifs
-  [ -n "$_found" ] || return 1
-  case $_found in /*) ;; *) _found=$PWD/$_found ;; esac
+  agyx_scan_path || return 1
   real=$_found
   (umask 077; mkdir -p "$data") && ln -sfn "$real" "$data/real-agy" ||
     echo "agyx: warning: could not store $data/real-agy; the search will repeat on the next run" >&2
@@ -227,4 +232,32 @@ agyx_ensure_links_file() {
     echo "agyx: wrote $AGYX_LINKS_FILE (edit it to change what profiles share)" >&2
   fi
   return 0
+}
+
+# Nothing is written to the user's file system until the user agreed once. "Set up" = the data dir
+# exists. Commands that write call this first. Without a terminal (stdin and stderr) it refuses;
+# AGYX_ASSUME_YES=1 skips the question. AGYX_TTY=<file> is for tests only: it replaces the terminal
+# check and /dev/tty as the place the answer is read from.
+agyx_gate() {
+  [ -d "$data" ] && return 0
+  if [ "${AGYX_ASSUME_YES-}" != 1 ]; then
+    if [ -z "${AGYX_TTY-}" ] && { [ ! -t 0 ] || [ ! -t 2 ]; }; then
+      die "agyx is not set up yet. Run agyx once in a terminal to set it up (or set AGYX_ASSUME_YES=1)."
+    fi
+    if [ -n "${AGYX_REAL_AGY-}" ]; then _found=$AGYX_REAL_AGY
+    elif ! agyx_scan_path; then _found="(not found yet: install agy, or set AGYX_REAL_AGY=/path/to/agy)"; fi
+    agyx_set_links_file
+    {
+      echo "agyx will set up:"
+      echo "  $data/  profiles (one HOME and keychain per account), a link to agy at $_found"
+      echo "  $data/bin/agy  entry for apps that need a binary named agy"
+      echo "  $AGYX_LINKS_FILE  home entries linked into every profile (editable)"
+      echo "Profiles share your ~/.gemini settings and history; your login keychain is not touched."
+      printf 'Continue? [Y/n] '
+    } >&2
+    _ans=
+    read -r _ans < "${AGYX_TTY:-/dev/tty}" || [ -n "$_ans" ] || _ans=n
+    case $_ans in ''|[Yy]*) ;; *) echo >&2; die "not set up; nothing was written." ;; esac
+  fi
+  (umask 077; mkdir -p "$data") || die "cannot create $data"
 }

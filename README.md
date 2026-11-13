@@ -17,7 +17,20 @@ brew install iamdin/tap/agyx
 agyx profile login work   # runs agy's native login in profile "work"
 ```
 
-There is no setup step. `agyx` is the only command you run; Homebrew puts it on `PATH`, and agyx never edits your shell config. Everything else happens by itself, on any run, and only prints to stderr:
+Nothing is written to your file system until you agree once. The first time you run a command that writes (launching agy, `agyx profile login`, `agyx profile default NAME`) and `<data dir>` does not exist yet, agyx prints what it will create and asks on the terminal (default yes):
+
+```
+agyx will set up:
+  ~/.local/share/agyx/          profiles (one HOME and keychain per account), a link to agy at /path/to/agy
+  ~/.local/share/agyx/bin/agy   entry for apps that need a binary named agy
+  ~/.config/agyx/symlinks       home entries linked into every profile (editable)
+Profiles share your ~/.gemini settings and history; your login keychain is not touched.
+Continue? [Y/n]
+```
+
+No (or end of input) exits non-zero and writes nothing. Without a terminal (an app such as T3 Code, a pipe, ACP) agyx never asks: it exits non-zero with one stderr line saying it is not set up yet, and nothing on stdout. `AGYX_ASSUME_YES=1` skips the question (scripts, packaging). `agyx doctor`, `agyx profile list` and `agyx profile default` without a name are read-only: before setup they only report "not set up yet". A data dir that already exists counts as agreed and is never asked about. (`AGYX_TTY=<file>` replaces the terminal check and /dev/tty with a file the answer is read from; tests only.)
+
+There is no setup command. `agyx` is the only command you run; Homebrew puts it on `PATH`, and agyx never edits your shell config. After the question, everything else happens by itself, on any run, and only prints to stderr:
 
 - **Real agy.** The first time, agyx looks for the first executable `agy` on `PATH` (never its own entry point) and stores it as `<data dir>/real-agy`. After that there is no `PATH` scan. If agy is not installed, agyx says so and how to point it at one: `AGYX_REAL_AGY=/abs/path/to/agy` overrides everything (it is not stored).
 - **A binary named `agy`.** `<data dir>/bin/agy` (default `~/.local/share/agyx/bin/agy`) is created when missing; it is a link to the shim. It is the path to give apps that need a binary named `agy` (for example a T3 Code "agy binary path" setting): they then start the real agy under the profile chosen by `AGY_PROFILE` or the default. `agyx doctor` prints it. Nothing asks you to change `PATH`.

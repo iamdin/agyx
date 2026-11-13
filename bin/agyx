@@ -27,9 +27,11 @@ agyx_subcommand "${1-}" || exec "$shim" "$@"
 
 tok=home/.gemini/antigravity-cli/antigravity-oauth-token
 sec=${AGYX_SECURITY:-/usr/bin/security}  # AGYX_SECURITY is only for tests
-# automatic setup (stderr only)
-agyx_ensure_entry
-agyx_ensure_links_file
+# Nothing is written before the user agreed once (agyx_gate, for the commands that write); read-only
+# commands report "not set up yet". Once set up, missing pieces are repaired silently.
+repair() { agyx_ensure_entry; agyx_ensure_links_file; }
+[ -d "$data" ] && repair
+notyet() { echo "agyx is not set up yet; run agyx once in a terminal to set it up (or set AGYX_ASSUME_YES=1)"; exit 0; }
 
 need() {
   valid "${1-}" || bad "invalid profile name: ${1-}"
@@ -96,6 +98,7 @@ case $cmd in
       login)
         [ $# -eq 1 ] || bad "profile login needs exactly one profile name"
         need "${1-}"
+        agyx_gate; repair
         (umask 077; mkdir -p "$data/profiles/$1/home") || die "cannot create profile"
         if logged_in "$1"; then
           echo "agyx: profile '$1' is already logged in ($(status "$1")). Starting agy in it anyway; sign in again from there only if you want to change the account." >&2
@@ -112,12 +115,13 @@ case $cmd in
         ;;
       default)
         [ $# -le 1 ] || bad "profile default takes at most one profile name"
-        if [ $# -eq 0 ]; then d=$(dflt); echo "${d:-none}"; exit 0; fi
-        exists "$1"
+        if [ $# -eq 0 ]; then [ -d "$data" ] || notyet; d=$(dflt); echo "${d:-none}"; exit 0; fi
+        need "$1"; agyx_gate; repair; exists "$1"
         printf '%s\n' "$1" > "$data/default"
         ;;
       list)
         [ $# -eq 0 ] || bad "profile list takes no arguments"
+        [ -d "$data" ] || notyet
         if [ -z "$(names)" ]; then echo "no profiles yet; run: agyx profile login NAME"; exit 0; fi
         d=$(dflt)
         for n in $(names); do
@@ -131,6 +135,7 @@ case $cmd in
     ;;
   doctor)
     [ $# -eq 0 ] || bad "doctor takes no arguments"
+    [ -d "$data" ] || notyet
     # shellcheck disable=SC2154 # real is set by agyx_find_real
     if agyx_find_real; then
       echo "real agy: $(readlink "$real" 2>/dev/null || echo "$real")${AGYX_REAL_AGY:+ (from AGYX_REAL_AGY)}"

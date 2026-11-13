@@ -21,7 +21,8 @@ data=${AGYX_DATA_DIR:-$rh/.local/share/agyx}
 R=$rh AGYX_SHIM=$self
 # shellcheck source=../runtime/sync.sh
 . "$runtime/sync.sh"
-# automatic setup, builtins only once everything is in place (stderr only, never stdout)
+# ask once before the first write; then automatic repairs (stderr only, never stdout)
+agyx_gate
 agyx_ensure_entry
 agyx_ensure_links_file
 
