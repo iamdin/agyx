@@ -15,6 +15,9 @@ PATH=$T/brewbin:$DD/bin:/usr/bin:/bin:/usr/sbin:/sbin
 cat > "$T/fake-agy" <<'EOF'
 #!/bin/sh
 [ "$1" = --version ] || echo x >> "$LAUNCHLOG"
+FAKE_LOGFILE=; prev=
+for a in "$@"; do [ "$prev" = --log-file ] && FAKE_LOGFILE=$a; prev=$a; done
+export FAKE_LOGFILE
 if [ -n "$FAKE_RUN" ]; then exec sh -c "$FAKE_RUN"; fi
 echo "HOME=$HOME"
 echo "AGY_PROFILE=$AGY_PROFILE"
@@ -172,7 +175,7 @@ eq nested-agy "other" "$(FAKE_RUN='FAKE_RUN= agy x' agyx --profile other | sed -
 eq nested-agyx-switch "home" "$(FAKE_RUN='FAKE_RUN= agyx --profile home x' agyx --profile other | sed -n 's/^AGY_PROFILE=//p')"
 # profile names equal to an agyx subcommand are rejected, even if the directory exists
 res=
-for n in doctor profile; do
+for n in doctor profile uninstall; do
   mkdir -p "$DD/profiles/$n/home"; : > "$LAUNCHLOG"
   agyx --profile "$n" >/dev/null 2>&1 && res="$res launched:$n"
   agy --profile "$n" >/dev/null 2>&1 && res="$res shim-launched:$n"
@@ -221,7 +224,7 @@ eq ctl-empty-list "no profiles yet; run: agyx profile login NAME/0" "$(AGYX_DATA
 # misuse of a management subcommand prints the usage (exit 2) and never launches agy
 : > "$LAUNCHLOG"
 res=
-for c in profile "profile bogus" "profile login" "profile login Bad" "profile login profile" "profile login a b" "profile default a b" "profile default nope" "profile default profile" "profile list x" "doctor x"; do
+for c in profile "profile bogus" "profile login" "profile login Bad" "profile login profile" "profile login a b" "profile default a b" "profile default nope" "profile default profile" "profile list x" "doctor x" "uninstall x"; do
   # shellcheck disable=SC2086
   out=$(ctl $c 2>&1 >/dev/null); rc=$?
   [ "$rc" = 2 ] && echo "$out" | grep -q '^usage: agyx' || res="$res [$c rc=$rc]"
@@ -238,7 +241,7 @@ done
 eq usage-lists-only-current "0" "$(ctl profile 2>&1 | grep -c 'setup\|shim')"
 
 # agyx subcommands never overlap with the real agy 1.5.6 subcommands/flags
-ctl_subs="doctor profile"
+ctl_subs="doctor profile uninstall"
 agy_subs="acp agent agents changelog install mcp mic-serve models plugin plugins remote-control update"
 both=
 for a in $ctl_subs; do for b in $agy_subs; do [ "$a" = "$b" ] && both="$both $a"; done; done
@@ -787,6 +790,110 @@ eq email-no-marker-left "0" "$(find "$N/data/profiles" -name '.login-start' | gr
 # duplicate warning uses the email files
 printf 'last@example.com\n' > "$N/data/profiles/acct2/email"
 eq email-dup-warning "1" "$(fx env PATH="$SP" "$AX" profile list </dev/null 2>/dev/null | grep -c 'WARNING: profiles acct1 acct2 are logged in to the same Google account (last@example.com)')"
+
+
+# ---- login writes its own agy log (--log-file) and reads the email from that file only ----
+wfresh o1; rmdir "$N/data/profiles/p/home" "$N/data/profiles/p"
+# another instance logs a different account into the shared log while this login runs; it is ignored
+OWN='touch $HOME/.fake-item; sleep 1; mkdir -p $HOME/.gemini/antigravity-cli/log; echo "11:00 applyAuthResult ok email=other@example.com" > $HOME/.gemini/antigravity-cli/log/shared-new.log; echo "11:01 applyAuthResult ok email=mine@example.com" > "$FAKE_LOGFILE"; printf "%s\n" "$FAKE_LOGFILE" > "$N_LOGPATH"'
+out=$(fx env PATH="$SP" N_LOGPATH="$T/logpath" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN="$OWN" "$AX" profile login own1 2>/dev/null </dev/null)
+eq login-own-log-email "mine@example.com" "$(cat "$N/data/profiles/own1/email")"
+eq login-own-log-path "$N/data/profiles/own1/.login-log" "$(cat "$T/logpath")"
+eq login-own-log-deleted "0" "$(find "$N/data/profiles" -name '.login-*' | grep -c .)"
+# the file exists but has no email: unknown, not the shared log
+out=$(fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN='touch $HOME/.fake-item; sleep 1; echo "11:00 applyAuthResult ok email=other2@example.com" > $HOME/.gemini/antigravity-cli/log/shared-new2.log; echo "12:00 nothing here" > "$FAKE_LOGFILE"' "$AX" profile login own2 2>/dev/null </dev/null)
+eq login-own-log-no-email "absent" "$([ -e "$N/data/profiles/own2/email" ] && echo present || echo absent)"
+# the file is never created (flag ignored): the shared logs written during the login are used
+out=$(fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN='touch $HOME/.fake-item; sleep 1; echo "13:00 applyAuthResult ok email=fallback@example.com" > $HOME/.gemini/antigravity-cli/log/shared-new3.log' "$AX" profile login own3 2>/dev/null </dev/null)
+eq login-flag-ignored-fallback "fallback@example.com" "$(cat "$N/data/profiles/own3/email")"
+eq login-no-leftovers "0" "$(find "$N/data/profiles" -name '.login-*' | grep -c .)"
+
+# ---- a token file at the blocker path: ask in a terminal, refuse otherwise ----
+printf 'y\n' > "$T/ans-y2"; printf 'n\n' > "$T/ans-n2"; printf '\n' > "$T/ans-enter2"; : > "$T/ans-eof2"
+tokwant="agyx: found a login token file at ~/.gemini/antigravity-cli/antigravity-oauth-token${nl}  It is probably plain agy's login. While it exists, every agyx profile could read it.${nl}  Move it to the Trash? Plain agy will ask you to sign in again. [y/N] "
+flt() { fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" AGYX_TRASH_DIR="$N/trash" FAKE_RUN=true AGYX_TTY="$T/ans-$1" "$AX" --profile p </dev/null 2>"$T/err"; }
+tk() { wfresh "$1"; mkdir -p "$N/rh/.gemini/antigravity-cli"; printf 'SECRET-TOKEN-CONTENT\n' > "$N/rh/$BL"; }
+tk t1; : > "$LAUNCHLOG"
+out=$(flt y2); rc=$?
+eq tokfile-yes "0,empty,prompt,moved,blocker,kept,launched" "$rc,$([ -z "$out" ] && echo empty),$([ "$(grep -v '^agyx: wrote' "$T/err" | sed -n '1,3p' | sed 's/\[y\/N\] .*/[y\/N] /')" = "$tokwant" ] && echo prompt),$(grep -c 'agyx: moved the token file to .*/trash/agyx-token-' "$T/err" | sed 's/0/-/;s/1/moved/'),$([ -d "$N/rh/$BL" ] && [ -f "$N/rh/$BL/README" ] && echo blocker),$(cat "$N"/trash/agyx-token-*/antigravity-oauth-token | tr -d '\n' | sed 's/SECRET-TOKEN-CONTENT/kept/'),$([ -s "$LAUNCHLOG" ] && echo launched)"
+eq tokfile-yes-no-secret-printed "0" "$(grep -c SECRET "$T/err")"
+for a in n2 enter2 eof2; do
+  tk t2; : > "$LAUNCHLOG"
+  out=$(flt $a); rc=$?
+  eq "tokfile-no-$a" "nonzero,empty,refusal,intact,0" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -q 'not starting this profile' "$T/err" && echo refusal),$(cat "$N/rh/$BL" | sed 's/SECRET-TOKEN-CONTENT/intact/'),$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
+done
+# without a terminal there is no question at all (also with AGYX_ASSUME_YES)
+tk t3
+out=$(fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" AGYX_ASSUME_YES=1 FAKE_RUN=true "$AX" --profile p </dev/null 2>"$T/err"); rc=$?
+eq tokfile-noterm "nonzero,refusal,no-question,intact" "$([ $rc -ne 0 ] && echo nonzero),$(grep -q 'not starting this profile' "$T/err" && echo refusal),$(grep -q 'Move it to the Trash' "$T/err" || echo no-question),$(sed 's/SECRET-TOKEN-CONTENT/intact/' "$N/rh/$BL")"
+
+# ---- agyx uninstall ----
+UP=$T/ubin; rm -rf "$UP"; mkdir "$UP"
+printf '#!/bin/sh\necho "brew $*" >> "%s"\n' "$T/brewlog" > "$UP/brew"; chmod +x "$UP/brew"
+ln -s "$T/fake-security" "$UP/security"
+# ufresh NAME: default-layout install (data in ~/.local/share/agyx) with profiles a b c, config, blocker, shared .gemini
+ufresh() {
+  N=$T/$1; rm -rf "$N"; mkdir -p "$N/rh/.local/share/agyx/bin" "$N/rh/.local/bin" "$N/rh/.config/agyx" "$N/rh/.gemini/antigravity-cli/antigravity-oauth-token"
+  UD=$N/rh/.local/share/agyx
+  for pr in a b c; do mkdir -p "$UD/profiles/$pr/home/Library/Keychains"; : > "$UD/profiles/$pr/home/Library/Keychains/login.keychain-db"; done
+  ln -s "$T/fake-agy" "$UD/real-agy"; echo a > "$UD/default"; printf '.gitconfig\n' > "$N/rh/.config/agyx/symlinks"
+  printf 'agyx README\n' > "$N/rh/.gemini/antigravity-cli/antigravity-oauth-token/README"; echo keep > "$N/rh/.gemini/settings.json"
+  : > "$SECLOG"; : > "$T/brewlog"
+}
+ux() { env -u AGYX_DATA_DIR AGYX_REAL_HOME="$N/rh" AGYX_TRASH_DIR="$N/trash" PATH="$UP:$SP" "$@"; }
+printf 'y\n' > "$T/ua-y"; printf 'n\n' > "$T/ua-n"; printf '\n' > "$T/ua-enter"
+# a checkout install: the PATH link in ~/.local/bin goes, the checkout stays
+ufresh u1; ln -s "$here/bin/agyx" "$N/rh/.local/bin/agyx"
+out=$(ux env AGYX_TTY="$T/ua-y" "$here/bin/agyx" uninstall 2>"$T/err" </dev/null); rc=$?
+uwant="agyx uninstall will remove:${nl}  ~/.local/share/agyx/   profiles a, b, c (their keychains and logins are deleted)${nl}  ~/.config/agyx/   your symlinks list${nl}  ~/.gemini/antigravity-cli/antigravity-oauth-token/   the token-file blocker${nl}  agyx itself   (the link ~/.local/bin/agyx)${nl}Kept: ~/.gemini (shared settings, history and conversations) and plain agy.${nl}Apps set up with ~/.local/share/agyx/bin/agy (for example T3 Code) will stop working.${nl}Remove? [y/N] "
+eq uninstall-text "$uwant" "$(sed '/^$/d' "$T/err" | sed -n '1,8p' | sed 's/\(Remove? \[y\/N\] \).*/\1/' | head -c 2000)"
+eq uninstall-checkout "0,gone,gone,gone,kept,kept,kept" "$rc,$([ ! -e "$N/rh/.local/share/agyx" ] && echo gone),$([ ! -e "$N/rh/.config/agyx" ] && echo gone),$([ ! -e "$N/rh/.gemini/antigravity-cli/antigravity-oauth-token" ] && echo gone),$(cat "$N/rh/.gemini/settings.json" | sed 's/keep/kept/'),$([ -d "$N/rh/.gemini/antigravity-cli" ] && echo kept),$([ -x "$here/bin/agyx" ] && [ ! -L "$N/rh/.local/bin/agyx" ] && echo kept)"
+UTR=$(echo "$N"/trash/agyx-uninstall-*)
+eq uninstall-trash "3/1/1" "$(find "$UTR/data/profiles" -mindepth 1 -maxdepth 1 | grep -c .)/$([ -f "$UTR/config/symlinks" ] && echo 1)/$(echo "$N"/trash/agyx-uninstall-* | wc -w | tr -d ' ')"
+eq uninstall-keychains "3" "$(grep -c "delete-keychain" "$SECLOG")"
+eq uninstall-keychain-call "HOME=$N/rh/.local/share/agyx/profiles/a/home delete-keychain $N/rh/.local/share/agyx/profiles/a/home/Library/Keychains/login.keychain-db" "$(grep 'delete-keychain' "$SECLOG" | head -n 1)"
+eq uninstall-keychains-before-move "3" "$(grep -c 'delete-keychain' "$SECLOG")"
+eq uninstall-no-brew "" "$(cat "$T/brewlog")"
+# the blocker stays when it holds anything besides agyx's README; answering No removes nothing
+ufresh u2; echo extra > "$N/rh/.gemini/antigravity-cli/antigravity-oauth-token/other"
+out=$(ux env AGYX_TTY="$T/ua-y" "$here/bin/agyx" uninstall 2>"$T/err" </dev/null)
+eq uninstall-blocker-kept "kept/gone" "$([ -f "$N/rh/.gemini/antigravity-cli/antigravity-oauth-token/other" ] && echo kept)/$([ ! -e "$N/rh/.local/share/agyx" ] && echo gone)"
+eq uninstall-blocker-line-absent "0" "$(grep -c 'the token-file blocker' "$T/err")"
+for a in n enter; do
+  ufresh u3
+  out=$(ux env AGYX_TTY="$T/ua-$a" "$here/bin/agyx" uninstall 2>"$T/err" </dev/null); rc=$?
+  eq "uninstall-no-$a" "nonzero,present,present,0,nothing" "$([ $rc -ne 0 ] && echo nonzero),$([ -d "$N/rh/.local/share/agyx" ] && echo present),$([ -d "$N/rh/.config/agyx" ] && echo present),$(grep -c delete-keychain "$SECLOG"),$(grep -q 'nothing was removed' "$T/err" && echo nothing)"
+done
+: > "$T/ua-eof"
+ufresh u3; ux env AGYX_TTY="$T/ua-eof" "$here/bin/agyx" uninstall >/dev/null 2>&1 </dev/null
+eq uninstall-eof "present" "$([ -d "$N/rh/.local/share/agyx" ] && echo present)"
+# no terminal: refuse, unless AGYX_ASSUME_YES=1
+ufresh u4
+out=$(ux "$here/bin/agyx" uninstall 2>"$T/err" </dev/null); rc=$?
+eq uninstall-noterm "nonzero,empty,msg,present" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -q 'uninstall needs a terminal to ask (or set AGYX_ASSUME_YES=1); nothing was removed.' "$T/err" && echo msg),$([ -d "$N/rh/.local/share/agyx" ] && echo present)"
+ux env AGYX_ASSUME_YES=1 "$here/bin/agyx" uninstall >/dev/null 2>&1 </dev/null
+eq uninstall-assume-yes "gone" "$([ ! -e "$N/rh/.local/share/agyx" ] && echo gone)"
+# a running agy (matched on the command line) blocks it, with its PID
+ufresh u5
+printf '#!/bin/sh\nsleep 20\n:\n' > "$T/agy-sleeper"; chmod +x "$T/agy-sleeper"
+ln -sfn "$T/agy-sleeper" "$N/rh/.local/share/agyx/real-agy"
+"$N/rh/.local/share/agyx/real-agy" & spid=$!
+sleep 1
+out=$(ux env AGYX_TTY="$T/ua-y" "$here/bin/agyx" uninstall 2>"$T/err" </dev/null); rc=$?
+eq uninstall-running "nonzero,pid,present,no-question" "$([ $rc -ne 0 ] && echo nonzero),$(grep -c "agy is still running (PIDs: .*$spid" "$T/err" | sed 's/1/pid/'),$([ -d "$N/rh/.local/share/agyx" ] && echo present),$(grep -q 'Remove?' "$T/err" || echo no-question)"
+kill "$spid" 2>/dev/null; wait "$spid" 2>/dev/null
+# the Homebrew install: the program is removed with brew uninstall at the end
+ufresh u6; TP2=$(cd "$T" && pwd -P); HB2=$TP2/hb2; brewlayout "$HB2" 0.1.2
+out=$(ux env AGYX_TTY="$T/ua-y" "$HB2/bin/agyx" uninstall 2>"$T/err" </dev/null); rc=$?
+eq uninstall-brew "0,brew uninstall agyx,gone,line,untap" "$rc,$(cat "$T/brewlog"),$([ ! -e "$N/rh/.local/share/agyx" ] && echo gone),$(grep -c '  agyx itself   (brew uninstall agyx)' "$T/err" | sed 's/1/line/'),$(echo "$out" | grep -q 'brew untap iamdin/tap' && echo untap)"
+# any other location: it says what to delete and removes nothing of the program
+ufresh u7; mkdir -p "$T/otherinst"; cp -R "$here/bin" "$here/runtime" "$T/otherinst/"
+out=$(ux env AGYX_TTY="$T/ua-y" "$T/otherinst/bin/agyx" uninstall 2>"$T/err" </dev/null); rc=$?
+eq uninstall-other "0,line,msg,still-there" "$rc,$(grep -c "agyx itself   (delete $(cd "$T/otherinst/bin" && pwd -P)/agyx yourself)" "$T/err" | sed 's/1/line/'),$(echo "$out" | grep -q 'to finish, delete .* yourself' && echo msg),$([ -x "$T/otherinst/bin/agyx" ] && echo still-there)"
+# nothing installed yet: the list only has the program line; nothing is created
+N=$T/u8; rm -rf "$N"; mkdir -p "$N/rh"
+out=$(ux env AGYX_ASSUME_YES=1 "$T/otherinst/bin/agyx" uninstall 2>"$T/err" </dev/null); rc=$?
+eq uninstall-empty "0,nothing-created" "$rc,$([ ! -e "$N/rh/.local" ] && [ ! -e "$N/rh/.config" ] && [ ! -e "$N/rh/.gemini" ] && echo nothing-created)"
 
 echo "passed: $pass, failed: $fail"
 [ "$fail" = 0 ]

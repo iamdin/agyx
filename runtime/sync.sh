@@ -43,6 +43,27 @@ agyx_ensure_blocker() {
       agyx_make_blocker || echo "agyx: warning: could not create $AGYX_BLOCKER" >&2
       return 0 ;;
   esac
+  # In a terminal a token file can be moved to the Trash on request (default No). It is never read.
+  if { [ -f "$AGYX_BLOCKER" ] || [ -L "$AGYX_BLOCKER" ]; } && { [ -n "${AGYX_TTY-}" ] || { [ -t 0 ] && [ -t 2 ]; }; }; then
+    {
+      echo "agyx: found a login token file at $(agyx_tilde "$AGYX_BLOCKER")"
+      echo "  It is probably plain agy's login. While it exists, every agyx profile could read it."
+      printf '  Move it to the Trash? Plain agy will ask you to sign in again. [y/N] '
+    } >&2
+    _ans=
+    read -r _ans < "${AGYX_TTY:-/dev/tty}" || [ -n "$_ans" ] || _ans=n
+    case $_ans in
+      [Yy]*)
+        _td=${AGYX_TRASH_DIR:-$R/.Trash}/agyx-token-$(date +%Y%m%d%H%M%S)
+        if (umask 077; mkdir -p "$_td") && mv "$AGYX_BLOCKER" "$_td/antigravity-oauth-token"; then
+          echo "agyx: moved the token file to $(agyx_tilde "$_td")" >&2
+          agyx_make_blocker || echo "agyx: warning: could not create $AGYX_BLOCKER" >&2
+          return 0
+        fi
+        echo "agyx: warning: could not move the token file" >&2 ;;
+      *) echo >&2 ;;
+    esac
+  fi
   {
     echo "agyx: not starting this profile: $(agyx_tilde "$AGYX_BLOCKER") exists and is not a directory."
     echo "It is probably a Google login token (for example the plain agy saved its login to a file)."
@@ -172,11 +193,15 @@ agyx_email_token() { # file
   _et=$(plutil -extract id_token_email raw -o - "$1" 2>/dev/null | tr -d '[:cntrl:]')
   case $_et in ''|*[[:space:]]*) ;; *) printf '%s' "$_et" ;; esac
 }
-agyx_email_log() { # log dir: last email= on an applyAuthResult line of its newest file
-  _lf=$(ls -t "$1" 2>/dev/null | head -n 1)
-  [ -n "$_lf" ] && [ -f "$1/$_lf" ] || return 0
-  _el=$(grep applyAuthResult "$1/$_lf" 2>/dev/null | sed -n 's/.*email=\([^][ ,;"}()]*\).*/\1/p' | tail -n 1 | tr -d '[:cntrl:]')
+agyx_email_file() { # log file: last email= on an applyAuthResult line
+  [ -f "$1" ] || return 0
+  _el=$(grep applyAuthResult "$1" 2>/dev/null | sed -n 's/.*email=\([^][ ,;"}()]*\).*/\1/p' | tail -n 1 | tr -d '[:cntrl:]')
   case $_el in *[[:space:]]*) ;; *) printf '%s' "$_el" ;; esac
+}
+agyx_email_log() { # log dir: the same for its newest file
+  _lf=$(ls -t "$1" 2>/dev/null | head -n 1)
+  [ -n "$_lf" ] && agyx_email_file "$1/$_lf"
+  return 0
 }
 
 # Does profile $1's keychain hold agy's login item? Never asks for the secret (no -w / -g).
@@ -261,7 +286,7 @@ agyx_report() {
 
 # Management subcommands of bin/agyx; they are also the reserved profile names (the only list).
 agyx_subcommand() {
-  case $1 in doctor|profile) return 0 ;; esac
+  case $1 in doctor|profile|uninstall) return 0 ;; esac
   return 1
 }
 

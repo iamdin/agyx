@@ -29,6 +29,7 @@ usage="usage: agyx [--profile NAME] [agy args...]   launch agy as a profile
        agyx profile default [NAME]  show or set the default profile
        agyx profile list            list profiles and their Google accounts
        agyx doctor                  check the installation
+       agyx uninstall               remove agyx's data and configuration
        any other arguments go to agy; agy's own help: agyx --profile NAME --help"
 # help: agyx's own usage (read-only; never asks, never writes, works before setup)
 if [ $# -eq 1 ]; then
@@ -53,7 +54,7 @@ sec=${AGYX_SECURITY:-/usr/bin/security}  # AGYX_SECURITY is only for tests
 # Nothing is written before the user agreed once (agyx_gate, for the commands that write); read-only
 # commands report "not set up yet". Once set up, missing pieces are repaired silently.
 repair() { agyx_ensure_entry; agyx_ensure_links_file; }
-[ -d "$data" ] && repair
+[ -d "$data" ] && [ "${1-}" != uninstall ] && repair
 notyet() { echo "agyx is not set up yet; run agyx once in a terminal to set it up (or set AGYX_ASSUME_YES=1)"; exit 0; }
 
 need() {
@@ -125,15 +126,19 @@ case $cmd in
           echo "agyx: profile '$1' is already logged in ($(status "$1")). Starting agy in it anyway; sign in again from there only if you want to change the account." >&2
         fi
         # run agy as a child (not exec) to set the default afterwards; SIGINT reaches agy, not us
-        # the shared agy logs are older than this marker unless they belong to this login
-        mk=$data/profiles/$1/.login-start; : > "$mk"
+        # agy writes this login's log to its own file (--log-file), so the email read afterwards
+        # cannot come from another instance sharing a log; if agy did not create the file, fall back
+        # to the shared logs modified after a marker file
+        mk=$data/profiles/$1/.login-start lg=$data/profiles/$1/.login-log
+        rm -f "$lg"; : > "$mk"
         trap : INT
-        "$shim" --profile "$1"; rc=$?
+        "$shim" --profile "$1" --log-file "$lg"; rc=$?
         trap - INT
         if logged_in "$1"; then
-          e=$(login_email "$mk"); [ -z "$e" ] || printf '%s\n' "$e" > "$data/profiles/$1/email"
+          if [ -f "$lg" ]; then e=$(agyx_email_file "$lg"); else e=$(login_email "$mk"); fi
+          [ -z "$e" ] || printf '%s\n' "$e" > "$data/profiles/$1/email"
         fi
-        rm -f "$mk"
+        rm -f "$mk" "$lg"
         if logged_in "$1" && [ -z "$(dflt)" ]; then
           printf '%s\n' "$1" > "$data/default" &&
             echo "agyx: '$1' is now the default profile (change it with: agyx profile default NAME)"
@@ -158,6 +163,68 @@ case $cmd in
         dup_warning
         ;;
       *) bad "profile needs a subcommand: list | login NAME | default [NAME]" ;;
+    esac
+    ;;
+  uninstall)
+    [ $# -eq 0 ] || bad "uninstall takes no arguments"
+    agyx_set_links_file; agyx_blocker_state
+    cfgdir=${AGYX_LINKS_FILE%/*}
+    if [ "${AGYX_ASSUME_YES-}" != 1 ] && [ -z "${AGYX_TTY-}" ] && { [ ! -t 0 ] || [ ! -t 2 ]; }; then
+      die "uninstall needs a terminal to ask (or set AGYX_ASSUME_YES=1); nothing was removed."
+    fi
+    # agy processes: matched on the command line only (never on process environments)
+    rt=; [ -L "$data/real-agy" ] && rt=$(readlink "$data/real-agy")
+    pids=$(ps -axo pid=,command= 2>/dev/null | awk -v a="$data/real-agy" -v b="$rt" -v c="${AGYX_REAL_AGY-}" '
+      { for (i = 2; i <= 3; i++) if ($i != "" && ($i == a || (b != "" && $i == b) || (c != "" && $i == c))) { print $1; break } }' | tr '\n' ' ')
+    if [ -n "$pids" ]; then
+      die "agy is still running (PIDs: ${pids% }). Close it first, then run agyx uninstall again; nothing was removed."
+    fi
+    pl=; for n in $(names); do pl="$pl${pl:+, }$n"; done
+    bl=0; [ "$AGYX_BLOCKER_STATE" = ok ] && [ "$(ls -A "$AGYX_BLOCKER")" = README ] && bl=1
+    kind=other
+    case $me in */Cellar/agyx/*) kind=brew ;; *) [ -e "${me%/*/*}/.git" ] && kind=checkout ;; esac
+    plink=$rh/.local/bin/agyx
+    if [ "$kind" = checkout ] && { [ ! -L "$plink" ] || [ ! "$plink" -ef "$me" ]; }; then plink=; fi
+    {
+      echo "agyx uninstall will remove:"
+      [ -d "$data" ] && echo "  $(agyx_tilde "$data")/   profiles ${pl:-none} (their keychains and logins are deleted)"
+      [ -d "$cfgdir" ] && echo "  $(agyx_tilde "$cfgdir")/   your symlinks list"
+      [ "$bl" = 1 ] && echo "  $(agyx_tilde "$AGYX_BLOCKER")/   the token-file blocker"
+      case $kind in
+        brew) echo "  agyx itself   (brew uninstall agyx)" ;;
+        checkout) if [ -n "$plink" ]; then echo "  agyx itself   (the link $(agyx_tilde "$plink"))"; else echo "  agyx itself   (nothing: it runs from a checkout, which is left alone)"; fi ;;
+        *) echo "  agyx itself   (delete $(agyx_tilde "$me") yourself)" ;;
+      esac
+      echo "Kept: ~/.gemini (shared settings, history and conversations) and plain agy."
+      [ -d "$data" ] && echo "Apps set up with $(agyx_tilde "$data")/bin/agy (for example T3 Code) will stop working."
+    } >&2
+    if [ "${AGYX_ASSUME_YES-}" != 1 ]; then
+      printf 'Remove? [y/N] ' >&2
+      ans=
+      read -r ans < "${AGYX_TTY:-/dev/tty}" || [ -n "$ans" ] || ans=n
+      case $ans in [Yy]*) ;; *) echo >&2; die "nothing was removed." ;; esac
+    fi
+    trash=${AGYX_TRASH_DIR:-$rh/.Trash}/agyx-uninstall-$(date +%Y%m%d%H%M%S)
+    (umask 077; mkdir -p "$trash") || die "cannot create $trash"
+    # delete every profile keychain first, so no login stays on disk
+    for n in $(names); do
+      kc=$data/profiles/$n/home/Library/Keychains/login.keychain-db
+      [ -e "$kc" ] || continue
+      HOME=$data/profiles/$n/home "$sec" delete-keychain "$kc" >/dev/null 2>&1 ||
+        echo "agyx: warning: could not delete the keychain of profile $n ($(agyx_tilde "$kc"))" >&2
+    done
+    [ ! -d "$data" ] || mv "$data" "$trash/data" || die "could not move $data to the Trash"
+    [ ! -d "$cfgdir" ] || mv "$cfgdir" "$trash/config" || die "could not move $cfgdir to the Trash"
+    if [ "$bl" = 1 ]; then rm -f "$AGYX_BLOCKER/README"; rmdir "$AGYX_BLOCKER"; fi
+    echo "agyx: removed. Moved to the Trash: $(agyx_tilde "$trash")"
+    case $kind in
+      brew)
+        echo "agyx: removing the program now (optionally afterwards: brew untap iamdin/tap)"
+        exec brew uninstall agyx ;;
+      checkout)
+        if [ -n "$plink" ]; then rm -f "$plink" && echo "agyx: removed the link $(agyx_tilde "$plink") (the checkout is left alone)"
+        else echo "agyx: nothing else to remove (agyx runs from a checkout, which is left alone)"; fi ;;
+      *) echo "agyx: to finish, delete $me yourself" ;;
     esac
     ;;
   doctor)

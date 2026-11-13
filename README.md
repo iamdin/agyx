@@ -70,7 +70,7 @@ Under Homebrew, everything agyx stores or passes on survives `brew upgrade` and 
 
 Profile choice: leading `--profile NAME` > `AGY_PROFILE` > default (`agyx profile default`).
 
-`agyx` launches agy unless its first argument is one of its own management subcommands: `doctor`, `profile` (with `profile list`, `profile login NAME`, `profile default [NAME]`). `agyx --help`, `agyx -h` and `agyx help` (as the only argument) print agyx's own usage: read-only, no setup prompt, and they work before setup. None of the management subcommands overlaps with a real agy subcommand (`acp`, `agent`, `agents`, `changelog`, `install`, `mcp`, `mic-serve`, `models`, `plugin`, `plugins`, `remote-control`, `update`), so all of those reach the real agy:
+`agyx` launches agy unless its first argument is one of its own management subcommands: `doctor`, `profile` (with `profile list`, `profile login NAME`, `profile default [NAME]`), `uninstall`. `agyx --help`, `agyx -h` and `agyx help` (as the only argument) print agyx's own usage: read-only, no setup prompt, and they work before setup. None of the management subcommands overlaps with a real agy subcommand (`acp`, `agent`, `agents`, `changelog`, `install`, `mcp`, `mic-serve`, `models`, `plugin`, `plugins`, `remote-control`, `update`), so all of those reach the real agy:
 
 ```sh
 agyx                          # default profile
@@ -81,7 +81,7 @@ agyx --profile work --help   # agy's own help (a chosen profile passes --help th
 agyx install                  # agy's own `install` subcommand
 ```
 
-(The same works with `<data dir>/bin/agy`.) The two management subcommand names (`doctor`, `profile`) are reserved and rejected as profile names.
+(The same works with `<data dir>/bin/agy`.) The three management subcommand names (`doctor`, `profile`, `uninstall`) are reserved and rejected as profile names.
 
 ### agyx usage
 
@@ -91,6 +91,7 @@ usage: agyx [--profile NAME] [agy args...]   launch agy as a profile
        agyx profile default [NAME]  show or set the default profile
        agyx profile list            list profiles and their Google accounts
        agyx doctor                  check the installation
+       agyx uninstall               remove agyx's data and configuration
 ```
 
 This usage is printed (exit 2) on any misuse of a management subcommand: a missing, extra, invalid or reserved argument, or an unknown profile.
@@ -122,11 +123,11 @@ email                                         one line, the account email (not a
 
 **Shared `~/.gemini`.** The whole real `~/.gemini` is shared by every profile: settings, skills, MCP config, history, logs. Whatever agy creates there lands in the shared tree immediately, so there is nothing to adopt, merge or back up at launch, and no `agyx-drift` directory. In the steady state a launch tests that one link and does nothing else.
 
-**The token blocker.** agy reads its login from the keychain first and falls back to `~/.gemini/antigravity-cli/antigravity-oauth-token`, a file it writes when saving to the keychain fails. With a shared `.gemini` that file would be shared by every account. So agyx keeps a *directory* at that path (with a `README` explaining why), which makes the file fallback impossible: logins live only in each profile's own keychain. agyx creates the directory when it is missing. If a regular file is there instead (for example the plain agy fell back to a token file), no profile starts: agyx prints what it found, that every account could read it, and asks you to move it away yourself (it never reads, moves or deletes it; if it is the plain agy's login, plain agy will ask you to sign in again). `agyx doctor` reports the blocker as ok, missing (created on next launch) or BLOCKING. Delete the directory only after uninstalling agyx. (This relies on how agy handles a failing token-file write; it is verified separately.)
+**The token blocker.** agy reads its login from the keychain first and falls back to `~/.gemini/antigravity-cli/antigravity-oauth-token`, a file it writes when saving to the keychain fails. With a shared `.gemini` that file would be shared by every account. So agyx keeps a *directory* at that path (with a `README` explaining why), which makes the file fallback impossible: logins live only in each profile's own keychain. agyx creates the directory when it is missing. If a regular file is there instead (for example the plain agy fell back to a token file), no profile starts: agyx prints what it found, that every account could read it, and never reads the file, and, when run in a terminal, asks `Move it to the Trash? Plain agy will ask you to sign in again. [y/N]` (default No). Yes moves it to `~/.Trash/agyx-token-<timestamp>/` and the launch goes on; No, an empty answer, or no terminal (nothing is ever asked when output is piped, and `AGYX_ASSUME_YES` does not answer this one) stops the launch with a message that shows how to move it yourself. `agyx doctor` reports the blocker as ok, missing (created on next launch) or BLOCKING. Delete the directory only after uninstalling agyx. (This relies on how agy handles a failing token-file write; it is verified separately.)
 
 **Migrating an existing profile.** A profile from 0.1.2 or earlier has a real `home/.gemini` directory. At its next launch agyx migrates it once: (0) the account email is saved to the `email` file from the profile's token file or log; (1) the old per-entry symlinks into `~/.gemini` are removed; (2) the profile's `antigravity-cli/log`, `cli.log`, `jetbox_summaries_proto.pb` and SQLite sidecars (`-wal`, `-shm`, `-journal`) go to the Trash; (3) a token file in the profile (its old fallback login) goes to the Trash, with a message saying whether its keychain holds a login or whether you may need `agyx profile login NAME` again; (4) every other entry is merged into `~/.gemini`: missing on the shared side is moved, identical files are dropped, of two different files the newer wins and the other goes to the Trash, a file against a directory sends the profile entry to the Trash, symlinks are moved as they are, and anything left over goes to the Trash; (5) the empty tree is removed and the link created. One stderr line per profile summarises it and names the Trash folder, `~/.Trash/agyx-<profile>-<timestamp>/` (relative paths kept; plain `mv`, so Finder's Put Back does not apply). A second launch changes nothing. Tests can redirect the Trash with `AGYX_TRASH_DIR`.
 
-**Email.** After `agyx profile login NAME` succeeds, the account email is written to `<data dir>/profiles/NAME/email`: the last `email=` on an `applyAuthResult` line in the shared agy log files modified after the login started. `profile list` and `doctor` show that file; without it they fall back to the `id_token_email` field of a token file in the profile's own (not yet migrated) `.gemini`, and then to "logged in, email unknown". The duplicate-account warning uses the same source.
+**Email.** After `agyx profile login NAME` succeeds, the account email is written to `<data dir>/profiles/NAME/email`: the last `email=` on an `applyAuthResult` line of a log file that agyx tells agy to write for this login alone (`agy --log-file <profile dir>/.login-log`, deleted afterwards), so another agy instance logging in at the same time cannot be mistaken for it. If agy did not create that file, agyx falls back to the shared agy log files modified after the login started. `profile list` and `doctor` show that file; without it they fall back to the `id_token_email` field of a token file in the profile's own (not yet migrated) `.gemini`, and then to "logged in, email unknown". The duplicate-account warning uses the same source.
 
 **Home whitelist.** `${XDG_CONFIG_HOME:-$HOME/.config}/agyx/symlinks` (resolved from your real home, never from a profile home; `XDG_CONFIG_HOME` counts only when it is an absolute path) lists names in your real home that are linked into every profile home, so programs agy starts directly (MCP servers) find your git, ssh, npm, bun, cargo and similar configuration. agyx writes the file with the default list (creating the `agyx` directory) on any run when it does not exist, and the same default is used when it cannot be written; `agyx doctor` prints the resolved path. The default list:
 
@@ -146,6 +147,24 @@ To avoid this, on every launch the shim checks `<profile home>/Library/Keychains
 
 `agyx doctor` reports, per profile, whether this keychain exists and is the default for that `HOME`, and warns if your real default keychain is inside the agyx data dir. The profile keychain has an empty password and is no secret store: same-user processes can open it, like the token files (see the limits below).
 
+## Uninstall
+
+`agyx uninstall` lists what it will remove and asks `Remove? [y/N]` (default No; without a terminal it refuses unless `AGYX_ASSUME_YES=1`). It refuses while an agy started through agyx is running. On yes it:
+
+- deletes each profile's keychain (the Google logins agyx created; `security delete-keychain`, run with that profile's `HOME`),
+- moves the data dir (`~/.local/share/agyx`) and the config dir (`~/.config/agyx`, your symlinks list) to `~/.Trash/agyx-uninstall-<timestamp>/`,
+- removes the token blocker directory when it still holds only agyx's `README`,
+- removes agyx itself when it can: `brew uninstall agyx` for a Homebrew install, the `~/.local/bin/agyx` link for a git checkout (the checkout stays), otherwise it tells you which path to delete.
+
+It keeps `~/.gemini` (shared settings, history and conversations) and plain agy. Apps set up with `<data dir>/bin/agy` (for example T3 Code) stop working. Afterwards `brew untap iamdin/tap` is optional.
+
+## What agyx changes on your system
+
+- `~/.local/share/agyx` (or `AGYX_DATA_DIR`): the real agy path, the `bin/agy` entry, the default profile and `profiles/<name>/` with a private `HOME` and keychain per profile.
+- `~/.config/agyx/symlinks`: the home whitelist.
+- `~/.gemini/antigravity-cli/antigravity-oauth-token/`: a directory with a `README` that stops agy from saving a login token file in the shared `~/.gemini` (see the token blocker above).
+- Nothing else: no shell startup file is edited, no `PATH` change, no network access, nothing outside these paths except the Trash and the keychains inside the data dir. agyx reads a Google account email from a profile's log or token file, never the tokens.
+
 ## Tests
 
 ```sh
@@ -154,7 +173,7 @@ sh test/run.sh      # uses a fake agy; never runs the real one
 
 ## Known limits
 
-- Not a security boundary (same UID).
+- Not a security boundary (same UID). agyx makes no promise about Google's terms of service for running several accounts or instances; it does not proxy or rotate accounts, copy tokens, or work around any limit: each profile is just a separate normal login of the official agy.
 - Only shells that read their startup files get the real `HOME`; programs agy runs directly, MCP servers, and agy's own file tools still see the profile `HOME`.
 - An MCP server (or any program agy starts directly) still sees the profile path in `$HOME`; the whitelist only makes your configuration reachable there. Keychain writes from such processes go to the profile keychain, not your login keychain.
 - A profile that still has the old real `.gemini` directory (a running agy writing into it) is migrated at its next launch; files agy has open keep being written to the old location until then.
