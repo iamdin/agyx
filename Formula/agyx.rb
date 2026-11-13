@@ -19,19 +19,15 @@ class Agyx < Formula
     assert_path_exists libexec/"bin/agy"
     refute_path_exists bin/"agy"
 
-    # `setup` only records the real agy; `shim`/`unshim` toggle the optional bare agy
-    # takeover (no real agy is run).
+    # no setup step: the real agy comes from AGYX_REAL_AGY (no real agy is run), the
+    # <data>/bin/agy entry and the symlinks file are created by the first run
     ENV["AGYX_DATA_DIR"] = testpath/"data"
     ENV["AGYX_REAL_HOME"] = testpath
-    system bin/"agyx", "setup", "/usr/bin/true"
-    assert_equal Pathname("/usr/bin/true").realpath, (testpath/"data/real-agy").realpath
-    refute_path_exists testpath/"data/bin/agy"
-    # anything that is not an agyx subcommand launches agy via the shim
+    ENV["AGYX_REAL_AGY"] = "/usr/bin/true"
     (testpath/"data/profiles/work/home").mkpath
+    # anything that is not an agyx subcommand launches agy via the shim
     system bin/"agyx", "--profile", "work"
-    system bin/"agyx", "shim"
     assert_equal (libexec/"bin/agy").realpath, (testpath/"data/bin/agy").realpath
-    system bin/"agyx", "unshim"
-    refute_path_exists testpath/"data/bin/agy"
+    assert_path_exists testpath/".config/agyx/symlinks"
   end
 end

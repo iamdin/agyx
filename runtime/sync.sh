@@ -168,3 +168,63 @@ agyx_report() {
   else echo "  agyx-drift: 0 file(s)"; fi
   agyx_each_link agyx_report_link
 }
+
+# ---- automatic setup (there is no setup command) ----
+# Callers define die(); R, data and AGYX_SHIM (the packaged bin/agy) must be set.
+
+# Management subcommands of bin/agyx; they are also the reserved profile names (the only list).
+agyx_subcommand() {
+  case $1 in doctor|profile) return 0 ;; esac
+  return 1
+}
+
+# Sets $real to the real agy. AGYX_REAL_AGY (absolute path) overrides everything and is not stored.
+# Otherwise <data>/real-agy is used; when it is missing, not executable or points at the shim, the
+# first executable `agy` on PATH that is not agyx's own entry point is found and stored there.
+# Returns 1 when nothing usable exists. Steady state: builtins only, no forks.
+agyx_find_real() {
+  if [ -n "${AGYX_REAL_AGY-}" ]; then
+    real=$AGYX_REAL_AGY
+    [ -f "$real" ] && [ -x "$real" ] && [ ! "$real" -ef "$AGYX_SHIM" ]
+    return
+  fi
+  real=$data/real-agy
+  if [ -x "$real" ] && [ ! "$real" -ef "$AGYX_SHIM" ]; then return 0; fi
+  _found=
+  _ifs=$IFS; IFS=:
+  for _p in $PATH; do
+    if [ -n "$_p" ] && [ -f "$_p/agy" ] && [ -x "$_p/agy" ] && [ ! "$_p/agy" -ef "$AGYX_SHIM" ]; then
+      _found=$_p/agy; break
+    fi
+  done
+  IFS=$_ifs
+  [ -n "$_found" ] || return 1
+  case $_found in /*) ;; *) _found=$PWD/$_found ;; esac
+  real=$_found
+  (umask 077; mkdir -p "$data") && ln -sfn "$real" "$data/real-agy" ||
+    echo "agyx: warning: could not store $data/real-agy; the search will repeat on the next run" >&2
+  return 0
+}
+
+# <data>/bin/agy: the path to give apps that need a binary named agy (it is the shim).
+agyx_ensure_entry() {
+  [ -e "$data/bin/agy" ] && return 0
+  (umask 077; mkdir -p "$data/bin") && ln -sfn "$AGYX_SHIM" "$data/bin/agy" 2>/dev/null ||
+    echo "agyx: warning: could not create $data/bin/agy" >&2
+  return 0
+}
+
+# The whitelist file, written with the default list when missing (one stderr line, never stdout).
+# If it cannot be written the built-in default list still applies.
+agyx_ensure_links_file() {
+  agyx_set_links_file
+  [ -e "$AGYX_LINKS_FILE" ] && return 0
+  if mkdir -p "${AGYX_LINKS_FILE%/*}" 2>/dev/null && {
+    echo "# Names in your real home that agyx links into every profile home (one per line, # = comment)."
+    echo "# Not allowed: ., .., names with a slash, .gemini, Library, .local."
+    printf '%s\n' $AGYX_DEFAULT_LINKS
+  } > "$AGYX_LINKS_FILE" 2>/dev/null; then
+    echo "agyx: wrote $AGYX_LINKS_FILE (edit it to change what profiles share)" >&2
+  fi
+  return 0
+}

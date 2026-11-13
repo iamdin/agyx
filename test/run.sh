@@ -8,7 +8,7 @@ mkdir -p "$DD/profiles" "$RH"
 export LAUNCHLOG=$T/launched AGYX_DATA_DIR=$DD AGYX_REAL_HOME=$RH HOME=$RH
 unset AGY_PROFILE ZDOTDIR BASH_ENV AGYX_ORIG_ZDOTDIR_SET AGYX_ORIG_ZDOTDIR AGYX_ORIG_BASH_ENV_SET AGYX_ORIG_BASH_ENV
 # Minimal PATH so the real agy can never be found. $T/brewbin has a Homebrew-style symlink to
-# agyx; <data dir>/bin gets the optional bare `agy` link from `agyx shim` below.
+# agyx; <data dir>/bin holds the bare `agy` entry (created below by hand to mimic an existing install).
 PATH=$T/brewbin:$DD/bin:/usr/bin:/bin:/usr/sbin:/sbin
 [ -x "$here/bin/agy" ] && [ -x "$here/bin/agyx" ] || { echo "bin/agy, bin/agyx must be executable" >&2; exit 1; }
 
@@ -41,12 +41,11 @@ EOF
 chmod +x "$T/fake-security"
 export SECLOG=$T/seclog AGYX_SECURITY=$T/fake-security
 mkdir "$T/brewbin"; ln -s "$here/bin/agyx" "$T/brewbin/agyx"
-"$T/brewbin/agyx" setup "$T/fake-agy" > "$T/install.out" || { cat "$T/install.out"; exit 1; }
-[ ! -e "$DD/bin" ] || { echo "setup must not create bin/" >&2; exit 1; }
-"$T/brewbin/agyx" shim > "$T/shim.out" || { cat "$T/shim.out"; exit 1; }
+mkdir "$DD/bin"; ln -s "$T/fake-agy" "$DD/real-agy"; ln -s "$here/bin/agy" "$DD/bin/agy"
 [ "$(command -v agy)" = "$DD/bin/agy" ] || { echo "agy not resolved to $DD/bin/agy" >&2; exit 1; }
 for p in work home other; do mkdir -p "$DD/profiles/$p/home"; done
 echo work > "$DD/default"
+"$here/bin/agyx" profile list >/dev/null 2>&1   # writes the symlinks file once (first-run stderr line)
 
 pass=0 fail=0
 eq() { # name expected actual
@@ -140,10 +139,10 @@ eq nested-direct "orig-zd=/zd orig-be=/be set=1" "$(ZDOTDIR=$here/runtime/zsh BA
   AGYX_ORIG_ZDOTDIR_SET=1 AGYX_ORIG_ZDOTDIR=/zd AGYX_ORIG_BASH_ENV_SET=1 AGYX_ORIG_BASH_ENV=/be \
   FAKE_RUN='echo orig-zd=$AGYX_ORIG_ZDOTDIR orig-be=$AGYX_ORIG_BASH_ENV set=$AGYX_ORIG_ZDOTDIR_SET' agy --profile home)"
 
-# real-agy pointing at the shim is refused
+# real-agy pointing at the shim is never used (nor is the shim found on PATH): agy is "not installed"
 ln -sfn "$here/bin/agy" "$DD/real-agy"
 out=$(agy 2>&1); rc=$?
-eq refuse-self "1" "$([ $rc -ne 0 ] && echo "$out" | grep -q 'shim itself' && echo 1)"
+eq refuse-self "1" "$([ $rc -ne 0 ] && echo "$out" | grep -q 'agy is not installed' && ! echo "$out" | grep -q HOME= && echo 1)"
 ln -sfn "$T/fake-agy" "$DD/real-agy"
 
 # agyx launches agy unless the first argument is one of its own subcommands
@@ -174,7 +173,7 @@ eq nested-agy "other" "$(FAKE_RUN='FAKE_RUN= agy x' agyx --profile other | sed -
 eq nested-agyx-switch "home" "$(FAKE_RUN='FAKE_RUN= agyx --profile home x' agyx --profile other | sed -n 's/^AGY_PROFILE=//p')"
 # profile names equal to an agyx subcommand are rejected, even if the directory exists
 res=
-for n in setup doctor shim unshim profile; do
+for n in doctor profile; do
   mkdir -p "$DD/profiles/$n/home"; : > "$LAUNCHLOG"
   agyx --profile "$n" >/dev/null 2>&1 && res="$res launched:$n"
   agy --profile "$n" >/dev/null 2>&1 && res="$res shim-launched:$n"
@@ -211,18 +210,9 @@ eq ctl-list-no-dup "0" "$(ctl profile list | grep -c WARNING)"
 eq ctl-login-bad "1" "$(ctl profile login Bad 2>/dev/null || echo 1)"
 eq ctl-login "PROFILE=newp" "$(FAKE_RUN='echo PROFILE=$AGY_PROFILE' ctl profile login newp)"
 eq ctl-login-mode "drwx------" "$(ls -ld "$DD/profiles/newp/home" | cut -c1-10)"
-# setup only records the real agy; management subcommands never launch agy
-rm "$DD/real-agy"
-eq ctl-setup "real agy: $T/fake-agy" "$(ctl setup "$T/fake-agy" | head -n 1)"
-eq ctl-setup-link "$T/fake-agy" "$(readlink "$DD/real-agy")"
-eq ctl-setup-shim "1" "$(ctl setup "$here/bin/agy" >/dev/null 2>&1 || echo 1)"
-eq ctl-setup-data-shim "1" "$(ctl setup "$DD/bin/agy" >/dev/null 2>&1 || echo 1)"
-# setup without an argument skips the shim link and takes the next agy in PATH
-mkdir "$T/fakebin"; ln -s "$T/fake-agy" "$T/fakebin/agy"
-eq ctl-setup-autodetect "real agy: $T/fakebin/agy" "$(PATH=$DD/bin:$T/fakebin:$PATH ctl setup | head -n 1)"
-eq ctl-setup-keeps-shim "$here/bin/agy" "$(readlink "$DD/bin/agy")"
+# management subcommands never launch agy
 : > "$LAUNCHLOG"
-for c in "profile list" "profile default work" doctor "setup $T/fake-agy" shim unshim shim; do
+for c in "profile list" "profile default work" doctor; do
   # shellcheck disable=SC2086
   agyx $c >/dev/null 2>&1
 done
@@ -232,21 +222,29 @@ eq ctl-empty-list "no profiles yet; run: agyx profile login NAME/0" "$(AGYX_DATA
 # misuse of a management subcommand prints the usage (exit 2) and never launches agy
 : > "$LAUNCHLOG"
 res=
-for c in "setup a b" "setup $T/nonexistent" profile "profile bogus" "profile login" "profile login Bad" "profile login profile" "profile login a b" "profile default a b" "profile default nope" "profile default profile" "profile list x" "doctor x" "shim x" "unshim x"; do
+for c in profile "profile bogus" "profile login" "profile login Bad" "profile login profile" "profile login a b" "profile default a b" "profile default nope" "profile default profile" "profile list x" "doctor x"; do
   # shellcheck disable=SC2086
   out=$(ctl $c 2>&1 >/dev/null); rc=$?
   [ "$rc" = 2 ] && echo "$out" | grep -q '^usage: agyx' || res="$res [$c rc=$rc]"
 done
 eq ctl-misuse-usage "" "$res"
 eq ctl-misuse-no-launch "0" "$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
+# the removed commands are ordinary arguments for agy now, and valid profile names
+for c in setup shim unshim; do
+  eq "removed-$c" "AGY_PROFILE=work${nl}ARG=$c" "$(agyx "$c" | grep '^AGY_PROFILE=\|^ARG=')"
+  mkdir -p "$DD/profiles/$c/home"
+  eq "profile-named-$c" "$c" "$(agyx --profile "$c" | sed -n 's/^AGY_PROFILE=//p')"
+  rm -rf "${DD:?}/profiles/$c"
+done
+eq usage-lists-only-current "0" "$(ctl profile 2>&1 | grep -c 'setup\|shim')"
 
 # agyx subcommands never overlap with the real agy 1.5.6 subcommands/flags
-ctl_subs="setup doctor shim unshim profile"
+ctl_subs="doctor profile"
 agy_subs="acp agent agents changelog help install mcp mic-serve models plugin plugins remote-control update -h --help"
 both=
 for a in $ctl_subs; do for b in $agy_subs; do [ "$a" = "$b" ] && both="$both $a"; done; done
 eq subcommands-disjoint "" "$both"
-eq subcommands-match-script "$ctl_subs" "$(sed -n 's/^  \(setup|.*\)) ;;$/\1/p' "$here/bin/agyx" | tr '|' ' ')"
+eq subcommands-match-script "$ctl_subs" "$(sed -n 's/^  case \$1 in \(.*\)) return 0 ;; esac$/\1/p' "$here/runtime/sync.sh" | tr '|' ' ')"
 res=
 for s in $agy_subs; do [ "$(agyx "$s" | grep '^ARG=')" = "ARG=$s" ] || res="$res $s"; done
 eq agy-subcommands-reach-agy "" "$res"
@@ -258,30 +256,113 @@ rm -rf "${DD:?}/profiles/install"
 # doctor
 eq ctl-doctor-path "1" "$(ctl doctor | grep -c 'agyx resolves to this script')"
 eq ctl-doctor-path-missing "1" "$(PATH=/usr/bin:/bin ctl doctor | grep -c 'agyx does NOT resolve')"
-eq ctl-doctor-on "1" "$(ctl doctor | grep -c 'takeover: on')"
-eq ctl-doctor-warn "1" "$(PATH=$T/fakebin:$PATH ctl doctor | grep -c 'takeover: WARNING')"
+eq ctl-doctor-real "1" "$(ctl doctor | grep -c "^real agy: $T/fake-agy\$")"
+eq ctl-doctor-entry "1" "$(ctl doctor | grep -c "^agy entry: $DD/bin/agy (in place; the path to give apps that need a binary named agy)\$")"
+eq ctl-doctor-no-takeover "0" "$(ctl doctor | grep -ci 'takeover\|unshim\|agyx shim\|agyx setup')"
 
-# shim / unshim
-ctl unshim >/dev/null
-eq ctl-unshim "absent" "$([ -e "$DD/bin/agy" ] || [ -L "$DD/bin/agy" ] || echo absent)"
-eq ctl-unshim-keeps-real-agy "ok" "$([ -L "$DD/real-agy" ] && echo ok)"
-eq ctl-unshim-idempotent "0" "$(ctl unshim >/dev/null; echo $?)"
-eq ctl-doctor-off "1" "$(ctl doctor | grep -c 'takeover: off.*nested .agyx. routes to the inherited profile.*bare .agy. runs the real agy')"
-out=$(ctl shim); eq ctl-shim-link "$here/bin/agy" "$(readlink "$DD/bin/agy")"
-eq ctl-shim-says-path "1" "$(echo "$out" | grep -c 'must come BEFORE the directory of the real agy')"
-eq ctl-shim-idempotent "0" "$(ctl shim >/dev/null; echo $?)"
-eq ctl-shim-used "other" "$(agy --profile other | sed -n 's/^AGY_PROFILE=//p')"
-ctl unshim >/dev/null
-# refusals: never remove or overwrite anything that is not a link to the shim
-echo precious > "$DD/bin/agy"
-eq ctl-unshim-refuse-file "1" "$(ctl unshim >/dev/null 2>&1 || echo 1)"
-eq ctl-shim-refuse-file "1" "$(ctl shim >/dev/null 2>&1 || echo 1)"
-eq ctl-refuse-file-intact "precious" "$(cat "$DD/bin/agy")"
-rm "$DD/bin/agy"; ln -s "$T/fake-agy" "$DD/bin/agy"
-eq ctl-unshim-refuse-other-link "1" "$(ctl unshim >/dev/null 2>&1 || echo 1)"
-eq ctl-shim-refuse-other-link "1" "$(ctl shim >/dev/null 2>&1 || echo 1)"
-eq ctl-refuse-link-intact "$T/fake-agy" "$(readlink "$DD/bin/agy")"
-rm "$DD/bin/agy"
+# ---- automatic setup (fresh data dir and real home each time; there is no setup command) ----
+islink() { [ -L "$1" ] && [ "$1" -ef "$2" ] && echo link || echo "not-link"; }
+fresh() { N=$T/$1; rm -rf "$N"; mkdir -p "$N/rh" "$N/data/profiles/p/home"; }
+fx() { env AGYX_DATA_DIR="$N/data" AGYX_REAL_HOME="$N/rh" "$@"; }
+AX=$here/bin/agyx
+rm -rf "$T/fakebin"; mkdir "$T/fakebin"; ln -s "$T/fake-agy" "$T/fakebin/agy"
+SP=$T/fakebin:/usr/bin:/bin
+# real agy: found on PATH (skipping agyx's own entry), stored, then no PATH needed
+fresh a1; mkdir -p "$N/data/bin"; ln -s "$here/bin/agy" "$N/data/bin/agy"
+out=$(fx env PATH="$N/data/bin:$SP" "$AX" --profile p 2>/dev/null)
+eq auto-real-found "AGY_PROFILE=p" "$(echo "$out" | grep '^AGY_PROFILE=')"
+eq auto-real-stored "$T/fakebin/agy" "$(readlink "$N/data/real-agy")"
+eq auto-real-steady "AGY_PROFILE=p" "$(fx env PATH=/usr/bin:/bin "$AX" --profile p 2>/dev/null | grep '^AGY_PROFILE=')"
+# a stored link that no longer works is searched again
+ln -sfn "$T/gone-agy" "$N/data/real-agy"
+eq auto-real-refound "AGY_PROFILE=p/$T/fakebin/agy" "$(fx env PATH="$SP" "$AX" --profile p 2>/dev/null | grep '^AGY_PROFILE=')/$(readlink "$N/data/real-agy")"
+# a relative PATH entry is stored absolute
+fresh a2; ( cd "$T" && fx env PATH="fakebin:/usr/bin:/bin" "$AX" --profile p >/dev/null 2>&1 )
+eq auto-real-relative-path "$T/fakebin/agy" "$(readlink "$N/data/real-agy")"
+# AGYX_REAL_AGY overrides everything and is not stored
+fresh a3
+out=$(fx env PATH=/usr/bin:/bin AGYX_REAL_AGY="$T/fake-agy" "$AX" --profile p 2>/dev/null)
+eq override-used "AGY_PROFILE=p" "$(echo "$out" | grep '^AGY_PROFILE=')"
+eq override-not-stored "absent" "$([ -e "$N/data/real-agy" ] || [ -L "$N/data/real-agy" ] || echo absent)"
+ln -s "$T/gone-agy" "$N/data/real-agy"
+eq override-beats-stored "AGY_PROFILE=p" "$(fx env AGYX_REAL_AGY="$T/fake-agy" "$AX" --profile p 2>/dev/null | grep '^AGY_PROFILE=')"
+n=0
+for badv in "$T/nonexistent" "$here/bin/agy" "$T"; do
+  n=$((n + 1)); : > "$LAUNCHLOG"
+  out=$(fx env PATH="$SP" AGYX_REAL_AGY="$badv" "$AX" --profile p 2>"$T/err"); rc=$?
+  eq "override-bad-$n" "nonzero,empty,AGYX_REAL_AGY,0" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -o AGYX_REAL_AGY "$T/err" | head -n 1),$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
+done
+# not installed: clear message, nothing on stdout, nothing stored
+fresh a4
+out=$(fx env PATH=/usr/bin:/bin "$AX" --profile p 2>"$T/err"); rc=$?
+eq not-installed "nonzero,empty,not-installed,how-to" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -q 'agy is not installed' "$T/err" && echo not-installed),$(grep -q 'AGYX_REAL_AGY=/path/to/agy' "$T/err" && echo how-to)"
+eq not-installed-nothing-stored "absent" "$([ -e "$N/data/real-agy" ] || [ -L "$N/data/real-agy" ] || echo absent)"
+# <data>/bin/agy: created on launch, profile and doctor runs; a dangling link is replaced
+for c in "--profile p" "profile list" doctor; do
+  fresh a5
+  # shellcheck disable=SC2086
+  fx env PATH="$SP" "$AX" $c >/dev/null 2>&1
+  eq "entry-created-$c" "$here/bin/agy" "$(readlink "$N/data/bin/agy")"
+done
+rm "$N/data/bin/agy"; ln -s "$T/gone-agy" "$N/data/bin/agy"
+fx env PATH="$SP" "$AX" doctor >/dev/null 2>&1
+eq entry-dangling-replaced "$here/bin/agy" "$(readlink "$N/data/bin/agy")"
+echo mine > "$N/x"; rm "$N/data/bin/agy"; ln -s "$N/x" "$N/data/bin/agy"
+eq entry-existing-kept "$N/x" "$(fx env PATH="$SP" "$AX" doctor >/dev/null 2>&1; readlink "$N/data/bin/agy")"
+eq entry-doctor-flags-foreign "1" "$(fx env PATH="$SP" "$AX" doctor 2>&1 | grep -c '^agy entry: .*MISSING or not agyx')"
+# the entry works as a bare agy
+fresh a6; fx env PATH="$SP" "$AX" doctor >/dev/null 2>&1
+eq entry-runs-agy "AGY_PROFILE=p" "$(fx env PATH="$SP" "$N/data/bin/agy" --profile p 2>/dev/null | grep '^AGY_PROFILE=')"
+# symlinks file: written on the first run (one stderr line, nothing extra on stdout), default list inside
+fresh a7
+out=$(fx env PATH="$SP" "$AX" --profile p 2>"$T/err")
+eq links-first-stderr "1/1" "$(grep -c . "$T/err")/$(grep -c "^agyx: wrote $N/rh/.config/agyx/symlinks " "$T/err")"
+eq links-first-stdout "0" "$(echo "$out" | grep -c wrote)"
+eq links-content ".gitconfig .ssh .config .npm .npmrc .bun .bunfig.toml .cache .cargo .rustup go Code GitHub " "$(grep -v '^#' "$N/rh/.config/agyx/symlinks" | tr '\n' ' ')"
+eq links-header "2" "$(grep -c '^#' "$N/rh/.config/agyx/symlinks")"
+fx env PATH="$SP" "$AX" --profile p >/dev/null 2>"$T/err"
+eq links-second-silent "0" "$(grep -c . "$T/err")"
+echo mine > "$N/rh/.config/agyx/symlinks"
+fx env PATH="$SP" "$AX" --profile p >/dev/null 2>&1
+eq links-never-overwritten "mine" "$(cat "$N/rh/.config/agyx/symlinks")"
+# unwritable: no message, the built-in default list still applies, doctor says so
+fresh a8; echo notadir > "$N/rh/.config"; echo gc > "$N/rh/.gitconfig"
+fx env FAKE_RUN=true PATH="$SP" "$AX" --profile p >/dev/null 2>"$T/err"; rc=$?
+eq links-unwritable "0/0/link" "$rc/$(grep -c . "$T/err")/$(islink "$N/data/profiles/p/home/.gitconfig" "$N/rh/.gitconfig")"
+eq links-unwritable-doctor "1" "$(fx env PATH="$SP" "$AX" doctor 2>&1 | grep -c '^symlinks: .*missing and could not be written')"
+# launch path: nothing on stdout from agyx itself
+fresh a9
+eq launch-stdout-clean "" "$(fx env FAKE_RUN=true PATH="$SP" "$AX" --profile p 2>/dev/null)"
+# first-run messages: nonzero, nothing on stdout, nothing launched
+fresh b1; rmdir "$N/data/profiles/p/home" "$N/data/profiles/p"
+: > "$LAUNCHLOG"
+out=$(fx env PATH="$SP" "$AX" 2>"$T/err"); rc=$?
+eq first-none "nonzero,empty,msg,0" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -q 'no profiles yet' "$T/err" && grep -q 'agyx profile login NAME' "$T/err" && grep -q 'for example' "$T/err" && echo msg),$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
+fresh b2; mkdir -p "$N/data/profiles/q/home"
+out=$(fx env PATH="$SP" "$AX" 2>"$T/err"); rc=$?
+eq first-no-default "nonzero,empty,msg" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -q 'Existing profiles: p q' "$T/err" && grep -q -e '--profile NAME' "$T/err" && grep -q 'agyx profile default NAME' "$T/err" && echo msg)"
+echo gone > "$N/data/default"
+out=$(fx env PATH="$SP" "$AX" 2>"$T/err"); rc=$?
+eq first-default-missing "nonzero,empty,msg" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -q "default profile 'gone'.*does not exist" "$T/err" && grep -q 'agyx profile default NAME' "$T/err" && grep -q 'agyx profile login gone' "$T/err" && echo msg)"
+echo p > "$N/data/default"
+eq not-logged-in-launches "AGY_PROFILE=p" "$(fx env PATH="$SP" "$AX" 2>/dev/null | grep '^AGY_PROFILE=')"
+# profile login: the first successful login becomes the default
+fresh c1; rmdir "$N/data/profiles/p/home" "$N/data/profiles/p"
+mktok='mkdir -p $HOME/.gemini/antigravity-cli; echo "{}" > $HOME/.gemini/antigravity-cli/antigravity-oauth-token'
+out=$(fx env FAKE_RUN="$mktok" PATH="$SP" "$AX" profile login first 2>"$T/err"); rc=$?
+eq login-sets-default "0/first/1" "$rc/$(cat "$N/data/default")/$(echo "$out" | grep -c "'first' is now the default profile")"
+fx env FAKE_RUN="$mktok" PATH="$SP" "$AX" profile login second >/dev/null 2>&1
+eq login-keeps-existing-default "first" "$(cat "$N/data/default")"
+out=$(fx env FAKE_RUN=true PATH="$SP" "$AX" profile login first 2>"$T/err")
+eq login-already-logged-in "1/0" "$(grep -c 'already logged in' "$T/err")/$(echo "$out" | grep -c .)"
+fresh c2; rmdir "$N/data/profiles/p/home" "$N/data/profiles/p"
+out=$(fx env FAKE_RUN=true PATH="$SP" "$AX" profile login nologin 2>/dev/null); rc=$?
+eq login-without-login-no-default "0/absent/" "$rc/$([ -e "$N/data/default" ] || echo absent)/$out"
+fx env FAKE_RUN='exit 3' PATH="$SP" "$AX" profile login failed >/dev/null 2>&1; rc=$?
+eq login-failed-rc-no-default "3/absent" "$rc/$([ -e "$N/data/default" ] || echo absent)"
+# login detected through the profile keychain item too
+fx env FAKE_RUN='touch $HOME/.fake-item' PATH="$SP" "$AX" profile login viakc >/dev/null 2>&1
+eq login-keychain-sets-default "viakc" "$(cat "$N/data/default" 2>/dev/null)"
 
 # per-profile keychain (fake security; the real one is never called)
 H=$DD/profiles/kc/home K=$DD/profiles/kc/home/Library/Keychains/login.keychain-db
@@ -384,7 +465,7 @@ eq wl-default-link "link" "$(islink "$S4/.gitconfig" "$RH/.gitconfig")"
 eq wl-conflict-dir "mine" "$(cat "$S4/.ssh/x")"
 eq wl-conflict-dir-not-link "no" "$([ -L "$S4/.ssh" ] && echo yes || echo no)"
 eq wl-conflict-link "/elsewhere" "$(readlink "$S4/.config")"
-eq wl-conflict-silent "0" "$(grep -c . "$T/err")"
+eq wl-conflict-silent "0" "$(grep -vc '^agyx: wrote' "$T/err")"
 eq wl-missing-not-linked "absent" "$([ -e "$S4/.npm" ] || [ -L "$S4/.npm" ] || echo absent)"
 mkdir "$RH/.cache"; launch s4 >/dev/null
 eq wl-later-linked "link" "$(islink "$S4/.cache" "$RH/.cache")"
@@ -412,14 +493,14 @@ eq default-shown "other/other" "$(ctl profile default)/$(cat "$DD/default")"
 eq default-launch-uses-it "other" "$(agyx 2>/dev/null | sed -n 's/^AGY_PROFILE=//p')"
 eq default-use-gone "1" "$(ctl profile use other >/dev/null 2>&1 || echo 1)"
 printf work > "$DD/default"
-# setup writes the default list once and never overwrites it
+# doctor (any run) writes the default list once and never overwrites it
 D2=$T/d2 RH3=$T/rh3
-(AGYX_REAL_HOME=$RH3 AGYX_DATA_DIR=$D2 ctl setup "$T/fake-agy" >/dev/null)
+(AGYX_REAL_HOME=$RH3 AGYX_DATA_DIR=$D2 ctl doctor >/dev/null 2>&1)
 L3=$RH3/.config/agyx/symlinks
-eq setup-writes-list ".gitconfig .ssh .config .npm .npmrc .bun .bunfig.toml .cache .cargo .rustup go Code GitHub " "$(grep -v '^#' "$L3" | tr '\n' ' ')"
-eq setup-not-in-data-dir "absent" "$([ -e "$D2/symlinks" ] || echo absent)"
-echo mine > "$L3"; (AGYX_REAL_HOME=$RH3 AGYX_DATA_DIR=$D2 ctl setup "$T/fake-agy" >/dev/null)
-eq setup-keeps-list "mine" "$(cat "$L3")"
+eq doctor-writes-list ".gitconfig .ssh .config .npm .npmrc .bun .bunfig.toml .cache .cargo .rustup go Code GitHub " "$(grep -v '^#' "$L3" | tr '\n' ' ')"
+eq doctor-not-in-data-dir "absent" "$([ -e "$D2/symlinks" ] || echo absent)"
+echo mine > "$L3"; (AGYX_REAL_HOME=$RH3 AGYX_DATA_DIR=$D2 ctl doctor >/dev/null 2>&1)
+eq doctor-keeps-list "mine" "$(cat "$L3")"
 rm -rf "${DD:?}/profiles/s1" "${DD:?}/profiles/s2" "${DD:?}/profiles/s3" "${DD:?}/profiles/s4" "${DD:?}/profiles/s5"
 
 # a real directory identical to the shared one is moved to agyx-drift and replaced by the link
@@ -428,7 +509,7 @@ mkdir -p "$G/antigravity-cli/mcp/t3-code"; echo '{"a":1}' > "$G/antigravity-cli/
 S6=$DD/profiles/s6/home
 mkdir -p "$S6/.gemini/antigravity-cli/mcp/t3-code"; echo '{"a":1}' > "$S6/.gemini/antigravity-cli/mcp/t3-code/a.json"
 out=$(launch s6)
-eq dir-identical-silent "0" "$(grep -c . "$T/err")"
+eq dir-identical-silent "0" "$(grep -vc "^agyx: wrote" "$T/err")"
 eq dir-identical-linked "link" "$(islink "$S6/.gemini/antigravity-cli/mcp" "$G/antigravity-cli/mcp")"
 eq dir-identical-kept "{\"a\":1}" "$(cat "$S6"/agyx-drift/.gemini/antigravity-cli/mcp.*/t3-code/a.json)"
 before=$(snap "$S6" "$G"); launch s6 >/dev/null; after=$(snap "$S6" "$G")
@@ -466,14 +547,15 @@ for n in lk1 lk2 lk3 lk4 lk5 lk6; do rm -rf "${DD:?}/profiles/$n"; done
 
 # whitelist file location: ${XDG_CONFIG_HOME:-<real home>/.config}/agyx/symlinks
 RH4=$T/rh4 XDG=$T/xdg
-(AGYX_REAL_HOME=$RH4 XDG_CONFIG_HOME=$XDG AGYX_DATA_DIR=$T/d3 ctl setup "$T/fake-agy" >/dev/null)
+(AGYX_REAL_HOME=$RH4 XDG_CONFIG_HOME=$XDG AGYX_DATA_DIR=$T/d3 ctl doctor >/dev/null 2>&1)
 eq xdg-abs-written "present/absent" "$([ -f "$XDG/agyx/symlinks" ] && echo present)/$([ -e "$RH4/.config/agyx/symlinks" ] || echo absent)"
 mkdir -p "$T/cwd"
-(cd "$T/cwd" && AGYX_REAL_HOME=$RH4 XDG_CONFIG_HOME=relative/dir AGYX_DATA_DIR=$T/d3 ctl setup "$T/fake-agy" >/dev/null)
+(cd "$T/cwd" && AGYX_REAL_HOME=$RH4 XDG_CONFIG_HOME=relative/dir AGYX_DATA_DIR=$T/d3 ctl doctor >/dev/null 2>&1)
 eq xdg-relative-ignored "present/absent" "$([ -f "$RH4/.config/agyx/symlinks" ] && echo present)/$([ -e "$T/cwd/relative" ] || echo absent)"
 (AGYX_REAL_HOME=$RH4 XDG_CONFIG_HOME=$XDG AGYX_DATA_DIR=$T/d3 ctl doctor | grep -c "^symlinks: $XDG/agyx/symlinks\$") > "$T/n"
 eq doctor-links-path "1" "$(cat "$T/n")"
-eq doctor-links-path-missing "1" "$(rm -f "$HL"; ctl doctor | grep -c "^symlinks: $HL (missing")"
+mkdir -p "$T/rh5"; echo x > "$T/rh5/.config"
+eq doctor-links-path-missing "1" "$(AGYX_REAL_HOME=$T/rh5 ctl doctor | grep -c "^symlinks: $T/rh5/.config/agyx/symlinks (missing")"
 # launch uses that file; the old <data>/symlinks is no longer read
 mkdir -p "$RH/mydir2" "$RH/ignored-by-xdg" "$XDG/agyx"
 echo mydir2 > "$XDG/agyx/symlinks"

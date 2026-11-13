@@ -1,6 +1,6 @@
 #!/bin/sh
-# agyx: manage agy profiles (setup, doctor, shim, unshim, profile);
-# any other invocation launches agy through the shim. See README.md.
+# agyx: manage agy profiles (profile, doctor); any other invocation launches agy through the
+# shim. There is no setup step: everything else is automatic. See README.md.
 die() { echo "agyx: $*" >&2; exit 1; }
 valid() {
   case $1 in *'
@@ -14,21 +14,26 @@ while [ -L "$self" ]; do
   case $l in /*) self=$l ;; *) self=$(dirname "$self")/$l ;; esac
 done
 me=$(cd "$(dirname "$self")" && pwd -P)/$(basename "$self")
-shim=$(dirname "$me")/agy
-# Anything that is not one of our own subcommands launches agy (none of them overlaps with an
-# agy subcommand or flag, including -h/--help). umask is untouched so agy inherits the caller's.
-case ${1-} in
-  setup|doctor|shim|unshim|profile) ;;
-  *) exec "$shim" "$@" ;;
-esac
+shim=${me%/*}/agy
 rh=${AGYX_REAL_HOME:-$(eval "printf %s ~$(id -un)")}
 data=${AGYX_DATA_DIR:-$rh/.local/share/agyx}
+# shellcheck disable=SC2034 # R and AGYX_SHIM are used by the functions in sync.sh
+R=$rh AGYX_SHIM=$shim
+# shellcheck source=../runtime/sync.sh
+. "${me%/*}/../runtime/sync.sh"
+# Anything that is not one of our own subcommands launches agy (none of them overlaps with an
+# agy subcommand or flag, including -h/--help). umask is untouched so agy inherits the caller's.
+agyx_subcommand "${1-}" || exec "$shim" "$@"
+
 tok=home/.gemini/antigravity-cli/antigravity-oauth-token
 sec=${AGYX_SECURITY:-/usr/bin/security}  # AGYX_SECURITY is only for tests
+# automatic setup (stderr only)
+agyx_ensure_entry
+agyx_ensure_links_file
 
 need() {
   valid "${1-}" || bad "invalid profile name: ${1-}"
-  case $1 in setup|doctor|shim|unshim|profile) bad "profile name is reserved: $1" ;; esac
+  ! agyx_subcommand "$1" || bad "profile name is reserved: $1"
 }
 exists() { need "${1-}"; [ -d "$data/profiles/$1/home" ] || bad "no such profile: $1"; }
 names() { for d in "$data"/profiles/*/; do [ -d "$d" ] && basename "$d"; done; }
@@ -57,8 +62,10 @@ kc_has_item() {
   [ -e "$_kc" ] || return 1
   HOME=$data/profiles/$1/home "$sec" find-generic-password -s gemini -a antigravity "$_kc" >/dev/null 2>&1
 }
+# Logged in = token file present or the profile keychain holds agy's login item.
+logged_in() { [ -f "$data/profiles/$1/$tok" ] || kc_has_item "$1"; }
 status() {
-  if [ ! -f "$data/profiles/$1/$tok" ] && ! kc_has_item "$1"; then echo "not logged in"; return 0; fi
+  if ! logged_in "$1"; then echo "not logged in"; return 0; fi
   e=$(email_of "$1")
   echo "${e:-logged in, email unknown}"
 }
@@ -74,69 +81,15 @@ dup_warning() {
     END { for (e in c) if (c[e] > 1) print "WARNING: profiles" p[e] " are logged in to the same Google account (" e ")" }'
 }
 
-isshim() { [ -L "$1" ] && [ "$1" -ef "$shim" ]; }
-usage="usage: agyx setup [path]            record the official agy (default: first agy in PATH)
-       agyx profile login NAME      create profile NAME and log in with agy's native login
+usage="usage: agyx [--profile NAME] [agy args...]   launch agy as a profile
+       agyx profile login NAME      create profile NAME and sign in with agy's own login
        agyx profile default [NAME]  show or set the default profile
        agyx profile list            list profiles and their Google accounts
-       agyx doctor                  check the installation
-       agyx shim | unshim           enable / disable the optional bare 'agy' takeover
-       agyx [--profile NAME] [agy args...]   anything else launches agy"
+       agyx doctor                  check the installation"
 bad() { echo "agyx: $*" >&2; echo "$usage" >&2; exit 2; }
 
 cmd=${1-}; [ $# -gt 0 ] && shift
 case $cmd in
-  setup)
-    [ $# -le 1 ] || bad "setup takes at most one argument"
-    t=${1-}
-    if [ -z "$t" ]; then
-      IFS=:
-      for p in $PATH; do
-        if [ -n "$p" ] && [ -f "$p/agy" ] && [ -x "$p/agy" ] && [ ! "$p/agy" -ef "$shim" ]; then t=$p/agy; break; fi
-      done
-      unset IFS
-    fi
-    [ -n "$t" ] || die "no agy found in PATH; pass its path"
-    case $t in /*) ;; *) t=$PWD/$t ;; esac
-    [ -x "$t" ] || bad "not executable: $t"
-    [ ! "$t" -ef "$shim" ] || bad "that is the shim itself"
-    (umask 077; mkdir -p "$data") && ln -sfn "$t" "$data/real-agy" || die "cannot write $data"
-    # shellcheck source=../runtime/sync.sh
-    . "$(dirname "$me")/../runtime/sync.sh"
-    # shellcheck disable=SC2034 # used by the functions in sync.sh
-    R=$rh
-    agyx_set_links_file
-    if [ ! -e "$AGYX_LINKS_FILE" ]; then
-      mkdir -p "${AGYX_LINKS_FILE%/*}" || die "cannot create ${AGYX_LINKS_FILE%/*}"
-      { echo "# Names in your real home that agyx links into every profile home (one per line, # = comment)."
-        echo "# Not allowed: ., .., names with a slash, .gemini, Library, .local."
-        printf '%s\n' $AGYX_DEFAULT_LINKS; } > "$AGYX_LINKS_FILE"
-      echo "wrote $AGYX_LINKS_FILE (edit it to change what profiles share)"
-    fi
-    echo "real agy: $t"
-    echo "agyx launches it: 'agyx --profile NAME ...' (make sure agyx itself is on PATH)."
-    echo "optional: 'agyx shim' also takes over the bare 'agy' name"
-    ;;
-  shim)
-    [ $# -eq 0 ] || bad "shim takes no arguments"
-    l=$data/bin/agy
-    if [ -e "$l" ] || [ -L "$l" ]; then isshim "$l" || die "$l exists and is not a link to the shim; not touching it"; fi
-    mkdir -p "$data/bin" && ln -sfn "$shim" "$l" || die "cannot write $l"
-    echo "bare 'agy' now runs the shim: $l -> $shim"
-    r=$(readlink "$data/real-agy" 2>/dev/null)
-    echo "$data/bin must come BEFORE the directory of the real agy${r:+ ($(dirname "$r"))} in PATH."
-    echo "put this line at the END of your shell config (after anything that adds the real agy's directory):"
-    echo "  export PATH=\"$data/bin:\$PATH\""
-    ;;
-  unshim)
-    [ $# -eq 0 ] || bad "unshim takes no arguments"
-    l=$data/bin/agy
-    if [ -e "$l" ] || [ -L "$l" ]; then
-      isshim "$l" || die "$l is not a link to the shim; not removing it"
-      rm "$l" || die "cannot remove $l"
-    fi
-    echo "bare 'agy' is no longer taken over (agyx still works)"
-    ;;
   profile)
     sub=${1-}; [ $# -gt 0 ] && shift
     case $sub in
@@ -144,7 +97,18 @@ case $cmd in
         [ $# -eq 1 ] || bad "profile login needs exactly one profile name"
         need "${1-}"
         (umask 077; mkdir -p "$data/profiles/$1/home") || die "cannot create profile"
-        exec "$shim" --profile "$1"
+        if logged_in "$1"; then
+          echo "agyx: profile '$1' is already logged in ($(status "$1")). Starting agy in it anyway; sign in again from there only if you want to change the account." >&2
+        fi
+        # run agy as a child (not exec) to set the default afterwards; SIGINT reaches agy, not us
+        trap : INT
+        "$shim" --profile "$1"; rc=$?
+        trap - INT
+        if logged_in "$1" && [ -z "$(dflt)" ]; then
+          printf '%s\n' "$1" > "$data/default" &&
+            echo "agyx: '$1' is now the default profile (change it with: agyx profile default NAME)"
+        fi
+        exit "$rc"
         ;;
       default)
         [ $# -le 1 ] || bad "profile default takes at most one profile name"
@@ -167,22 +131,20 @@ case $cmd in
     ;;
   doctor)
     [ $# -eq 0 ] || bad "doctor takes no arguments"
-    real=$data/real-agy
-    if [ -x "$real" ]; then
-      echo "real agy: $(readlink "$real")"
+    # shellcheck disable=SC2154 # real is set by agyx_find_real
+    if agyx_find_real; then
+      echo "real agy: $(readlink "$real" 2>/dev/null || echo "$real")${AGYX_REAL_AGY:+ (from AGYX_REAL_AGY)}"
       echo "version: $(AGY_CLI_DISABLE_AUTO_UPDATE=true "$real" --version 2>&1 | head -n 1)"
     else
-      echo "real agy: not set (run: agyx setup)"
+      echo "real agy: NOT FOUND. Install agy, or point agyx at it with AGYX_REAL_AGY=/path/to/agy"
     fi
     first=$(command -v agyx)
     if [ -n "$first" ] && [ "$first" -ef "$me" ]; then echo "PATH: agyx resolves to this script ($first)"
     else echo "PATH: agyx does NOT resolve to this script (found: ${first:-none}); put it on PATH (Homebrew does; or link $me)"; fi
-    if [ -L "$data/bin/agy" ]; then
-      first=$(command -v agy)
-      if [ -n "$first" ] && [ "$first" -ef "$shim" ]; then echo "takeover: on, agy resolves to the shim ($first)"
-      else echo "takeover: WARNING agy link exists but 'agy' resolves to ${first:-nothing}; put $data/bin before the real agy's directory in PATH"; fi
+    if [ -e "$data/bin/agy" ] && [ "$data/bin/agy" -ef "$shim" ]; then
+      echo "agy entry: $data/bin/agy (in place; the path to give apps that need a binary named agy)"
     else
-      echo "takeover: off. Inside an agent shell a nested 'agyx' routes to the inherited profile, but a nested bare 'agy' runs the real agy with the real HOME (default login, not the instance profile); use 'agyx shim' to enable"
+      echo "agy entry: $data/bin/agy is MISSING or not agyx's (it is the path to give apps that need a binary named agy)"
     fi
     kd=$(HOME=$rh "$sec" default-keychain -d user 2>/dev/null | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//')
     case $kd in
@@ -190,12 +152,7 @@ case $cmd in
       *) echo "keychain: real default keychain is ${kd:-unknown}, outside the agyx data dir" ;;
     esac
     d=$(dflt); echo "default: ${d:-none}"
-    # shellcheck source=../runtime/sync.sh
-    . "$(dirname "$me")/../runtime/sync.sh"
-    # shellcheck disable=SC2034 # used by the functions in sync.sh
-    R=$rh
-    agyx_set_links_file
-    if [ -f "$AGYX_LINKS_FILE" ]; then echo "symlinks: $AGYX_LINKS_FILE"; else echo "symlinks: $AGYX_LINKS_FILE (missing: built-in default list in use; 'agyx setup' writes the file)"; fi
+    if [ -f "$AGYX_LINKS_FILE" ]; then echo "symlinks: $AGYX_LINKS_FILE"; else echo "symlinks: $AGYX_LINKS_FILE (missing and could not be written: built-in default list in use)"; fi
     for n in $(names); do
       p=$data/profiles/$n
       t=$p/$tok

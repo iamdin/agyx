@@ -2,7 +2,7 @@
 
 Run several official `agy` CLI (Google Antigravity CLI, macOS) instances at the same time under one macOS user, each logged in to a different Google account.
 
-Each profile gets its own `HOME` (agy keeps its OAuth token under `$HOME/.gemini/antigravity-cli/`). `agyx` runs a shim (which can optionally also take over the name `agy`) that picks the profile and starts the real agy with that `HOME`. A shell bridge restores the real `HOME` in shells the agent spawns, so its Bash tool sees your normal environment.
+Each profile gets its own `HOME` (agy keeps its OAuth token under `$HOME/.gemini/antigravity-cli/`). `agyx` runs a shim that picks the profile and starts the real agy with that `HOME`. A shell bridge restores the real `HOME` in shells the agent spawns, so its Bash tool sees your normal environment.
 
 POSIX `sh`, no dependencies.
 
@@ -14,31 +14,27 @@ With Homebrew:
 
 ```sh
 brew install iamdin/tap/agyx
-agyx setup
-```
-
-`agyx setup` only records the official agy (first `agy` on `PATH`, or the path you pass) under the data dir. `agyx` is the only command you run; Homebrew puts it on `PATH`. agyx never edits your shell config.
-
-Then log in once per profile:
-
-```sh
 agyx profile login work   # runs agy's native login in profile "work"
-agyx profile login personal
-agyx profile default work # set the default profile (without NAME: show it)
-agyx doctor            # checks that `agyx` on PATH is this script
 ```
 
-### Optional: take over the bare `agy` name
+There is no setup step. `agyx` is the only command you run; Homebrew puts it on `PATH`, and agyx never edits your shell config. Everything else happens by itself, on any run, and only prints to stderr:
 
-By default the official `agy` is left alone. `agyx shim` creates `<data dir>/bin/agy` (a link to the shim) and tells you that `<data dir>/bin` must now come **before** the real agy's directory in `PATH` (the official installer uses `~/.local/bin`, so put `export PATH="$HOME/.local/share/agyx/bin:$PATH"` at the end of your shell config). `agyx unshim` removes only that link (it refuses to remove anything that is not a symlink to the shim). Both are idempotent.
+- **Real agy.** The first time, agyx looks for the first executable `agy` on `PATH` (never its own entry point) and stores it as `<data dir>/real-agy`. After that there is no `PATH` scan. If agy is not installed, agyx says so and how to point it at one: `AGYX_REAL_AGY=/abs/path/to/agy` overrides everything (it is not stored).
+- **A binary named `agy`.** `<data dir>/bin/agy` (default `~/.local/share/agyx/bin/agy`) is created when missing; it is a link to the shim. It is the path to give apps that need a binary named `agy` (for example a T3 Code "agy binary path" setting): they then start the real agy under the profile chosen by `AGY_PROFILE` or the default. `agyx doctor` prints it. Nothing asks you to change `PATH`.
+- **Symlinks file.** `${XDG_CONFIG_HOME:-~/.config}/agyx/symlinks` is written with the default list when missing (see below), with one stderr line the first time.
+- **First default.** `agyx profile login NAME` makes `NAME` the default profile when the login succeeded and no default is set yet. It never picks a default any other way.
 
-Inside an agent's shell, a nested `agyx` always routes to the inherited profile. A nested bare `agy` does only with the takeover on; without it, it runs the real agy with the real `HOME`, i.e. the default login, not the instance profile. `agyx doctor` reports which mode you are in.
+Other commands: `agyx profile login personal`, `agyx profile default work` (without NAME: show it), `agyx doctor` (checks the installation, including that `agyx` on `PATH` is this script).
+
+When no profile is chosen, agyx tells you what to do and exits non-zero without starting agy: with no profiles at all, run `agyx profile login NAME`; with profiles but no default, use `--profile NAME` or `agyx profile default NAME`; if the `default` file names a profile that does not exist, it says how to fix or create it. A profile that exists but is not logged in launches normally (agy asks you to log in).
+
+Inside an agent's shell, a nested `agyx` or a bare `agy` started through `<data dir>/bin/agy` routes to the inherited profile; a bare `agy` found elsewhere on `PATH` is the real agy with the real `HOME`.
 
 From a git clone instead of Homebrew:
 
 ```sh
 git clone https://github.com/iamdin/agyx && cd agyx
-./bin/agyx setup       # then link bin/agyx onto PATH, e.g. ln -s "$PWD/bin/agyx" ~/.local/bin/agyx
+ln -s "$PWD/bin/agyx" ~/.local/bin/agyx   # put bin/agyx on PATH
 ```
 
 Keep `bin/` and `runtime/` (including `runtime/sync.sh`) together; the scripts locate each other by resolving their own real path (symlinks are fine).
@@ -47,7 +43,7 @@ Keep `bin/` and `runtime/` (including `runtime/sync.sh`) together; the scripts l
 
 Profile choice: leading `--profile NAME` > `AGY_PROFILE` > default (`agyx profile default`).
 
-`agyx` launches agy unless its first argument is one of its own management subcommands: `setup`, `doctor`, `shim`, `unshim`, `profile` (with `profile list`, `profile login NAME`, `profile default [NAME]`). None of them overlaps with a real agy subcommand (`acp`, `agent`, `agents`, `changelog`, `help`, `install`, `mcp`, `mic-serve`, `models`, `plugin`, `plugins`, `remote-control`, `update`) or flag (`-h`, `--help`), so all of those, and `agyx --help`, reach the real agy:
+`agyx` launches agy unless its first argument is one of its own management subcommands: `doctor`, `profile` (with `profile list`, `profile login NAME`, `profile default [NAME]`). None of them overlaps with a real agy subcommand (`acp`, `agent`, `agents`, `changelog`, `help`, `install`, `mcp`, `mic-serve`, `models`, `plugin`, `plugins`, `remote-control`, `update`) or flag (`-h`, `--help`), so all of those, and `agyx --help`, reach the real agy:
 
 ```sh
 agyx                          # default profile
@@ -58,18 +54,16 @@ agyx --help                  # agy's own help
 agyx install                  # agy's own `install` subcommand
 ```
 
-(After `agyx shim`, the same works with the bare `agy`.) The five management subcommand names are reserved and rejected as profile names.
+(The same works with `<data dir>/bin/agy`.) The two management subcommand names (`doctor`, `profile`) are reserved and rejected as profile names.
 
 ### agyx usage
 
 ```
-usage: agyx setup [path]            record the official agy (default: first agy in PATH)
+usage: agyx [--profile NAME] [agy args...]   launch agy as a profile
        agyx profile login NAME      create profile NAME and log in with agy's native login
        agyx profile default [NAME]  show or set the default profile
        agyx profile list            list profiles and their Google accounts
        agyx doctor                  check the installation
-       agyx shim | unshim           enable / disable the optional bare 'agy' takeover
-       agyx [--profile NAME] [agy args...]   anything else launches agy
 ```
 
 This usage is printed (exit 2) on any misuse of a management subcommand: a missing, extra, invalid or reserved argument, or an unknown profile.
@@ -86,7 +80,7 @@ old          logged in, email unknown
 
 A profile counts as logged in when its token file exists or its keychain holds agy's login item (service `gemini`, account `antigravity`; checked with `security find-generic-password` without `-w` or `-g`, so the secret is never read). The email is read from the `id_token_email` field of the token file with macOS `plutil` (no other dependency); when there is no token file (agy keeps the login in the profile keychain), it is the last `email=` on an `applyAuthResult` line of the newest file in `<profile home>/.gemini/antigravity-cli/log/`. No other field of that file is ever read or printed, in particular not the access or refresh tokens. "logged in, email unknown" means a login was found but no email could be read; a login found this way is not proof that it is still valid. If two profiles report the same email, a `WARNING` line says both are logged in to the same Google account.
 
-Data dir: `${AGYX_DATA_DIR:-~/.local/share/agyx}` holding `real-agy`, `bin/agy` (only after `agyx shim`), `default`, `profiles/<name>/home/`.
+Data dir: `${AGYX_DATA_DIR:-~/.local/share/agyx}` holding `real-agy`, `bin/agy` (the shim entry), `default`, `profiles/<name>/home/`.
 
 ## Shared state and the home whitelist
 
@@ -98,7 +92,7 @@ A profile differs from your real home only in which Google account is logged in.
 
 SQLite sidecar files (names ending in `-wal`, `-shm` or `-journal`) are never synced either, in any shared directory: SQLite opens the shared database through the profile symlink, resolves it, and creates those files next to the real database, so linking them would only produce links that dangle after a checkpoint.
 
-**Home whitelist.** `${XDG_CONFIG_HOME:-$HOME/.config}/agyx/symlinks` (resolved from your real home, never from a profile home; `XDG_CONFIG_HOME` counts only when it is an absolute path) lists names in your real home that are linked into every profile home, so programs agy starts directly (MCP servers) find your git, ssh, npm, bun, cargo and similar configuration. `agyx setup` writes the file with the default list (creating the `agyx` directory) if it does not exist, and the same default is used when the file is missing; `agyx doctor` prints the resolved path. The default list:
+**Home whitelist.** `${XDG_CONFIG_HOME:-$HOME/.config}/agyx/symlinks` (resolved from your real home, never from a profile home; `XDG_CONFIG_HOME` counts only when it is an absolute path) lists names in your real home that are linked into every profile home, so programs agy starts directly (MCP servers) find your git, ssh, npm, bun, cargo and similar configuration. agyx writes the file with the default list (creating the `agyx` directory) on any run when it does not exist, and the same default is used when it cannot be written; `agyx doctor` prints the resolved path. The default list:
 
 ```
 .gitconfig  .ssh  .config  .npm  .npmrc  .bun  .bunfig.toml  .cache  .cargo  .rustup  go  Code  GitHub
