@@ -392,7 +392,11 @@ for a in y enter; do
   out=$(fx env PATH="$SP" AGYX_TTY="$T/ans-$a" FAKE_RUN="$mktok" "$AX" profile login w 2>"$T/err" </dev/null); rc=$?
   eq "gate-prompt-$a" "0/w/$here/bin/agy/present" "$rc/$(cat "$N/data/default" 2>/dev/null)/$(readlink "$N/data/bin/agy")/$([ -f "$N/rh/.config/agyx/symlinks" ] && echo present)"
 done
-eq gate-prompt-text "agyx will set up:|  $N/data/  profiles (one HOME and keychain per account), a link to agy at $T/fakebin/agy|  $N/data/bin/agy  entry for apps that need a binary named agy|  $N/rh/.config/agyx/symlinks  home entries linked into every profile (editable)|Profiles share your ~/.gemini settings and history; your login keychain is not touched.|Continue? [Y/n] " "$(sed -n '/^agyx will set up/,/Continue/p' "$T/err" | tr '\n' '|' | sed -e 's/|$//' -e 's/Continue.*/Continue? [Y\/n] /')"
+eq gate-prompt-text-outside-home "agyx will set up:|  $N/data/  profiles (one HOME and keychain per account), a link to agy at $T/fakebin/agy|  $N/data/bin/agy  entry for apps that need a binary named agy|  ~/.config/agyx/symlinks  home entries linked into every profile (editable)|Profiles share your ~/.gemini settings and history; your login keychain is not touched.|Continue? [Y/n] " "$(sed -n '/^agyx will set up/,/Continue/p' "$T/err" | tr '\n' '|' | sed -e 's/|$//' -e 's/Continue.*/Continue? [Y\/n] /')"
+# inside the real home the notice shows ~/...
+gfresh g4h; mkdir -p "$N/rh/.local/bin"; ln -s "$T/fake-agy" "$N/rh/.local/bin/agy"
+env -u AGYX_DATA_DIR AGYX_REAL_HOME="$N/rh" PATH="$N/rh/.local/bin:/usr/bin:/bin" AGYX_TTY="$T/ans-n" "$AX" --profile p </dev/null 2>"$T/err"
+eq gate-prompt-text-home "agyx will set up:|  ~/.local/share/agyx/  profiles (one HOME and keychain per account), a link to agy at ~/.local/bin/agy|  ~/.local/share/agyx/bin/agy  entry for apps that need a binary named agy|  ~/.config/agyx/symlinks  home entries linked into every profile (editable)|Profiles share your ~/.gemini settings and history; your login keychain is not touched.|Continue? [Y/n] " "$(sed -n '/^agyx will set up/,/Continue/p' "$T/err" | tr '\n' '|' | sed -e 's/|$//' -e 's/Continue.*/Continue? [Y\/n] /')"
 eq gate-prompt-continues "1" "$(echo "$out" | grep -c "'w' is now the default profile")"
 for a in n eof; do
   gfresh g5; : > "$LAUNCHLOG"

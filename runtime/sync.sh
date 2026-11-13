@@ -257,6 +257,15 @@ agyx_ensure_links_file() {
   return 0
 }
 
+agyx_tilde() { # print $1 with the real home shown as ~ (paths outside it stay absolute)
+  # shellcheck disable=SC2088 # a literal ~ is intended
+  case $1 in
+    "$R") printf '~' ;;
+    "$R"/*) printf '~/%s' "${1#"$R"/}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
 # Nothing is written to the user's file system until the user agreed once. "Set up" = the data dir
 # exists. Commands that write call this first. Without a terminal (stdin and stderr) it refuses;
 # AGYX_ASSUME_YES=1 skips the question. AGYX_TTY=<file> is for tests only: it replaces the terminal
@@ -272,9 +281,9 @@ agyx_gate() {
     agyx_set_links_file
     {
       echo "agyx will set up:"
-      echo "  $data/  profiles (one HOME and keychain per account), a link to agy at $_found"
-      echo "  $data/bin/agy  entry for apps that need a binary named agy"
-      echo "  $AGYX_LINKS_FILE  home entries linked into every profile (editable)"
+      echo "  $(agyx_tilde "$data")/  profiles (one HOME and keychain per account), a link to agy at $(agyx_tilde "$_found")"
+      echo "  $(agyx_tilde "$data")/bin/agy  entry for apps that need a binary named agy"
+      echo "  $(agyx_tilde "$AGYX_LINKS_FILE")  home entries linked into every profile (editable)"
       echo "Profiles share your ~/.gemini settings and history; your login keychain is not touched."
       printf 'Continue? [Y/n] '
     } >&2
