@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+# Read-only token; no secrets are used.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # macOS only: agyx drives the macOS keychain (`security`) and reads tokens with `plutil`,
+    # and the tests use BSD userland behaviour, so they are not written to pass on Linux.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install shellcheck
+        run: command -v shellcheck >/dev/null || brew install shellcheck
+      - name: shellcheck
+        run: shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh runtime/bash_env runtime/zsh/.zshenv test/run.sh test/release.sh scripts/release.sh
+      - name: Tests
+        run: sh test/run.sh </dev/null
+      - name: Release script tests
+        run: sh test/release.sh
