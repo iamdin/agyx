@@ -98,7 +98,7 @@ A profile differs from your real home only in which Google account is logged in.
 
 SQLite sidecar files (names ending in `-wal`, `-shm` or `-journal`) are never synced either, in any shared directory: SQLite opens the shared database through the profile symlink, resolves it, and creates those files next to the real database, so linking them would only produce links that dangle after a checkpoint.
 
-**Home whitelist.** `${XDG_CONFIG_HOME:-$HOME/.config}/agyx/home-links` (resolved from your real home, never from a profile home; `XDG_CONFIG_HOME` counts only when it is an absolute path) lists names in your real home that are linked into every profile home, so programs agy starts directly (MCP servers) find your git, ssh, npm, bun, cargo and similar configuration. `agyx setup` writes the file with the default list (creating the `agyx` directory) if it does not exist, and the same default is used when the file is missing; `agyx doctor` prints the resolved path. The file used to be read from the data dir; that location is no longer read:
+**Home whitelist.** `${XDG_CONFIG_HOME:-$HOME/.config}/agyx/symlinks` (resolved from your real home, never from a profile home; `XDG_CONFIG_HOME` counts only when it is an absolute path) lists names in your real home that are linked into every profile home, so programs agy starts directly (MCP servers) find your git, ssh, npm, bun, cargo and similar configuration. `agyx setup` writes the file with the default list (creating the `agyx` directory) if it does not exist, and the same default is used when the file is missing; `agyx doctor` prints the resolved path. The default list:
 
 ```
 .gitconfig  .ssh  .config  .npm  .npmrc  .bun  .bunfig.toml  .cache  .cargo  .rustup  go  Code  GitHub

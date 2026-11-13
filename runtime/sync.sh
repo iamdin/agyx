@@ -91,12 +91,12 @@ agyx_valid_link() {
   return 0
 }
 
-# Whitelist file: ${XDG_CONFIG_HOME:-$R/.config}/agyx/home-links. XDG_CONFIG_HOME counts only when it is an
+# Whitelist file: ${XDG_CONFIG_HOME:-$R/.config}/agyx/symlinks. XDG_CONFIG_HOME counts only when it is an
 # absolute path; the default is resolved from the real home R, never from a profile home.
 agyx_set_links_file() {
   case ${XDG_CONFIG_HOME-} in
-    /*) AGYX_LINKS_FILE=$XDG_CONFIG_HOME/agyx/home-links ;;
-    *) AGYX_LINKS_FILE=$R/.config/agyx/home-links ;;
+    /*) AGYX_LINKS_FILE=$XDG_CONFIG_HOME/agyx/symlinks ;;
+    *) AGYX_LINKS_FILE=$R/.config/agyx/symlinks ;;
   esac
 }
 
@@ -119,7 +119,7 @@ agyx_each_link() {
 
 agyx_link_one() {
   if ! agyx_valid_link "$1"; then
-    echo "agyx: warning: home-links: skipping invalid name '$1'" >&2
+    echo "agyx: warning: symlinks: skipping invalid name '$1'" >&2
     return 0
   fi
   if [ -L "$P/$1" ]; then
@@ -137,12 +137,12 @@ agyx_sync_home() { agyx_each_link agyx_link_one; }
 # ---- doctor helpers (forks are fine here) ----
 
 agyx_report_link() {
-  agyx_valid_link "$1" || { echo "  home-links $1: invalid name (skipped)"; return 0; }
-  if [ -L "$P/$1" ] && [ "$P/$1" -ef "$R/$1" ] && [ -e "$R/$1" ]; then echo "  home-links $1: linked"
-  elif [ ! -e "$R/$1" ] && [ ! -L "$P/$1" ]; then echo "  home-links $1: missing in the real home"
-  elif [ ! -e "$P/$1" ] && [ ! -L "$P/$1" ]; then echo "  home-links $1: not linked yet (linked on next launch)"
-  elif [ -L "$P/$1" ] && [ ! -e "$P/$1" ] && [ ! -e "$R/$1" ] && [ "$(readlink "$P/$1")" = "$R/$1" ]; then echo "  home-links $1: dangling link (removed on next launch)"
-  else echo "  home-links $1: CONFLICT (not a link to $R/$1; left untouched)"; fi
+  agyx_valid_link "$1" || { echo "  symlinks $1: invalid name (skipped)"; return 0; }
+  if [ -L "$P/$1" ] && [ "$P/$1" -ef "$R/$1" ] && [ -e "$R/$1" ]; then echo "  symlinks $1: linked"
+  elif [ ! -e "$R/$1" ] && [ ! -L "$P/$1" ]; then echo "  symlinks $1: missing in the real home"
+  elif [ ! -e "$P/$1" ] && [ ! -L "$P/$1" ]; then echo "  symlinks $1: not linked yet (linked on next launch)"
+  elif [ -L "$P/$1" ] && [ ! -e "$P/$1" ] && [ ! -e "$R/$1" ] && [ "$(readlink "$P/$1")" = "$R/$1" ]; then echo "  symlinks $1: dangling link (removed on next launch)"
+  else echo "  symlinks $1: CONFLICT (not a link to $R/$1; left untouched)"; fi
 }
 
 agyx_report_dir() { # rel dir

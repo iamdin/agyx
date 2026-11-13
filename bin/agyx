@@ -194,7 +194,7 @@ case $cmd in
     # shellcheck disable=SC2034 # used by the functions in sync.sh
     R=$rh
     agyx_set_links_file
-    if [ -f "$AGYX_LINKS_FILE" ]; then echo "home-links: $AGYX_LINKS_FILE"; else echo "home-links: $AGYX_LINKS_FILE (missing: built-in default list in use; 'agyx setup' writes the file)"; fi
+    if [ -f "$AGYX_LINKS_FILE" ]; then echo "symlinks: $AGYX_LINKS_FILE"; else echo "symlinks: $AGYX_LINKS_FILE (missing: built-in default list in use; 'agyx setup' writes the file)"; fi
     for n in $(names); do
       p=$data/profiles/$n
       t=$p/$tok
