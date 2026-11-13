@@ -75,12 +75,12 @@ dup_warning() {
 }
 
 isshim() { [ -L "$1" ] && [ "$1" -ef "$shim" ]; }
-usage="usage: agyx setup [path]        record the official agy (default: first agy in PATH)
-       agyx profile login NAME  create profile NAME and log in with agy's native login
-       agyx profile use NAME    set the default profile
-       agyx profile list        list profiles and their Google accounts
-       agyx doctor              check the installation
-       agyx shim | unshim       enable / disable the optional bare 'agy' takeover
+usage="usage: agyx setup [path]            record the official agy (default: first agy in PATH)
+       agyx profile login NAME      create profile NAME and log in with agy's native login
+       agyx profile default [NAME]  show or set the default profile
+       agyx profile list            list profiles and their Google accounts
+       agyx doctor                  check the installation
+       agyx shim | unshim           enable / disable the optional bare 'agy' takeover
        agyx [--profile NAME] [agy args...]   anything else launches agy"
 bad() { echo "agyx: $*" >&2; echo "$usage" >&2; exit 2; }
 
@@ -146,9 +146,10 @@ case $cmd in
         (umask 077; mkdir -p "$data/profiles/$1/home") || die "cannot create profile"
         exec "$shim" --profile "$1"
         ;;
-      use)
-        [ $# -eq 1 ] || bad "profile use needs exactly one profile name"
-        exists "${1-}"
+      default)
+        [ $# -le 1 ] || bad "profile default takes at most one profile name"
+        if [ $# -eq 0 ]; then d=$(dflt); echo "${d:-none}"; exit 0; fi
+        exists "$1"
         printf '%s\n' "$1" > "$data/default"
         ;;
       list)
@@ -161,7 +162,7 @@ case $cmd in
         done
         dup_warning
         ;;
-      *) bad "profile needs a subcommand: list | login NAME | use NAME" ;;
+      *) bad "profile needs a subcommand: list | login NAME | default [NAME]" ;;
     esac
     ;;
   doctor)

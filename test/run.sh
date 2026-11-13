@@ -179,7 +179,7 @@ for n in setup doctor shim unshim profile; do
   agyx --profile "$n" >/dev/null 2>&1 && res="$res launched:$n"
   agy --profile "$n" >/dev/null 2>&1 && res="$res shim-launched:$n"
   "$here/bin/agyx" profile login "$n" >/dev/null 2>&1 && res="$res login:$n"
-  "$here/bin/agyx" profile use "$n" >/dev/null 2>&1 && res="$res use:$n"
+  "$here/bin/agyx" profile default "$n" >/dev/null 2>&1 && res="$res default:$n"
   [ -s "$LAUNCHLOG" ] && res="$res log:$n"
   rm -rf "${DD:?}/profiles/$n"
 done
@@ -187,8 +187,8 @@ eq reserved-names "" "$res"
 
 # agyx
 ctl() { "$here/bin/agyx" "$@"; }
-eq ctl-use "home" "$(ctl profile use home; cat "$DD/default")"
-eq ctl-use-bad "1" "$(ctl profile use nope 2>/dev/null || echo 1)"
+eq ctl-default "home" "$(ctl profile default home; cat "$DD/default")"
+eq ctl-default-bad "1" "$(ctl profile default nope 2>/dev/null || echo 1)"
 # list / doctor show the Google account from id_token_email, and never any other token field
 tokdir() { mkdir -p "$DD/profiles/$1/home/.gemini/antigravity-cli"; echo "$DD/profiles/$1/home/.gemini/antigravity-cli/antigravity-oauth-token"; }
 tokjson() { # profile email  (fake token strings that must never be printed)
@@ -222,7 +222,7 @@ mkdir "$T/fakebin"; ln -s "$T/fake-agy" "$T/fakebin/agy"
 eq ctl-setup-autodetect "real agy: $T/fakebin/agy" "$(PATH=$DD/bin:$T/fakebin:$PATH ctl setup | head -n 1)"
 eq ctl-setup-keeps-shim "$here/bin/agy" "$(readlink "$DD/bin/agy")"
 : > "$LAUNCHLOG"
-for c in "profile list" "profile use work" doctor "setup $T/fake-agy" shim unshim shim; do
+for c in "profile list" "profile default work" doctor "setup $T/fake-agy" shim unshim shim; do
   # shellcheck disable=SC2086
   agyx $c >/dev/null 2>&1
 done
@@ -232,7 +232,7 @@ eq ctl-empty-list "no profiles yet; run: agyx profile login NAME/0" "$(AGYX_DATA
 # misuse of a management subcommand prints the usage (exit 2) and never launches agy
 : > "$LAUNCHLOG"
 res=
-for c in "setup a b" "setup $T/nonexistent" profile "profile bogus" "profile login" "profile login Bad" "profile login profile" "profile login a b" "profile use" "profile use nope" "profile use profile" "profile list x" "doctor x" "shim x" "unshim x"; do
+for c in "setup a b" "setup $T/nonexistent" profile "profile bogus" "profile login" "profile login Bad" "profile login profile" "profile login a b" "profile default a b" "profile default nope" "profile default profile" "profile list x" "doctor x" "shim x" "unshim x"; do
   # shellcheck disable=SC2086
   out=$(ctl $c 2>&1 >/dev/null); rc=$?
   [ "$rc" = 2 ] && echo "$out" | grep -q '^usage: agyx' || res="$res [$c rc=$rc]"
@@ -404,6 +404,14 @@ eq wl-file-valid "link link" "$(islink "$S5/.gitconfig" "$RH/.gitconfig") $(isli
 eq wl-file-invalid-warned "7" "$(grep -c "symlinks: skipping invalid name" "$T/err")"
 eq wl-file-not-linked ".local absent, .gemini real" "$([ -e "$S5/.local" ] || [ -L "$S5/.local" ] || printf '.local absent,') $([ -d "$S5/.gemini" ] && [ ! -L "$S5/.gemini" ] && echo .gemini real)"
 eq wl-library-not-link "no" "$([ -L "$S5/Library" ] && echo yes || echo no)"
+# profile default: show (or none) and set
+rm -f "$DD/default"
+eq default-none "none/0" "$(ctl profile default)/$(ctl profile default >/dev/null; echo $?)"
+(ctl profile default other >/dev/null)
+eq default-shown "other/other" "$(ctl profile default)/$(cat "$DD/default")"
+eq default-launch-uses-it "other" "$(agyx 2>/dev/null | sed -n 's/^AGY_PROFILE=//p')"
+eq default-use-gone "1" "$(ctl profile use other >/dev/null 2>&1 || echo 1)"
+printf work > "$DD/default"
 # setup writes the default list once and never overwrites it
 D2=$T/d2 RH3=$T/rh3
 (AGYX_REAL_HOME=$RH3 AGYX_DATA_DIR=$D2 ctl setup "$T/fake-agy" >/dev/null)

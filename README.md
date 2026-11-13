@@ -24,7 +24,7 @@ Then log in once per profile:
 ```sh
 agyx profile login work   # runs agy's native login in profile "work"
 agyx profile login personal
-agyx profile use work     # default profile
+agyx profile default work # set the default profile (without NAME: show it)
 agyx doctor            # checks that `agyx` on PATH is this script
 ```
 
@@ -45,9 +45,9 @@ Keep `bin/` and `runtime/` (including `runtime/sync.sh`) together; the scripts l
 
 ## Use
 
-Profile choice: leading `--profile NAME` > `AGY_PROFILE` > default (`agyx profile use`).
+Profile choice: leading `--profile NAME` > `AGY_PROFILE` > default (`agyx profile default`).
 
-`agyx` launches agy unless its first argument is one of its own management subcommands: `setup`, `doctor`, `shim`, `unshim`, `profile` (with `profile list`, `profile login NAME`, `profile use NAME`). None of them overlaps with a real agy subcommand (`acp`, `agent`, `agents`, `changelog`, `help`, `install`, `mcp`, `mic-serve`, `models`, `plugin`, `plugins`, `remote-control`, `update`) or flag (`-h`, `--help`), so all of those, and `agyx --help`, reach the real agy:
+`agyx` launches agy unless its first argument is one of its own management subcommands: `setup`, `doctor`, `shim`, `unshim`, `profile` (with `profile list`, `profile login NAME`, `profile default [NAME]`). None of them overlaps with a real agy subcommand (`acp`, `agent`, `agents`, `changelog`, `help`, `install`, `mcp`, `mic-serve`, `models`, `plugin`, `plugins`, `remote-control`, `update`) or flag (`-h`, `--help`), so all of those, and `agyx --help`, reach the real agy:
 
 ```sh
 agyx                          # default profile
@@ -63,12 +63,12 @@ agyx install                  # agy's own `install` subcommand
 ### agyx usage
 
 ```
-usage: agyx setup [path]        record the official agy (default: first agy in PATH)
-       agyx profile login NAME  create profile NAME and log in with agy's native login
-       agyx profile use NAME    set the default profile
-       agyx profile list        list profiles and their Google accounts
-       agyx doctor              check the installation
-       agyx shim | unshim       enable / disable the optional bare 'agy' takeover
+usage: agyx setup [path]            record the official agy (default: first agy in PATH)
+       agyx profile login NAME      create profile NAME and log in with agy's native login
+       agyx profile default [NAME]  show or set the default profile
+       agyx profile list            list profiles and their Google accounts
+       agyx doctor                  check the installation
+       agyx shim | unshim           enable / disable the optional bare 'agy' takeover
        agyx [--profile NAME] [agy args...]   anything else launches agy
 ```
 
