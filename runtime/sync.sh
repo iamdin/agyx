@@ -5,7 +5,7 @@
 # The sync functions use only shell builtins when everything is already correct (no forks);
 # they never write to stdout (warnings go to stderr).
 
-AGYX_VERSION=0.1.2 # the one place the version lives (the formula's url tag must match)
+AGYX_VERSION=0.1.3 # the one place the version lives (the formula's url tag must match)
 AGYX_DEFAULT_LINKS=".gitconfig .ssh .config .npm .npmrc .bun .bunfig.toml .cache .cargo .rustup go Code GitHub"
 
 # ---- the shared ~/.gemini ----
