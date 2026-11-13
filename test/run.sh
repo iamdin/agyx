@@ -31,6 +31,7 @@ echo "HOME=$HOME $*" >> "$SECLOG"
 if [ "$FAKE_SEC_FAIL" = "$1" ]; then echo "security: fake failure" >&2; exit 1; fi
 case $1 in
   create-keychain) mkdir -p "$(dirname "$4")"; : > "$4" ;;
+  find-generic-password) [ -f "$HOME/.fake-item" ]; exit $? ;;
   default-keychain)
     if [ "$4" = -s ]; then echo "$5" > "$HOME/.fake-default"
     elif [ -f "$HOME/.fake-default" ]; then echo "    \"$(cat "$HOME/.fake-default")\""
@@ -198,11 +199,11 @@ tokjson twin alice@example.com
 printf '{"token":{"access_token":"SECRET-ACCESS-work","refresh_token":"SECRET-REFRESH-work"},"auth_method":"oauth"}\n' > "$(tokdir work)"
 mkdir -p "$DD/profiles/junk/home"; echo 'not json SECRET-JUNK' > "$(tokdir junk)"
 dupline="WARNING: profiles home twin are logged in to the same Google account (alice@example.com)"
-want=$(printf '%-12s %s\n' home 'alice@example.com  (default)' junk 'token file present, email unknown' other 'not logged in' twin 'alice@example.com' work 'token file present, email unknown')
+want=$(printf '%-12s %s\n' home 'alice@example.com  (default)' junk 'logged in, email unknown' other 'not logged in' twin 'alice@example.com' work 'logged in, email unknown')
 eq ctl-list "$want${nl}$dupline" "$(ctl profile list)"
 eq ctl-doctor-email "1" "$(ctl doctor | grep -c '^profile home: alice@example.com, home ')"
 eq ctl-doctor-not-logged-in "1" "$(ctl doctor | grep -c '^profile other: not logged in, home ')"
-eq ctl-doctor-unknown "2" "$(ctl doctor | grep -c '^profile \(work\|junk\): token file present, email unknown, home ')"
+eq ctl-doctor-unknown "2" "$(ctl doctor | grep -c '^profile \(work\|junk\): logged in, email unknown, home ')"
 eq ctl-doctor-dup "1" "$(ctl doctor | grep -cF "$dupline")"
 eq ctl-no-token-strings "0" "$( (ctl profile list; ctl doctor) | grep -c SECRET)"
 rm -rf "${DD:?}/profiles/twin" "${DD:?}/profiles/junk"
@@ -331,6 +332,7 @@ echo R-token > "$G/antigravity-cli/antigravity-oauth-token"; echo R-log > "$G/an
 echo R-jb > "$G/antigravity-cli/jetbox_summaries_proto.pb"
 S=$DD/profiles/s1/home A=$DD/profiles/s1/home/.gemini/antigravity-cli
 mkdir -p "$A/log" "$S/.gemini/skills2"
+echo p > "$S/.gemini/skills2/p.txt"   # differs from the shared (empty) directory
 ln -s /nonexistent "$S/.gemini/a.txt"                                  # case 3: wrong link
 echo same > "$S/.gemini/b.txt"                                         # case 4: identical
 echo new-c > "$S/.gemini/c.txt"; touch -t 202401010000 "$S/.gemini/c.txt"   # case 4: profile newer
@@ -403,11 +405,53 @@ eq wl-file-not-linked ".local absent, .gemini real" "$([ -e "$S5/.local" ] || [ 
 eq wl-library-not-link "no" "$([ -L "$S5/Library" ] && echo yes || echo no)"
 # setup writes the default list once and never overwrites it
 D2=$T/d2
-AGYX_DATA_DIR=$D2 ctl setup "$T/fake-agy" >/dev/null
+(AGYX_DATA_DIR=$D2 ctl setup "$T/fake-agy" >/dev/null)
 eq setup-writes-list ".gitconfig .ssh .config .npm .npmrc .bun .bunfig.toml .cache .cargo .rustup go Code GitHub " "$(grep -v '^#' "$D2/home-links" | tr '\n' ' ')"
-echo mine > "$D2/home-links"; AGYX_DATA_DIR=$D2 ctl setup "$T/fake-agy" >/dev/null
+echo mine > "$D2/home-links"; (AGYX_DATA_DIR=$D2 ctl setup "$T/fake-agy" >/dev/null)
 eq setup-keeps-list "mine" "$(cat "$D2/home-links")"
 rm -rf "${DD:?}/profiles/s1" "${DD:?}/profiles/s2" "${DD:?}/profiles/s3" "${DD:?}/profiles/s4" "${DD:?}/profiles/s5"
+
+# a real directory identical to the shared one is moved to agyx-drift and replaced by the link
+rm -f "$DD/home-links"   # drop the invalid-names list left by the whitelist tests
+mkdir -p "$G/antigravity-cli/mcp/t3-code"; echo '{"a":1}' > "$G/antigravity-cli/mcp/t3-code/a.json"
+S6=$DD/profiles/s6/home
+mkdir -p "$S6/.gemini/antigravity-cli/mcp/t3-code"; echo '{"a":1}' > "$S6/.gemini/antigravity-cli/mcp/t3-code/a.json"
+out=$(launch s6)
+eq dir-identical-silent "0" "$(grep -c . "$T/err")"
+eq dir-identical-linked "link" "$(islink "$S6/.gemini/antigravity-cli/mcp" "$G/antigravity-cli/mcp")"
+eq dir-identical-kept "{\"a\":1}" "$(cat "$S6"/agyx-drift/.gemini/antigravity-cli/mcp.*/t3-code/a.json)"
+before=$(snap "$S6" "$G"); launch s6 >/dev/null; after=$(snap "$S6" "$G")
+eq dir-identical-second-launch "$before/0" "$after/$(grep -c . "$T/err")"
+rm -rf "${DD:?}/profiles/s6" "$G/antigravity-cli/mcp"
+
+# logged in via the profile keychain (item gemini/antigravity) and email from agy's log
+mklk() { h=$DD/profiles/$1/home; mkdir -p "$h/Library/Keychains" "$h/.gemini/antigravity-cli/log"; : > "$h/Library/Keychains/login.keychain-db"; echo "$h"; }
+loglines() { printf '%s\n' "$@"; }
+h=$(mklk lk1); : > "$h/.fake-item"; L=$h/.gemini/antigravity-cli/log
+loglines '10:00 applyAuthResult ok email=old@example.com' > "$L/a.log"; touch -t 202001010000 "$L/a.log"
+loglines '11:00 applyAuthResult ok email=first@example.com scopes=x' '11:01 applyAuthResult ok email=last@example.com' '11:02 other email=ignored@example.com' > "$L/b.log"; touch -t 202401010000 "$L/b.log"
+h=$(mklk lk2); : > "$h/.fake-item"
+h=$(mklk lk3); : > "$h/.fake-item"; tokjson lk3 tok@example.com
+loglines '11:00 applyAuthResult ok email=log@example.com' > "$h/.gemini/antigravity-cli/log/c.log"
+h=$(mklk lk4); : > "$h/.fake-item"; printf '{"token":{"access_token":"SECRET-ACCESS-lk4"},"auth_method":"oauth"}\n' > "$(tokdir lk4)"
+loglines '11:00 applyAuthResult ok email=fromlog@example.com' > "$h/.gemini/antigravity-cli/log/d.log"
+h=$(mklk lk5); loglines '11:00 applyAuthResult ok email=nobody@example.com' > "$h/.gemini/antigravity-cli/log/e.log"
+h=$(mklk lk6); : > "$h/.fake-item"; loglines '12:00 applyAuthResult ok email=last@example.com' > "$h/.gemini/antigravity-cli/log/f.log"
+: > "$SECLOG"
+lst=$(ctl profile list)
+row() { echo "$lst" | grep "^$1 " | sed 's/  */ /g'; }
+eq lk-newest-log-last-email "lk1 last@example.com" "$(row lk1)"
+eq lk-keychain-no-email "lk2 logged in, email unknown" "$(row lk2)"
+eq lk-token-email-wins "lk3 tok@example.com" "$(row lk3)"
+eq lk-token-without-field-uses-log "lk4 fromlog@example.com" "$(row lk4)"
+eq lk-no-item-no-token "lk5 not logged in" "$(row lk5)"
+eq lk-dup-warning "1" "$(echo "$lst" | grep -c 'WARNING: profiles lk1 lk6 are logged in to the same Google account (last@example.com)')"
+eq lk-doctor "1" "$(ctl doctor | grep -c '^profile lk1: last@example.com, home ')"
+K=$DD/profiles/lk1/home/Library/Keychains/login.keychain-db
+eq lk-find-call "HOME=$DD/profiles/lk1/home find-generic-password -s gemini -a antigravity $K" "$(grep 'HOME=[^ ]*/lk1/home find-generic' "$SECLOG" | head -n 1)"
+eq lk-never-secret "0" "$(grep find-generic-password "$SECLOG" | grep -c -e ' -w' -e ' -g')"
+eq lk-no-secrets-printed "0" "$( (echo "$lst"; ctl doctor) | grep -c SECRET)"
+for n in lk1 lk2 lk3 lk4 lk5 lk6; do rm -rf "${DD:?}/profiles/$n"; done
 
 echo "passed: $pass, failed: $fail"
 [ "$fail" = 0 ]

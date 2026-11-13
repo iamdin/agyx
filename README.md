@@ -81,10 +81,10 @@ This usage is printed (exit 2) on any misuse of a management subcommand: a missi
 ```
 work         you@example.com  (default)
 personal     not logged in
-old          token file present, email unknown
+old          logged in, email unknown
 ```
 
-The email is read from the `id_token_email` field of the profile's agy token file with macOS `plutil` (no other dependency). No other field of that file is ever read or printed, in particular not the access or refresh tokens. "token file present, email unknown" means the file exists but the field could not be read; a present token file is not proof of a valid login. If two profiles report the same email, a `WARNING` line says both are logged in to the same Google account.
+A profile counts as logged in when its token file exists or its keychain holds agy's login item (service `gemini`, account `antigravity`; checked with `security find-generic-password` without `-w` or `-g`, so the secret is never read). The email is read from the `id_token_email` field of the token file with macOS `plutil` (no other dependency); when there is no token file (agy keeps the login in the profile keychain), it is the last `email=` on an `applyAuthResult` line of the newest file in `<profile home>/.gemini/antigravity-cli/log/`. No other field of that file is ever read or printed, in particular not the access or refresh tokens. "logged in, email unknown" means a login was found but no email could be read; a login found this way is not proof that it is still valid. If two profiles report the same email, a `WARNING` line says both are logged in to the same Google account.
 
 Data dir: `${AGYX_DATA_DIR:-~/.local/share/agyx}` holding `real-agy`, `bin/agy` (only after `agyx shim`), `default`, `profiles/<name>/home/`.
 
@@ -92,7 +92,7 @@ Data dir: `${AGYX_DATA_DIR:-~/.local/share/agyx}` holding `real-agy`, `bin/agy` 
 
 A profile differs from your real home only in which Google account is logged in. On every launch, before starting agy, the shim makes this true with symlinks only (nothing is printed to stdout; warnings go to stderr):
 
-**Shared `~/.gemini`.** `<profile home>/.gemini` and `.gemini/antigravity-cli` are real directories; every other entry in them is a symlink to the same entry in your real `~/.gemini` (settings, skills, MCP config, and so on). Entries that exist only in the profile are adopted: moved into the real `~/.gemini` and linked. If a profile copy replaced a link (agy saved the file by rename), the shim relinks it: an identical copy is simply relinked; a different one is relinked after the older version is kept in `<profile home>/agyx-drift/<path>.<timestamp>` (the newer one wins) and one warning is printed. A real directory where the shared side has an entry is never merged; it is left alone with a warning.
+**Shared `~/.gemini`.** `<profile home>/.gemini` and `.gemini/antigravity-cli` are real directories; every other entry in them is a symlink to the same entry in your real `~/.gemini` (settings, skills, MCP config, and so on). Entries that exist only in the profile are adopted: moved into the real `~/.gemini` and linked. If a profile copy replaced a link (agy saved the file by rename), the shim relinks it: an identical copy is simply relinked; a different one is relinked after the older version is kept in `<profile home>/agyx-drift/<path>.<timestamp>` (the newer one wins) and one warning is printed. A real directory in the profile whose content is identical to the shared directory (for example a cache an editor integration wrote) is moved to `agyx-drift` and replaced by the link, silently; one that differs is never merged and is left alone with a warning.
 
 **Private to each profile** (never linked, moved or adopted): `antigravity-cli/antigravity-oauth-token` (the login), `antigravity-cli/log`, `antigravity-cli/cli.log` (agy keeps only a few log files per directory, so instances would evict each other) and `antigravity-cli/jetbox_summaries_proto.pb` (agy saves it by rename, so a link cannot survive).
 

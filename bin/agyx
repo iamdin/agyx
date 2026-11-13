@@ -33,16 +33,34 @@ need() {
 exists() { need "${1-}"; [ -d "$data/profiles/$1/home" ] || bad "no such profile: $1"; }
 names() { for d in "$data"/profiles/*/; do [ -d "$d" ] && basename "$d"; done; }
 dflt() { [ -f "$data/default" ] && cat "$data/default"; }
-# Only the id_token_email field is ever read from the token file (never access/refresh tokens).
+# Email of a profile: the id_token_email field of the token file (the only field ever read from
+# it, never access/refresh tokens); else the last email= on an applyAuthResult line of the newest
+# agy log file. Empty when neither is available.
 email_of() {
-  e=$(plutil -extract id_token_email raw -o - "$data/profiles/$1/$tok" 2>/dev/null | tr -d '[:cntrl:]')
-  case $e in ''|*[[:space:]]*) return 0 ;; esac
+  e=
+  [ -f "$data/profiles/$1/$tok" ] &&
+    e=$(plutil -extract id_token_email raw -o - "$data/profiles/$1/$tok" 2>/dev/null | tr -d '[:cntrl:]')
+  case $e in ''|*[[:space:]]*)
+    ld=$data/profiles/$1/home/.gemini/antigravity-cli/log
+    lf=$(ls -t "$ld" 2>/dev/null | head -n 1)
+    e=
+    [ -n "$lf" ] && [ -f "$ld/$lf" ] &&
+      e=$(grep applyAuthResult "$ld/$lf" 2>/dev/null | sed -n 's/.*email=\([^][ ,;"}()]*\).*/\1/p' | tail -n 1 | tr -d '[:cntrl:]')
+    ;;
+  esac
+  case $e in *[[:space:]]*) e= ;; esac
   printf '%s' "$e"
 }
+# Does the profile keychain hold agy's login item? Never asks for the secret (no -w / -g).
+kc_has_item() {
+  _kc=$data/profiles/$1/home/Library/Keychains/login.keychain-db
+  [ -e "$_kc" ] || return 1
+  HOME=$data/profiles/$1/home "$sec" find-generic-password -s gemini -a antigravity "$_kc" >/dev/null 2>&1
+}
 status() {
-  [ -f "$data/profiles/$1/$tok" ] || { echo "not logged in"; return 0; }
+  if [ ! -f "$data/profiles/$1/$tok" ] && ! kc_has_item "$1"; then echo "not logged in"; return 0; fi
   e=$(email_of "$1")
-  echo "${e:-token file present, email unknown}"
+  echo "${e:-logged in, email unknown}"
 }
 kcstate() {
   kc=$data/profiles/$1/home/Library/Keychains/login.keychain-db

@@ -29,7 +29,12 @@ agyx_link_entry() {
   elif [ ! -e "$2" ]; then
     ln -s "$1" "$2"
   elif [ -d "$2" ]; then
-    echo "agyx: warning: $2 is a real directory but $1 is shared; not merged" >&2
+    if [ -d "$1" ] && diff -rq "$1" "$2" >/dev/null 2>&1; then
+      # identical content (e.g. a cache): keep a copy in agyx-drift, then share it
+      agyx_drift_away "$2" "$3" && ln -s "$1" "$2"
+    else
+      echo "agyx: warning: $2 is a real directory but $1 is shared; not merged" >&2
+    fi
   elif [ ! -f "$2" ]; then
     echo "agyx: warning: $2 is not a regular file or directory; left untouched" >&2
   elif [ ! -f "$1" ]; then
