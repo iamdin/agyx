@@ -73,6 +73,14 @@ ensure_keychain() {
 }
 ensure_keychain
 
+# 3c. shared .gemini and home whitelist (symlinks only; see runtime/sync.sh)
+# shellcheck disable=SC2034 # used by the functions in sync.sh
+R=$rh P=$phome
+# shellcheck source=../runtime/sync.sh
+. "$runtime/sync.sh"
+agyx_sync_gemini
+agyx_sync_home
+
 # 4. environment (originals saved unless the caller already points at the bridge)
 bz=$runtime/zsh bb=$runtime/bash_env
 if [ "${ZDOTDIR-}" != "$bz" ]; then

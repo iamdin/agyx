@@ -83,6 +83,14 @@ case $cmd in
     [ -x "$t" ] || bad "not executable: $t"
     [ ! "$t" -ef "$shim" ] || bad "that is the shim itself"
     (umask 077; mkdir -p "$data") && ln -sfn "$t" "$data/real-agy" || die "cannot write $data"
+    # shellcheck source=../runtime/sync.sh
+    . "$(dirname "$me")/../runtime/sync.sh"
+    if [ ! -e "$data/home-links" ]; then
+      { echo "# Names in your real home that agyx links into every profile home (one per line, # = comment)."
+        echo "# Not allowed: ., .., names with a slash, .gemini, Library, .local."
+        printf '%s\n' $AGYX_DEFAULT_LINKS; } > "$data/home-links"
+      echo "wrote $data/home-links (edit it to change what profiles share)"
+    fi
     echo "real agy: $t"
     echo "agyx launches it: 'agyx --profile NAME ...' (make sure agyx itself is on PATH)."
     echo "optional: 'agyx shim' also takes over the bare 'agy' name"
@@ -159,10 +167,18 @@ case $cmd in
       *) echo "keychain: real default keychain is ${kd:-unknown}, outside the agyx data dir" ;;
     esac
     d=$(dflt); echo "default: ${d:-none}"
+    # shellcheck source=../runtime/sync.sh
+    . "$(dirname "$me")/../runtime/sync.sh"
+    # shellcheck disable=SC2034 # used by the functions in sync.sh
+    R=$rh
+    if [ -f "$data/home-links" ]; then echo "home-links: $data/home-links"; else echo "home-links: missing (built-in default list in use; 'agyx setup' writes the file)"; fi
     for n in $(names); do
       p=$data/profiles/$n
       t=$p/$tok
       echo "profile $n: $(status "$n"), home $(ls -ld "$p/home" | cut -c1-10)$([ -f "$t" ] && echo ", token $(ls -l "$t" | cut -c1-10)"), $(kcstate "$n")"
+      # shellcheck disable=SC2034 # used by the functions in sync.sh
+      P=$p/home
+      agyx_report
     done
     dup_warning
     ;;

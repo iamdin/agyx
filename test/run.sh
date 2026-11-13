@@ -317,5 +317,97 @@ eq kc-doctor-no-secrets "0" "$(ctl doctor | grep -c SECRET)"
 eq kc-never-real-keychain "0" "$(grep -e ' -s ' -e create-keychain -e set-keychain-settings "$SECLOG" | grep -vc "^HOME=$DD/profiles/[a-z]*/home .*$DD/profiles/[a-z]*/home/Library/Keychains/login.keychain-db")"
 rm -rf "${DD:?}/profiles/kc" "${DD:?}/profiles/kcfail" "${DD:?}/profiles/nokc" "${DD:?}/profiles/badkc"
 
+# ---- shared ~/.gemini and home whitelist ----
+G=$RH/.gemini
+launch() { FAKE_RUN=true agyx --profile "$1" 2>"$T/err"; }
+islink() { [ -L "$1" ] && [ "$1" -ef "$2" ] && echo link || echo "not-link"; }
+snap() { ls -lRA "$@"; }
+mkdir -p "$G/antigravity-cli/log" "$G/skills" "$G/skills2" "$G/antigravity-cli/subdir"
+echo shared > "$G/settings.json"; echo a > "$G/a.txt"; echo same > "$G/b.txt"
+echo old > "$G/c.txt"; touch -t 202001010000 "$G/c.txt"
+echo shared-d > "$G/d.txt"; touch -t 202401010000 "$G/d.txt"
+echo mcp > "$G/antigravity-cli/mcp.json"
+echo R-token > "$G/antigravity-cli/antigravity-oauth-token"; echo R-log > "$G/antigravity-cli/cli.log"
+echo R-jb > "$G/antigravity-cli/jetbox_summaries_proto.pb"
+S=$DD/profiles/s1/home A=$DD/profiles/s1/home/.gemini/antigravity-cli
+mkdir -p "$A/log" "$S/.gemini/skills2"
+ln -s /nonexistent "$S/.gemini/a.txt"                                  # case 3: wrong link
+echo same > "$S/.gemini/b.txt"                                         # case 4: identical
+echo new-c > "$S/.gemini/c.txt"; touch -t 202401010000 "$S/.gemini/c.txt"   # case 4: profile newer
+echo profile-d > "$S/.gemini/d.txt"; touch -t 202001010000 "$S/.gemini/d.txt" # case 4: shared newer
+echo only > "$S/.gemini/only-here.txt"; echo extra > "$A/extra.json"  # adoption
+echo P-token > "$A/antigravity-oauth-token"; echo P-log > "$A/cli.log"; echo P-jb > "$A/jetbox_summaries_proto.pb"
+out=$(launch s1)
+eq gem-stdout-empty "" "$out"
+eq gem-stderr-lines "3" "$(grep -c . "$T/err")"
+eq gem-new-link "link" "$(islink "$S/.gemini/settings.json" "$G/settings.json")"
+eq gem-dir-link "link" "$(islink "$S/.gemini/skills" "$G/skills")"
+eq gem-nested-link "link" "$(islink "$A/mcp.json" "$G/antigravity-cli/mcp.json")"
+eq gem-wrong-link-replaced "link" "$(islink "$S/.gemini/a.txt" "$G/a.txt")"
+eq gem-identical-linked "link/same" "$(islink "$S/.gemini/b.txt" "$G/b.txt")/$(cat "$G/b.txt")"
+eq gem-profile-newer "link/new-c/old" "$(islink "$S/.gemini/c.txt" "$G/c.txt")/$(cat "$G/c.txt")/$(cat "$S"/agyx-drift/.gemini/c.txt.*)"
+eq gem-shared-newer "link/shared-d/profile-d" "$(islink "$S/.gemini/d.txt" "$G/d.txt")/$(cat "$G/d.txt")/$(cat "$S"/agyx-drift/.gemini/d.txt.*)"
+eq gem-real-dir-left "dir" "$([ -d "$S/.gemini/skills2" ] && [ ! -L "$S/.gemini/skills2" ] && echo dir)"
+eq gem-real-dir-warned "1" "$(grep -c 'skills2 is a real directory' "$T/err")"
+eq gem-adopt-file "link/only" "$(islink "$S/.gemini/only-here.txt" "$G/only-here.txt")/$(cat "$G/only-here.txt")"
+eq gem-adopt-nested "link/extra" "$(islink "$A/extra.json" "$G/antigravity-cli/extra.json")/$(cat "$G/antigravity-cli/extra.json")"
+eq gem-real-dirs "dir dir" "$([ -d "$S/.gemini" ] && [ ! -L "$S/.gemini" ] && printf dir) $([ -d "$A" ] && [ ! -L "$A" ] && echo dir)"
+eq gem-private-kept "P-token P-log P-jb" "$(cat "$A/antigravity-oauth-token") $(cat "$A/cli.log") $(cat "$A/jetbox_summaries_proto.pb")"
+eq gem-private-regular "reg reg reg dir" "$(for f in antigravity-oauth-token cli.log jetbox_summaries_proto.pb; do [ -f "$A/$f" ] && [ ! -L "$A/$f" ] && printf 'reg '; done)$([ -d "$A/log" ] && [ ! -L "$A/log" ] && echo dir)"
+eq gem-private-shared-untouched "R-token R-log R-jb" "$(cat "$G/antigravity-cli/antigravity-oauth-token") $(cat "$G/antigravity-cli/cli.log") $(cat "$G/antigravity-cli/jetbox_summaries_proto.pb")"
+# second launch changes nothing (only the real-directory warning repeats)
+before=$(snap "$S" "$G"); out=$(launch s1); after=$(snap "$S" "$G")
+eq gem-second-launch-same "$before" "$after"
+eq gem-second-launch-stderr "1" "$(grep -c . "$T/err")"
+eq gem-second-launch-stdout "" "$out"
+# R/.gemini/antigravity-cli is created when adopting into a real home that lacks it
+R2=$T/real2; mkdir -p "$R2"; mkdir -p "$DD/profiles/s2/home/.gemini/antigravity-cli"
+echo e2 > "$DD/profiles/s2/home/.gemini/antigravity-cli/extra.json"
+(AGYX_REAL_HOME=$R2 launch s2 >/dev/null)
+eq gem-creates-shared-dir "link/e2" "$(islink "$DD/profiles/s2/home/.gemini/antigravity-cli/extra.json" "$R2/.gemini/antigravity-cli/extra.json")/$(cat "$R2/.gemini/antigravity-cli/extra.json")"
+# a clean profile: a launch is a no-op when everything is already correct
+mkdir -p "$DD/profiles/s3/home"; launch s3 >/dev/null
+S3=$DD/profiles/s3/home
+before=$(snap "$S3" "$G"); launch s3 >/dev/null; after=$(snap "$S3" "$G")
+eq gem-noop-same "$before" "$after"
+eq gem-noop-stderr "0" "$(grep -c . "$T/err")"
+
+# whitelist: default list when home-links is missing
+rm -f "$DD/home-links"
+mkdir -p "$RH/.ssh" "$RH/.config"; echo gc > "$RH/.gitconfig"
+S4=$DD/profiles/s4/home; mkdir -p "$S4/.ssh"; echo mine > "$S4/.ssh/x"; ln -s /elsewhere "$S4/.config"
+launch s4 >/dev/null
+eq wl-default-link "link" "$(islink "$S4/.gitconfig" "$RH/.gitconfig")"
+eq wl-conflict-dir "mine" "$(cat "$S4/.ssh/x")"
+eq wl-conflict-dir-not-link "no" "$([ -L "$S4/.ssh" ] && echo yes || echo no)"
+eq wl-conflict-link "/elsewhere" "$(readlink "$S4/.config")"
+eq wl-conflict-silent "0" "$(grep -c . "$T/err")"
+eq wl-missing-not-linked "absent" "$([ -e "$S4/.npm" ] || [ -L "$S4/.npm" ] || echo absent)"
+mkdir "$RH/.cache"; launch s4 >/dev/null
+eq wl-later-linked "link" "$(islink "$S4/.cache" "$RH/.cache")"
+rmdir "$RH/.cache"; launch s4 >/dev/null
+eq wl-dangling-removed "gone" "$([ -L "$S4/.cache" ] || [ -e "$S4/.cache" ] || echo gone)"
+# doctor reports (section of profile s4 / s1)
+sect() { ctl doctor | awk -v p="$1:" '/^profile /{on=($2==p)} on'; }
+eq wl-doctor "1 1 1 1" "$(sect s4 | grep -c 'home-links .gitconfig: linked') $(sect s4 | grep -c 'home-links .ssh: CONFLICT') $(sect s4 | grep -c 'home-links .npm: missing in the real home') $(sect s4 | grep -c 'home-links .config: CONFLICT')"
+eq gem-doctor "1 1" "$(sect s1 | grep -c 'shared .gemini/skills2: real directory in the profile') $(sect s1 | grep -c 'agyx-drift: 2 file(s)')"
+eq gem-doctor-clean "0" "$(sect s3 | grep -c 'shared ')"
+# list file: comments, blanks, whitespace, invalid names
+mkdir -p "$RH/.local" "$RH/mydir2"
+printf '# comment\n\n   # indented comment\n  .gitconfig  \n../etc\na/b\n.gemini\nLibrary\n.local\n.\n..\nmydir2\n' > "$DD/home-links"
+S5=$DD/profiles/s5/home; mkdir -p "$S5"
+launch s5 >/dev/null
+eq wl-file-valid "link link" "$(islink "$S5/.gitconfig" "$RH/.gitconfig") $(islink "$S5/mydir2" "$RH/mydir2")"
+eq wl-file-invalid-warned "7" "$(grep -c "home-links: skipping invalid name" "$T/err")"
+eq wl-file-not-linked ".local absent, .gemini real" "$([ -e "$S5/.local" ] || [ -L "$S5/.local" ] || printf '.local absent,') $([ -d "$S5/.gemini" ] && [ ! -L "$S5/.gemini" ] && echo .gemini real)"
+eq wl-library-not-link "no" "$([ -L "$S5/Library" ] && echo yes || echo no)"
+# setup writes the default list once and never overwrites it
+D2=$T/d2
+AGYX_DATA_DIR=$D2 ctl setup "$T/fake-agy" >/dev/null
+eq setup-writes-list ".gitconfig .ssh .config .npm .npmrc .bun .bunfig.toml .cache .cargo .rustup go Code GitHub " "$(grep -v '^#' "$D2/home-links" | tr '\n' ' ')"
+echo mine > "$D2/home-links"; AGYX_DATA_DIR=$D2 ctl setup "$T/fake-agy" >/dev/null
+eq setup-keeps-list "mine" "$(cat "$D2/home-links")"
+rm -rf "${DD:?}/profiles/s1" "${DD:?}/profiles/s2" "${DD:?}/profiles/s3" "${DD:?}/profiles/s4" "${DD:?}/profiles/s5"
+
 echo "passed: $pass, failed: $fail"
 [ "$fail" = 0 ]

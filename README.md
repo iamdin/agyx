@@ -41,7 +41,7 @@ git clone https://github.com/iamdin/agyx && cd agyx
 ./bin/agyx setup       # then link bin/agyx onto PATH, e.g. ln -s "$PWD/bin/agyx" ~/.local/bin/agyx
 ```
 
-Keep `bin/` and `runtime/` together; the scripts locate each other by resolving their own real path (symlinks are fine).
+Keep `bin/` and `runtime/` (including `runtime/sync.sh`) together; the scripts locate each other by resolving their own real path (symlinks are fine).
 
 ## Use
 
@@ -88,6 +88,24 @@ The email is read from the `id_token_email` field of the profile's agy token fil
 
 Data dir: `${AGYX_DATA_DIR:-~/.local/share/agyx}` holding `real-agy`, `bin/agy` (only after `agyx shim`), `default`, `profiles/<name>/home/`.
 
+## Shared state and the home whitelist
+
+A profile differs from your real home only in which Google account is logged in. On every launch, before starting agy, the shim makes this true with symlinks only (nothing is printed to stdout; warnings go to stderr):
+
+**Shared `~/.gemini`.** `<profile home>/.gemini` and `.gemini/antigravity-cli` are real directories; every other entry in them is a symlink to the same entry in your real `~/.gemini` (settings, skills, MCP config, and so on). Entries that exist only in the profile are adopted: moved into the real `~/.gemini` and linked. If a profile copy replaced a link (agy saved the file by rename), the shim relinks it: an identical copy is simply relinked; a different one is relinked after the older version is kept in `<profile home>/agyx-drift/<path>.<timestamp>` (the newer one wins) and one warning is printed. A real directory where the shared side has an entry is never merged; it is left alone with a warning.
+
+**Private to each profile** (never linked, moved or adopted): `antigravity-cli/antigravity-oauth-token` (the login), `antigravity-cli/log`, `antigravity-cli/cli.log` (agy keeps only a few log files per directory, so instances would evict each other) and `antigravity-cli/jetbox_summaries_proto.pb` (agy saves it by rename, so a link cannot survive).
+
+**Home whitelist.** `<data dir>/home-links` lists names in your real home that are linked into every profile home, so programs agy starts directly (MCP servers) find your git, ssh, npm, bun, cargo and similar configuration. `agyx setup` writes the file with the default list if it does not exist, and the same default is used when the file is missing:
+
+```
+.gitconfig  .ssh  .config  .npm  .npmrc  .bun  .bunfig.toml  .cache  .cargo  .rustup  go  Code  GitHub
+```
+
+Edit the file to change the list: one name per line, `#` starts a comment line, blank lines are ignored. A name must be a single path component; `.`, `..`, names containing `/`, `.gemini`, `Library` and `.local` are skipped with a warning (`.local` holds the agyx data dir, so linking it would create a loop). On each launch a link is created when the real entry exists and the profile entry does not; a link whose real entry has disappeared is removed; anything else already in the profile home (a real file or directory, or a link elsewhere) is left untouched and reported as a conflict by `agyx doctor`. Links for names you later remove from the list stay in place.
+
+`agyx doctor` also reports, per profile, shared `.gemini` entries that are not correct links (drift and real directories), the number of files in `agyx-drift`, and each whitelist name as linked, missing in the real home, not linked yet, or a conflict. In the steady state (everything already correct) the sync uses only shell builtins, no extra processes.
+
 ## The "Keychain Not Found" dialog
 
 agy saves its token by calling `/usr/bin/security`. Under a profile `HOME` there is no default keychain, so macOS shows a "Keychain Not Found" dialog on every token save, and agy gives up after about 5 seconds and falls back to the token file.
@@ -106,5 +124,7 @@ sh test/run.sh      # uses a fake agy; never runs the real one
 
 - Not a security boundary (same UID).
 - Only shells that read their startup files get the real `HOME`; programs agy runs directly, MCP servers, and agy's own file tools still see the profile `HOME`.
+- An MCP server (or any program agy starts directly) still sees the profile path in `$HOME`; the whitelist only makes your configuration reachable there. Keychain writes from such processes go to the profile keychain, not your login keychain.
+- Settings changed in one running instance reach other profiles only when the change goes through the shared files; if agy replaced a link by rename, the change stays in that profile until its next launch, when the sync makes it shared (the older version is kept in `agyx-drift`).
 - agy still keeps its token file (`<profile home>/.gemini/antigravity-cli/antigravity-oauth-token`) and loads from it when the profile keychain has no item; `agyx profile list` reads the email from that file only. A profile that is logged in only through its keychain would show "not logged in" there; agyx does not read keychain items.
 - Token refresh, logout, and agy upgrades are not yet verified. If creating the profile keychain fails, agyx only warns and agy falls back to the token file (with the old 5-second wait and dialog).
