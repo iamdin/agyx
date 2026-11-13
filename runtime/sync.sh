@@ -88,17 +88,27 @@ agyx_valid_link() {
   return 0
 }
 
-# Call "$1 name" for each whitelist name (file <data>/home-links, else the built-in default).
+# Whitelist file: ${XDG_CONFIG_HOME:-$R/.config}/agyx/home-links. XDG_CONFIG_HOME counts only when it is an
+# absolute path; the default is resolved from the real home R, never from a profile home.
+agyx_set_links_file() {
+  case ${XDG_CONFIG_HOME-} in
+    /*) AGYX_LINKS_FILE=$XDG_CONFIG_HOME/agyx/home-links ;;
+    *) AGYX_LINKS_FILE=$R/.config/agyx/home-links ;;
+  esac
+}
+
+# Call "$1 name" for each whitelist name (from that file, else the built-in default).
 # Comments, blanks and surrounding whitespace are ignored; invalid names are passed on as-is
 # to the callback, which decides what to do (skip with a warning, report, ...).
 agyx_each_link() {
-  if [ -f "$data/home-links" ]; then
+  agyx_set_links_file
+  if [ -f "$AGYX_LINKS_FILE" ]; then
     while IFS= read -r _l || [ -n "$_l" ]; do
       _l=${_l#"${_l%%[![:space:]]*}"}
       _l=${_l%"${_l##*[![:space:]]}"}
       case $_l in ''|'#'*) continue ;; esac
       "$1" "$_l"
-    done < "$data/home-links"
+    done < "$AGYX_LINKS_FILE"
   else
     for _l in $AGYX_DEFAULT_LINKS; do "$1" "$_l"; done
   fi

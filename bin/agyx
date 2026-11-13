@@ -103,11 +103,15 @@ case $cmd in
     (umask 077; mkdir -p "$data") && ln -sfn "$t" "$data/real-agy" || die "cannot write $data"
     # shellcheck source=../runtime/sync.sh
     . "$(dirname "$me")/../runtime/sync.sh"
-    if [ ! -e "$data/home-links" ]; then
+    # shellcheck disable=SC2034 # used by the functions in sync.sh
+    R=$rh
+    agyx_set_links_file
+    if [ ! -e "$AGYX_LINKS_FILE" ]; then
+      mkdir -p "${AGYX_LINKS_FILE%/*}" || die "cannot create ${AGYX_LINKS_FILE%/*}"
       { echo "# Names in your real home that agyx links into every profile home (one per line, # = comment)."
         echo "# Not allowed: ., .., names with a slash, .gemini, Library, .local."
-        printf '%s\n' $AGYX_DEFAULT_LINKS; } > "$data/home-links"
-      echo "wrote $data/home-links (edit it to change what profiles share)"
+        printf '%s\n' $AGYX_DEFAULT_LINKS; } > "$AGYX_LINKS_FILE"
+      echo "wrote $AGYX_LINKS_FILE (edit it to change what profiles share)"
     fi
     echo "real agy: $t"
     echo "agyx launches it: 'agyx --profile NAME ...' (make sure agyx itself is on PATH)."
@@ -189,7 +193,8 @@ case $cmd in
     . "$(dirname "$me")/../runtime/sync.sh"
     # shellcheck disable=SC2034 # used by the functions in sync.sh
     R=$rh
-    if [ -f "$data/home-links" ]; then echo "home-links: $data/home-links"; else echo "home-links: missing (built-in default list in use; 'agyx setup' writes the file)"; fi
+    agyx_set_links_file
+    if [ -f "$AGYX_LINKS_FILE" ]; then echo "home-links: $AGYX_LINKS_FILE"; else echo "home-links: $AGYX_LINKS_FILE (missing: built-in default list in use; 'agyx setup' writes the file)"; fi
     for n in $(names); do
       p=$data/profiles/$n
       t=$p/$tok

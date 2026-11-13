@@ -375,7 +375,8 @@ eq gem-noop-same "$before" "$after"
 eq gem-noop-stderr "0" "$(grep -c . "$T/err")"
 
 # whitelist: default list when home-links is missing
-rm -f "$DD/home-links"
+HL=$RH/.config/agyx/home-links   # the whitelist file lives in the real home's config dir
+rm -f "$HL"
 mkdir -p "$RH/.ssh" "$RH/.config"; echo gc > "$RH/.gitconfig"
 S4=$DD/profiles/s4/home; mkdir -p "$S4/.ssh"; echo mine > "$S4/.ssh/x"; ln -s /elsewhere "$S4/.config"
 launch s4 >/dev/null
@@ -396,7 +397,7 @@ eq gem-doctor "1 1" "$(sect s1 | grep -c 'shared .gemini/skills2: real directory
 eq gem-doctor-clean "0" "$(sect s3 | grep -c 'shared ')"
 # list file: comments, blanks, whitespace, invalid names
 mkdir -p "$RH/.local" "$RH/mydir2"
-printf '# comment\n\n   # indented comment\n  .gitconfig  \n../etc\na/b\n.gemini\nLibrary\n.local\n.\n..\nmydir2\n' > "$DD/home-links"
+mkdir -p "$(dirname "$HL")"; printf '# comment\n\n   # indented comment\n  .gitconfig  \n../etc\na/b\n.gemini\nLibrary\n.local\n.\n..\nmydir2\n' > "$HL"
 S5=$DD/profiles/s5/home; mkdir -p "$S5"
 launch s5 >/dev/null
 eq wl-file-valid "link link" "$(islink "$S5/.gitconfig" "$RH/.gitconfig") $(islink "$S5/mydir2" "$RH/mydir2")"
@@ -404,15 +405,17 @@ eq wl-file-invalid-warned "7" "$(grep -c "home-links: skipping invalid name" "$T
 eq wl-file-not-linked ".local absent, .gemini real" "$([ -e "$S5/.local" ] || [ -L "$S5/.local" ] || printf '.local absent,') $([ -d "$S5/.gemini" ] && [ ! -L "$S5/.gemini" ] && echo .gemini real)"
 eq wl-library-not-link "no" "$([ -L "$S5/Library" ] && echo yes || echo no)"
 # setup writes the default list once and never overwrites it
-D2=$T/d2
-(AGYX_DATA_DIR=$D2 ctl setup "$T/fake-agy" >/dev/null)
-eq setup-writes-list ".gitconfig .ssh .config .npm .npmrc .bun .bunfig.toml .cache .cargo .rustup go Code GitHub " "$(grep -v '^#' "$D2/home-links" | tr '\n' ' ')"
-echo mine > "$D2/home-links"; (AGYX_DATA_DIR=$D2 ctl setup "$T/fake-agy" >/dev/null)
-eq setup-keeps-list "mine" "$(cat "$D2/home-links")"
+D2=$T/d2 RH3=$T/rh3
+(AGYX_REAL_HOME=$RH3 AGYX_DATA_DIR=$D2 ctl setup "$T/fake-agy" >/dev/null)
+L3=$RH3/.config/agyx/home-links
+eq setup-writes-list ".gitconfig .ssh .config .npm .npmrc .bun .bunfig.toml .cache .cargo .rustup go Code GitHub " "$(grep -v '^#' "$L3" | tr '\n' ' ')"
+eq setup-not-in-data-dir "absent" "$([ -e "$D2/home-links" ] || echo absent)"
+echo mine > "$L3"; (AGYX_REAL_HOME=$RH3 AGYX_DATA_DIR=$D2 ctl setup "$T/fake-agy" >/dev/null)
+eq setup-keeps-list "mine" "$(cat "$L3")"
 rm -rf "${DD:?}/profiles/s1" "${DD:?}/profiles/s2" "${DD:?}/profiles/s3" "${DD:?}/profiles/s4" "${DD:?}/profiles/s5"
 
 # a real directory identical to the shared one is moved to agyx-drift and replaced by the link
-rm -f "$DD/home-links"   # drop the invalid-names list left by the whitelist tests
+rm -f "$HL"   # drop the invalid-names list left by the whitelist tests
 mkdir -p "$G/antigravity-cli/mcp/t3-code"; echo '{"a":1}' > "$G/antigravity-cli/mcp/t3-code/a.json"
 S6=$DD/profiles/s6/home
 mkdir -p "$S6/.gemini/antigravity-cli/mcp/t3-code"; echo '{"a":1}' > "$S6/.gemini/antigravity-cli/mcp/t3-code/a.json"
@@ -452,6 +455,25 @@ eq lk-find-call "HOME=$DD/profiles/lk1/home find-generic-password -s gemini -a a
 eq lk-never-secret "0" "$(grep find-generic-password "$SECLOG" | grep -c -e ' -w' -e ' -g')"
 eq lk-no-secrets-printed "0" "$( (echo "$lst"; ctl doctor) | grep -c SECRET)"
 for n in lk1 lk2 lk3 lk4 lk5 lk6; do rm -rf "${DD:?}/profiles/$n"; done
+
+# whitelist file location: ${XDG_CONFIG_HOME:-<real home>/.config}/agyx/home-links
+RH4=$T/rh4 XDG=$T/xdg
+(AGYX_REAL_HOME=$RH4 XDG_CONFIG_HOME=$XDG AGYX_DATA_DIR=$T/d3 ctl setup "$T/fake-agy" >/dev/null)
+eq xdg-abs-written "present/absent" "$([ -f "$XDG/agyx/home-links" ] && echo present)/$([ -e "$RH4/.config/agyx/home-links" ] || echo absent)"
+mkdir -p "$T/cwd"
+(cd "$T/cwd" && AGYX_REAL_HOME=$RH4 XDG_CONFIG_HOME=relative/dir AGYX_DATA_DIR=$T/d3 ctl setup "$T/fake-agy" >/dev/null)
+eq xdg-relative-ignored "present/absent" "$([ -f "$RH4/.config/agyx/home-links" ] && echo present)/$([ -e "$T/cwd/relative" ] || echo absent)"
+(AGYX_REAL_HOME=$RH4 XDG_CONFIG_HOME=$XDG AGYX_DATA_DIR=$T/d3 ctl doctor | grep -c "^home-links: $XDG/agyx/home-links\$") > "$T/n"
+eq doctor-links-path "1" "$(cat "$T/n")"
+eq doctor-links-path-missing "1" "$(rm -f "$HL"; ctl doctor | grep -c "^home-links: $HL (missing")"
+# launch uses that file; the old <data>/home-links is no longer read
+mkdir -p "$RH/mydir2" "$RH/ignored-by-xdg" "$XDG/agyx"
+echo mydir2 > "$XDG/agyx/home-links"
+echo ignored-by-xdg > "$DD/home-links"
+S7=$DD/profiles/s7/home; mkdir -p "$S7"
+(XDG_CONFIG_HOME=$XDG launch s7 >/dev/null)
+eq xdg-launch-uses-file "link/absent/absent" "$(islink "$S7/mydir2" "$RH/mydir2")/$([ -e "$S7/.gitconfig" ] || echo absent)/$([ -e "$S7/ignored-by-xdg" ] || echo absent)"
+rm -rf "${DD:?}/profiles/s7"; rm -f "$DD/home-links"
 
 echo "passed: $pass, failed: $fail"
 [ "$fail" = 0 ]

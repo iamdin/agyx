@@ -96,7 +96,7 @@ A profile differs from your real home only in which Google account is logged in.
 
 **Private to each profile** (never linked, moved or adopted): `antigravity-cli/antigravity-oauth-token` (the login), `antigravity-cli/log`, `antigravity-cli/cli.log` (agy keeps only a few log files per directory, so instances would evict each other) and `antigravity-cli/jetbox_summaries_proto.pb` (agy saves it by rename, so a link cannot survive).
 
-**Home whitelist.** `<data dir>/home-links` lists names in your real home that are linked into every profile home, so programs agy starts directly (MCP servers) find your git, ssh, npm, bun, cargo and similar configuration. `agyx setup` writes the file with the default list if it does not exist, and the same default is used when the file is missing:
+**Home whitelist.** `${XDG_CONFIG_HOME:-$HOME/.config}/agyx/home-links` (resolved from your real home, never from a profile home; `XDG_CONFIG_HOME` counts only when it is an absolute path) lists names in your real home that are linked into every profile home, so programs agy starts directly (MCP servers) find your git, ssh, npm, bun, cargo and similar configuration. `agyx setup` writes the file with the default list (creating the `agyx` directory) if it does not exist, and the same default is used when the file is missing; `agyx doctor` prints the resolved path. The file used to be read from the data dir; that location is no longer read:
 
 ```
 .gitconfig  .ssh  .config  .npm  .npmrc  .bun  .bunfig.toml  .cache  .cargo  .rustup  go  Code  GitHub
