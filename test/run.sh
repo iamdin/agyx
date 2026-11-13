@@ -573,8 +573,8 @@ eq gem-wrong-link-replaced "link" "$(islink "$S/.gemini/a.txt" "$G/a.txt")"
 eq gem-identical-linked "link/same" "$(islink "$S/.gemini/b.txt" "$G/b.txt")/$(cat "$G/b.txt")"
 eq gem-profile-newer "link/new-c/old" "$(islink "$S/.gemini/c.txt" "$G/c.txt")/$(cat "$G/c.txt")/$(cat "$S"/agyx-drift/.gemini/c.txt.*)"
 eq gem-shared-newer "link/shared-d/profile-d" "$(islink "$S/.gemini/d.txt" "$G/d.txt")/$(cat "$G/d.txt")/$(cat "$S"/agyx-drift/.gemini/d.txt.*)"
-eq gem-real-dir-left "dir" "$([ -d "$S/.gemini/skills2" ] && [ ! -L "$S/.gemini/skills2" ] && echo dir)"
-eq gem-real-dir-warned "1" "$(grep -c 'skills2 is a real directory' "$T/err")"
+eq gem-real-dir-merged "link/p" "$(islink "$S/.gemini/skills2" "$G/skills2")/$(cat "$G/skills2/p.txt")"
+eq gem-real-dir-merge-line "1" "$(grep -c "^agyx: merged $S/.gemini/skills2 into the shared $G/skills2: 1 entries moved, 0 to " "$T/err")"
 eq gem-adopt-file "link/only" "$(islink "$S/.gemini/only-here.txt" "$G/only-here.txt")/$(cat "$G/only-here.txt")"
 eq gem-adopt-nested "link/extra" "$(islink "$A/extra.json" "$G/antigravity-cli/extra.json")/$(cat "$G/antigravity-cli/extra.json")"
 eq gem-real-dirs "dir dir" "$([ -d "$S/.gemini" ] && [ ! -L "$S/.gemini" ] && printf dir) $([ -d "$A" ] && [ ! -L "$A" ] && echo dir)"
@@ -584,7 +584,7 @@ eq gem-private-shared-untouched "R-token R-log R-jb" "$(cat "$G/antigravity-cli/
 # second launch changes nothing (only the real-directory warning repeats)
 before=$(snap "$S" "$G"); out=$(launch s1); after=$(snap "$S" "$G")
 eq gem-second-launch-same "$before" "$after"
-eq gem-second-launch-stderr "1" "$(grep -c . "$T/err")"
+eq gem-second-launch-stderr "0" "$(grep -c . "$T/err")"
 eq gem-second-launch-stdout "" "$out"
 # R/.gemini/antigravity-cli is created when adopting into a real home that lacks it
 R2=$T/real2; mkdir -p "$R2"; mkdir -p "$DD/profiles/s2/home/.gemini/antigravity-cli"
@@ -617,7 +617,7 @@ eq wl-dangling-removed "gone" "$([ -L "$S4/.cache" ] || [ -e "$S4/.cache" ] || e
 # doctor reports (section of profile s4 / s1)
 sect() { ctl doctor | awk -v p="$1:" '/^profile /{on=($2==p)} on'; }
 eq wl-doctor "1 1 1 1" "$(sect s4 | grep -c 'symlinks .gitconfig: linked') $(sect s4 | grep -c 'symlinks .ssh: CONFLICT') $(sect s4 | grep -c 'symlinks .npm: missing in the real home') $(sect s4 | grep -c 'symlinks .config: CONFLICT')"
-eq gem-doctor "1 1" "$(sect s1 | grep -c 'shared .gemini/skills2: real directory in the profile') $(sect s1 | grep -c 'agyx-drift: 2 file(s)')"
+eq gem-doctor "0 1" "$(sect s1 | grep -c 'skills2: real directory') $(sect s1 | grep -c 'agyx-drift: 2 file(s)')"
 eq gem-doctor-clean "0" "$(sect s3 | grep -c 'shared ')"
 # list file: comments, blanks, whitespace, invalid names
 mkdir -p "$RH/.local" "$RH/mydir2"
@@ -647,7 +647,7 @@ echo mine > "$L3"; (AGYX_REAL_HOME=$RH3 AGYX_DATA_DIR=$D2 ctl doctor >/dev/null 
 eq doctor-keeps-list "mine" "$(cat "$L3")"
 rm -rf "${DD:?}/profiles/s1" "${DD:?}/profiles/s2" "${DD:?}/profiles/s3" "${DD:?}/profiles/s4" "${DD:?}/profiles/s5"
 
-# a real directory identical to the shared one is moved to agyx-drift and replaced by the link
+# a real directory identical to the shared one is dropped (nothing to keep) and replaced by the link
 rm -f "$HL"   # drop the invalid-names list left by the whitelist tests
 mkdir -p "$G/antigravity-cli/mcp/t3-code"; echo '{"a":1}' > "$G/antigravity-cli/mcp/t3-code/a.json"
 S6=$DD/profiles/s6/home
@@ -655,7 +655,7 @@ mkdir -p "$S6/.gemini/antigravity-cli/mcp/t3-code"; echo '{"a":1}' > "$S6/.gemin
 out=$(launch s6)
 eq dir-identical-silent "0" "$(grep -vc "^agyx: wrote" "$T/err")"
 eq dir-identical-linked "link" "$(islink "$S6/.gemini/antigravity-cli/mcp" "$G/antigravity-cli/mcp")"
-eq dir-identical-kept "{\"a\":1}" "$(cat "$S6"/agyx-drift/.gemini/antigravity-cli/mcp.*/t3-code/a.json)"
+eq dir-identical-nothing-kept "absent" "$([ -e "$S6/agyx-drift" ] && echo present || echo absent)"
 before=$(snap "$S6" "$G"); launch s6 >/dev/null; after=$(snap "$S6" "$G")
 eq dir-identical-second-launch "$before/0" "$after/$(grep -c . "$T/err")"
 rm -rf "${DD:?}/profiles/s6" "$G/antigravity-cli/mcp"
@@ -719,8 +719,8 @@ mkdir -p "$A8" "$G/antigravity-cli/idm" "$A8/idm" "$G/antigravity-cli/dif" "$A8/
 echo mine > "$A8/own.db-wal"                                     # profile-only sidecar
 echo 1 > "$G/antigravity-cli/idm/a"; echo 1 > "$A8/idm/a"        # identical directory
 echo 1 > "$G/antigravity-cli/dif/a"; echo 2 > "$A8/dif/a"        # different directory
-eq doctor-identical-dir "1" "$(sect s8 | grep -c 'antigravity-cli/idm: real directory, identical, replaced by a link on next launch')"
-eq doctor-different-dir "1" "$(sect s8 | grep -c 'antigravity-cli/dif: real directory in the profile (not merged)')"
+eq doctor-identical-dir "1" "$(sect s8 | grep -c 'antigravity-cli/idm: real directory, will be merged into the shared one on next launch')"
+eq doctor-different-dir "1" "$(sect s8 | grep -c 'antigravity-cli/dif: real directory, will be merged into the shared one on next launch')"
 eq doctor-skips-sidecars-before "0" "$(sect s8 | grep -c -e '-wal' -e '-shm' -e '-journal')"
 launch s8 >/dev/null
 eq sidecar-launch-stderr "1" "$(grep -c . "$T/err")"
@@ -731,6 +731,56 @@ eq sidecar-no-drift "0" "$(find "$S8/agyx-drift" -name '*-wal*' -o -name '*-shm*
 eq identical-dir-replaced "link" "$(islink "$A8/idm" "$G/antigravity-cli/idm")"
 eq doctor-skips-sidecars-after "0" "$(sect s8 | grep -c -e '-wal' -e '-shm' -e '-journal')"
 rm -rf "${DD:?}/profiles/s8"
+
+# ---- merging a real profile directory into the shared one ----
+GA=$G/antigravity-cli
+M=$DD/profiles/m1/home MA=$DD/profiles/m1/home/.gemini/antigravity-cli
+mkdir -p "$MA"
+mk() { mkdir -p "$(dirname "$1")"; printf '%s\n' "$2" > "$1"; }
+# disjoint content
+mk "$GA/mdisj/a.txt" shared-a; mk "$MA/mdisj/b.txt" profile-b
+# identical files
+mk "$GA/mident/x.txt" same; mk "$MA/mident/x.txt" same
+# different files, each side newer
+mk "$GA/mtime/np.txt" old-shared; touch -t 202001010000 "$GA/mtime/np.txt"; mk "$MA/mtime/np.txt" new-profile; touch -t 202401010000 "$MA/mtime/np.txt"
+mk "$GA/mtime/ns.txt" new-shared; touch -t 202401010000 "$GA/mtime/ns.txt"; mk "$MA/mtime/ns.txt" old-profile; touch -t 202001010000 "$MA/mtime/ns.txt"
+# file versus directory, both ways
+mkdir -p "$GA/mfd/fd"; mk "$GA/mfd/fd/inner" in-shared; mk "$MA/mfd/fd" file-in-profile
+mk "$GA/mfd/df" file-in-shared; mk "$MA/mfd/df/inner" in-profile
+# nested directories
+mk "$GA/mnest/sub/a" sa; mk "$MA/mnest/sub/b" pb; mk "$MA/mnest/sub/deeper/c" pc; mk "$MA/mnest/new/d" pd; mk "$GA/mnest/sub/same" s; mk "$MA/mnest/sub/same" s
+# symlinks inside are moved as they are (never followed)
+mkdir -p "$GA/msym"; mk "$GA/msym/keep" k; ln -s /nonexistent-target "$MA/msym/dangling" 2>/dev/null || { mkdir -p "$MA/msym"; ln -s /nonexistent-target "$MA/msym/dangling"; }
+mk "$MA/msym/real" r
+# SQLite sidecars stay behind (and then go to drift with the remainder)
+mk "$GA/mside/x" sx; mk "$MA/mside/f" pf; mk "$MA/mside/conv.db-wal" w; mk "$MA/mside/conv.db-shm" s
+out=$(launch m1)
+dr=$M/agyx-drift/.gemini/antigravity-cli
+for d in mdisj mident mtime mfd mnest msym mside; do
+  eq "merge-linked-$d" "link" "$(islink "$MA/$d" "$GA/$d")"
+done
+eq merge-stdout-empty "" "$out"
+eq merge-disjoint "shared-a profile-b" "$(cat "$GA/mdisj/a.txt") $(cat "$GA/mdisj/b.txt")"
+eq merge-disjoint-line "1" "$(grep -c "^agyx: merged $MA/mdisj into the shared $GA/mdisj: 1 entries moved, 0 to $M/agyx-drift\$" "$T/err")"
+eq merge-identical "same/0/0" "$(cat "$GA/mident/x.txt")/$(find "$M/agyx-drift" -name 'mident*' | grep -c .)/$(grep -c mident "$T/err")"
+eq merge-profile-newer "new-profile/old-shared" "$(cat "$GA/mtime/np.txt")/$(cat "$dr"/mtime/np.txt.*)"
+eq merge-shared-newer "new-shared/old-profile" "$(cat "$GA/mtime/ns.txt")/$(cat "$dr"/mtime/ns.txt.*)"
+eq merge-time-kept "202401010000" "$(stat -f %Sm -t %Y%m%d%H%M "$GA/mtime/np.txt")"
+eq merge-file-vs-dir "in-shared/file-in-profile" "$(cat "$GA/mfd/fd/inner")/$(cat "$dr"/mfd/fd.*)"
+eq merge-dir-vs-file "file-in-shared/in-profile" "$(cat "$GA/mfd/df")/$(cat "$dr"/mfd/df.*/inner)"
+eq merge-nested "sa pb pc pd s" "$(cat "$GA/mnest/sub/a" "$GA/mnest/sub/b" "$GA/mnest/sub/deeper/c" "$GA/mnest/new/d" "$GA/mnest/sub/same" | tr '\n' ' ' | sed 's/ $//')"
+eq merge-symlink-moved "link:/nonexistent-target/k r" "$([ -L "$GA/msym/dangling" ] && echo "link:$(readlink "$GA/msym/dangling")")/$(cat "$GA/msym/keep" | tr -d '\n') $(cat "$GA/msym/real")"
+eq merge-sidecars-to-drift "pf/2/absent" "$(cat "$GA/mside/f")/$(find "$dr" -name 'conv.db-*' | grep -c .)/$([ -e "$GA/mside/conv.db-wal" ] || echo absent)"
+eq merge-lines-one-per-dir "6" "$(grep -c '^agyx: merged ' "$T/err")"
+eq merge-no-real-dirs-left "0" "$(for d in mdisj mident mtime mfd mnest msym mside; do [ -d "$MA/$d" ] && [ ! -L "$MA/$d" ] && echo bad; done | grep -c .)"
+# a second launch changes nothing and prints nothing
+before=$(snap "$M" "$G"); out=$(launch m1); after=$(snap "$M" "$G")
+eq merge-second-launch "$before/0/" "$after/$(grep -c . "$T/err")/$out"
+# doctor before the merge says it will be merged
+mk "$GA/mdoc/a" a; mkdir -p "$DD/profiles/m2/home/.gemini/antigravity-cli/mdoc"; mk "$DD/profiles/m2/home/.gemini/antigravity-cli/mdoc/z" z
+eq merge-doctor "1" "$(sect m2 | grep -c 'antigravity-cli/mdoc: real directory, will be merged into the shared one on next launch')"
+eq merge-doctor-changes-nothing "present" "$([ -f "$DD/profiles/m2/home/.gemini/antigravity-cli/mdoc/z" ] && echo present)"
+rm -rf "${DD:?}/profiles/m1" "${DD:?}/profiles/m2" "$GA/mdisj" "$GA/mident" "$GA/mtime" "$GA/mfd" "$GA/mnest" "$GA/msym" "$GA/mside" "$GA/mdoc"
 
 echo "passed: $pass, failed: $fail"
 [ "$fail" = 0 ]

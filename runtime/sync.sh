@@ -5,7 +5,7 @@
 # The sync functions use only shell builtins when everything is already correct (no forks);
 # they never write to stdout (warnings go to stderr).
 
-AGYX_VERSION=0.1.1 # the one place the version lives (the formula's url tag must match)
+AGYX_VERSION=0.1.2 # the one place the version lives (the formula's url tag must match)
 AGYX_DEFAULT_LINKS=".gitconfig .ssh .config .npm .npmrc .bun .bunfig.toml .cache .cargo .rustup go Code GitHub"
 
 # Entries that are never synced: the per-profile private set and SQLite sidecar files.
@@ -25,6 +25,50 @@ agyx_drift_away() {
   (umask 077; mkdir -p "${_dst%/*}") && mv "$1" "$_dst"
 }
 
+# Merge the real profile directory $2 into the shared directory $1 ($3 = relative name for drift
+# paths), then the caller links it. Walk (parents first): missing on the shared side -> mv; two
+# directories -> go deeper; identical files -> drop the profile copy; different files -> the newer
+# one ends up in the shared tree, the other in P/agyx-drift; file vs directory -> the profile entry
+# goes to agyx-drift. Symlinks are moved as they are, never followed. SQLite sidecars are skipped.
+# Whatever is left afterwards goes to agyx-drift, so the profile never keeps a real directory.
+# Entry names containing a newline are not supported. Uses only _m* variables (the caller loops).
+agyx_merge_dir() {
+  _mv=0 _mdr=0
+  _mlist=$(find "$2" -mindepth 1 2>/dev/null)
+  while IFS= read -r _mp; do
+    [ -n "$_mp" ] || continue
+    [ -e "$_mp" ] || [ -L "$_mp" ] || continue # moved or dropped together with its parent
+    _mr=${_mp#"$2"/}
+    case ${_mr##*/} in *-wal|*-shm|*-journal) continue ;; esac
+    _md=$1/$_mr
+    if [ ! -e "$_md" ] && [ ! -L "$_md" ]; then
+      mv "$_mp" "$_md" && _mv=$((_mv + 1))
+    elif [ -L "$_mp" ]; then
+      agyx_drift_away "$_mp" "$3/$_mr" && _mdr=$((_mdr + 1))
+    elif [ -d "$_mp" ]; then
+      [ -d "$_md" ] || { agyx_drift_away "$_mp" "$3/$_mr" && _mdr=$((_mdr + 1)); }
+    elif [ -f "$_mp" ]; then
+      if [ -d "$_md" ] || [ -L "$_md" ]; then
+        agyx_drift_away "$_mp" "$3/$_mr" && _mdr=$((_mdr + 1))
+      elif cmp -s "$_mp" "$_md"; then
+        rm -f "$_mp"
+      elif [ "$_mp" -nt "$_md" ]; then
+        agyx_drift_away "$_md" "$3/$_mr" && mv "$_mp" "$_md" && _mv=$((_mv + 1)) && _mdr=$((_mdr + 1))
+      else
+        agyx_drift_away "$_mp" "$3/$_mr" && _mdr=$((_mdr + 1))
+      fi
+    fi
+  done <<EOT
+$_mlist
+EOT
+  # empty directories (their shared counterparts exist) can go; anything else left is drift
+  find "$2" -depth -mindepth 1 -type d -empty -exec rmdir {} + 2>/dev/null
+  rmdir "$2" 2>/dev/null || { agyx_drift_away "$2" "$3" && _mdr=$((_mdr + 1)); }
+  [ $((_mv + _mdr)) -eq 0 ] ||
+    echo "agyx: merged $2 into the shared $1: $_mv entries moved, $_mdr to $P/agyx-drift" >&2
+  ln -s "$1" "$2"
+}
+
 # One shared entry: $1 = shared path (in R), $2 = profile path (in P), $3 = relative name.
 agyx_link_entry() {
   if [ -L "$2" ]; then
@@ -33,11 +77,10 @@ agyx_link_entry() {
   elif [ ! -e "$2" ]; then
     ln -s "$1" "$2"
   elif [ -d "$2" ]; then
-    if [ -d "$1" ] && diff -rq "$1" "$2" >/dev/null 2>&1; then
-      # identical content (e.g. a cache): keep a copy in agyx-drift, then share it
-      agyx_drift_away "$2" "$3" && ln -s "$1" "$2"
+    if [ -d "$1" ]; then
+      agyx_merge_dir "$1" "$2" "$3"
     else
-      echo "agyx: warning: $2 is a real directory but $1 is shared; not merged" >&2
+      echo "agyx: warning: $2 is a real directory but $1 is not a directory; left untouched" >&2
     fi
   elif [ ! -f "$2" ]; then
     echo "agyx: warning: $2 is not a regular file or directory; left untouched" >&2
@@ -155,8 +198,8 @@ agyx_report_dir() { # rel dir
     agyx_private "$1" "$_n" && continue
     if [ -L "$_pd/$_n" ] && [ "$_pd/$_n" -ef "$_f" ]; then continue
     elif [ -d "$_pd/$_n" ] && [ ! -L "$_pd/$_n" ]; then
-      if [ -d "$_f" ] && diff -rq "$_f" "$_pd/$_n" >/dev/null 2>&1; then echo "  shared $1/$_n: real directory, identical, replaced by a link on next launch"
-      else echo "  shared $1/$_n: real directory in the profile (not merged)"; fi
+      if [ -d "$_f" ]; then echo "  shared $1/$_n: real directory, will be merged into the shared one on next launch"
+      else echo "  shared $1/$_n: real directory in the profile, but the shared entry is not a directory (left untouched)"; fi
     elif [ -f "$_pd/$_n" ] && [ ! -L "$_pd/$_n" ]; then echo "  shared $1/$_n: drift (regular file in the profile)"
     else echo "  shared $1/$_n: not linked (fixed on next launch)"; fi
   done
