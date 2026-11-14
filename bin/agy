@@ -1,16 +1,12 @@
 #!/bin/sh
 # agyx shim: run agy with real HOME and a private file login.
 die() { echo "agyx: $*" >&2; exit 2; }
-valid() {
-  case $1 in *'
-'*) return 1 ;; esac
-  printf %s "$1" | grep -Eq '^[a-z][a-z0-9_-]{0,31}$'
-}
 
-# find our own real location (follow symlinks) so runtime/ is found wherever we are installed
-self=$0
+# find our own real location (follow symlinks, bounded) so runtime/ is found wherever installed
+self=$0 _hops=0
 while [ -L "$self" ]; do
-  l=$(readlink "$self")
+  _hops=$((_hops + 1)); [ "$_hops" -le 40 ] || die "symlink loop: $0"
+  l=$(readlink "$self") || die "cannot read symlink: $self"
   case $l in /*) self=$l ;; *) self=$(dirname "$self")/$l ;; esac
 done
 self=$(cd "$(dirname "$self")" && pwd -P)/$(basename "$self")
@@ -18,8 +14,8 @@ runtime=$(cd "$(dirname "$self")/../runtime" && pwd -P)
 rh=$HOME
 unset AGYX_REAL_HOME AGY_PROFILE
 data=${AGYX_DATA_DIR:-$rh/.local/share/agyx}
-# shellcheck disable=SC2034 # R, AGYX_SHIM and data are used by the functions in sync.sh
-R=$rh AGYX_SHIM=$self
+# shellcheck disable=SC2034 # R, AGYX_SHIM, AGYX_RUNTIME and data are used by sync.sh
+R=$rh AGYX_SHIM=$self AGYX_RUNTIME=$runtime
 # shellcheck source=../runtime/sync.sh
 . "$runtime/sync.sh"
 # what we store or pass on (entry link, ZDOTDIR, BASH_ENV) must survive a Homebrew upgrade
@@ -53,8 +49,7 @@ if [ "$flag" = 0 ]; then
     [ -z "$name" ] || src='default'
   fi
   if [ -z "$name" ]; then
-    # first-run messages (error path only, forks are fine)
-    existing=
+    existing=''
     for d in "$data"/profiles/*/; do [ -d "$d" ] && existing="$existing $(basename "$d")"; done
     if [ -z "$existing" ]; then
       die "no profiles yet. Create and sign in to one with: agyx profile login NAME (for example: agyx profile login work)"
@@ -62,7 +57,7 @@ if [ "$flag" = 0 ]; then
     die "no profile chosen. Existing profiles:$existing. Pick one with --profile NAME, or set a default with: agyx profile default NAME"
   fi
 fi
-valid "$name" || die "invalid profile name: $name"
+agyx_valid_name "$name" || die "invalid profile name: $name"
 agyx_subcommand "$name" && die "profile name is reserved: $name"
 P=$data/profiles/$name/antigravity-cli
 if [ ! -d "$P" ] || [ -L "$P" ] || [ -L "$data/profiles/$name" ]; then
@@ -72,65 +67,36 @@ if [ ! -d "$P" ] || [ -L "$P" ] || [ -L "$data/profiles/$name" ]; then
   die "profile '$name' does not exist (run: agyx profile login $name)"
 fi
 
-# 3. real binary
+# 2. real binary & profile app preparation
 agyx_find_real || agyx_missing_agy
-
-# agyx owns the storage flags: overriding either could expose another account's token.
 for a in "$@"; do
   case $a in --app_data_dir|--app_data_dir=*|-app_data_dir|-app_data_dir=*|--gemini_dir|--gemini_dir=*|-gemini_dir|-gemini_dir=*) die "storage flags are managed by agyx" ;; esac
 done
 agyx_sync_app || die "cannot prepare profile app directory"
 agyx_app_arg || die "cannot resolve profile app directory"
 
-# 4. environment (originals saved unless the caller already points at the bridge)
+# 3. environment (bijective :value encoding: empty = unset, :val = set to val; idempotent nested)
 bz=$runtime_stable/zsh bb=$runtime_stable/bash_env
 if [ "${ZDOTDIR-}" != "$bz" ] && [ "${BASH_ENV-}" != "$bb" ]; then
-  if [ "${WSL_DISTRO_NAME+x}" ]; then AGYX_ORIG_WSL_SET=1 AGYX_ORIG_WSL=$WSL_DISTRO_NAME
-  else AGYX_ORIG_WSL_SET=0 AGYX_ORIG_WSL=; fi
+  AGYX_ORIG_WSL=${WSL_DISTRO_NAME+:$WSL_DISTRO_NAME}
 fi
-WSL_DISTRO_NAME=${WSL_DISTRO_NAME:-agyx}
-if [ "${ZDOTDIR-}" != "$bz" ]; then
-  if [ "${ZDOTDIR+x}" ]; then AGYX_ORIG_ZDOTDIR_SET=1 AGYX_ORIG_ZDOTDIR=$ZDOTDIR
-  else AGYX_ORIG_ZDOTDIR_SET=0 AGYX_ORIG_ZDOTDIR=; fi
-fi
-if [ "${BASH_ENV-}" != "$bb" ]; then
-  if [ "${BASH_ENV+x}" ]; then AGYX_ORIG_BASH_ENV_SET=1 AGYX_ORIG_BASH_ENV=$BASH_ENV
-  else AGYX_ORIG_BASH_ENV_SET=0 AGYX_ORIG_BASH_ENV=; fi
-fi
-AGYX_PROFILE=$name AGY_CLI_DISABLE_AUTO_UPDATE=true
+[ "${ZDOTDIR-}" = "$bz" ] || AGYX_ORIG_ZDOTDIR=${ZDOTDIR+:$ZDOTDIR}
+[ "${BASH_ENV-}" = "$bb" ] || AGYX_ORIG_BASH_ENV=${BASH_ENV+:$BASH_ENV}
+WSL_DISTRO_NAME=${WSL_DISTRO_NAME:-agyx} AGYX_PROFILE=$name AGY_CLI_DISABLE_AUTO_UPDATE=true
 ZDOTDIR=$bz BASH_ENV=$bb
-export WSL_DISTRO_NAME AGYX_ORIG_WSL_SET AGYX_ORIG_WSL AGYX_PROFILE AGY_CLI_DISABLE_AUTO_UPDATE ZDOTDIR BASH_ENV \
-  AGYX_ORIG_ZDOTDIR_SET AGYX_ORIG_ZDOTDIR AGYX_ORIG_BASH_ENV_SET AGYX_ORIG_BASH_ENV
-# 5. Check this launch's storage evidence, including an explicit caller/login log.
-launch_log='' prev=''
-for a in "$@"; do
-  [ "$prev" != --log-file ] || launch_log=$a
-  case $a in --log-file=*) launch_log=${a#*=} ;; esac
-  prev=$a
-done
+export WSL_DISTRO_NAME AGYX_ORIG_WSL AGYX_ORIG_ZDOTDIR AGYX_ORIG_BASH_ENV \
+  AGYX_PROFILE AGY_CLI_DISABLE_AUTO_UPDATE ZDOTDIR BASH_ENV
+
+# 4. pre-exec storage checks + per-launch log allocation, then direct exec (preserves PID & signals)
+# shellcheck disable=SC2154 # real is set by agyx_find_real
+agyx_check_binary "$real"
 if agyx_wants_log "$@"; then
+  agyx_check_recent_log "$data/profiles/$name"
   if agyx_new_log "$data/profiles/$name"; then
-    launch_log=$AGYX_LOGFILE
-    set -- --log-file "$launch_log" "$@"
+    set -- --log-file "$AGYX_LOGFILE" "$@"
   else
     echo "agyx: warning: could not create a log file in $data/profiles/$name/log; agy writes its default log" >&2
   fi
 fi
-# Setup/test controls are not routing state for agy or its commands.
-unset AGYX_ASSUME_YES AGYX_TTY AGYX_SECURITY AGYX_TRASH_DIR AGYX_LOG_STAMP AGYX_LOCK_TRIES
-# shellcheck disable=SC2154 # real is set by agyx_find_real
-[ -n "$launch_log" ] || exec "$real" "--app_data_dir=$AGYX_APP_ARG" "$@"
-# Keep stdin/stdio intact and forward signals now that the shim waits for agy.
-"$real" "--app_data_dir=$AGYX_APP_ARG" "$@" <&0 &
-agy_pid=$!
-trap 'interrupted=1; kill -INT "$agy_pid" 2>/dev/null || :' INT
-trap 'interrupted=1; kill -TERM "$agy_pid" 2>/dev/null || :' TERM
-trap 'interrupted=1; kill -HUP "$agy_pid" 2>/dev/null || :' HUP
-while :; do
-  interrupted=0
-  wait "$agy_pid"; rc=$?
-  [ "$interrupted" = 1 ] || break
-done
-trap - INT TERM HUP
-agyx_check_storage "$launch_log"
-exit "$rc"
+unset AGYX_RUNTIME AGYX_ASSUME_YES AGYX_TTY AGYX_SECURITY AGYX_TRASH_DIR AGYX_LOG_STAMP AGYX_LOCK_TRIES
+exec "$real" "--app_data_dir=$AGYX_APP_ARG" "$@"

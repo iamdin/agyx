@@ -1,33 +1,29 @@
 #!/bin/sh
-# agyx: manage agy profiles (profile, doctor); any other invocation launches agy through the
-# shim. There is no setup step: everything else is automatic. See README.md.
+# agyx: manage agy profiles (profile, doctor, uninstall); any other invocation launches agy
+# through the shim. There is no setup step: everything else is automatic. See README.md.
 die() { echo "agyx: $*" >&2; exit 1; }
-valid() {
-  case $1 in *'
-'*) return 1 ;; esac
-  printf %s "$1" | grep -Eq '^[a-z][a-z0-9_-]{0,31}$'
-}
-# find our own real location (follow symlinks, e.g. Homebrew's bin link) to locate the packaged shim
-self=$0
+
+# find our own real location (follow symlinks, bounded) to locate the packaged shim and runtime
+self=$0 _hops=0
 while [ -L "$self" ]; do
-  l=$(readlink "$self")
+  _hops=$((_hops + 1)); [ "$_hops" -le 40 ] || die "symlink loop: $0"
+  l=$(readlink "$self") || die "cannot read symlink: $self"
   case $l in /*) self=$l ;; *) self=$(dirname "$self")/$l ;; esac
 done
 me=$(cd "$(dirname "$self")" && pwd -P)/$(basename "$self")
 shim=${me%/*}/agy
+runtime=$(cd "${me%/*}/../runtime" && pwd -P)
 rh=$HOME
 unset AGYX_REAL_HOME AGY_PROFILE
 data=${AGYX_DATA_DIR:-$rh/.local/share/agyx}
-# shellcheck disable=SC2034 # R and AGYX_SHIM are used by the functions in sync.sh
-R=$rh AGYX_SHIM=$shim
+# shellcheck disable=SC2034 # R, AGYX_SHIM and AGYX_RUNTIME are used by sync.sh
+R=$rh AGYX_SHIM=$shim AGYX_RUNTIME=$runtime
 # shellcheck source=../runtime/sync.sh
-. "${me%/*}/../runtime/sync.sh"
+. "$runtime/sync.sh"
 agyx_stable "$shim"
 # shellcheck disable=SC2034 # used by the functions in sync.sh
 AGYX_SHIM=$AGYX_STABLE # the entry link must survive a Homebrew upgrade
-if [ -d "$data" ] && [ "${1-}" != uninstall ]; then
-  agyx_ensure_entry || die "cannot prepare app entry"
-fi
+
 usage="usage: agyx [--profile NAME] [agy args...]   launch agy as a profile
        agyx profile login NAME      create profile NAME and sign in with agy's own login
        agyx profile default [NAME]  show or set the default profile
@@ -35,32 +31,36 @@ usage="usage: agyx [--profile NAME] [agy args...]   launch agy as a profile
        agyx doctor                  check the installation
        agyx uninstall               remove agyx's data and configuration
        any other arguments go to agy; agy's own help: agyx --profile NAME --help"
-# Help/version never set up a fresh install; existing entry maintenance ran above.
+
+# Help and version are strictly read-only: never touch disk, migrate, or trash old entries.
 if [ $# -eq 1 ]; then
   case $1 in --help|-h|help) echo "$usage"; exit 0 ;; esac
 fi
-# --version: agyx's own version, then the discovered native agy's version.
 if [ "${1-}" = --version ]; then
   echo "agyx $AGYX_VERSION"
   # shellcheck disable=SC2154 # real is set by agyx_find_real
-  agyx_find_real && _r=$real || _r=
+  agyx_find_real && _r=$real || _r=''
   [ -n "$_r" ] && [ -x "$_r" ] && echo "agy $(AGY_CLI_DISABLE_AUTO_UPDATE=true "$_r" --version 2>&1 | head -n 1)"
   exit 0
 fi
-# Anything that is not one of our own subcommands launches agy (none of them overlaps with an
-# agy subcommand or flag, including -h/--help). umask is untouched so agy inherits the caller's.
-agyx_subcommand "${1-}" || exec "$shim" "$@"
+
+# Anything that is not one of our own subcommands launches agy via the shim.
+if ! agyx_subcommand "${1-}"; then
+  unset AGYX_RUNTIME
+  exec "$shim" "$@"
+fi
 
 tok=antigravity-cli/antigravity-oauth-token
-sec=${AGYX_SECURITY:-/usr/bin/security}  # AGYX_SECURITY is only for tests
-# Nothing is written before the user agreed once (agyx_gate, for the commands that write); read-only
-# commands report "not set up yet". Once set up, missing pieces are repaired silently.
+sec=${AGYX_SECURITY:-/usr/bin/security} # AGYX_SECURITY is only for tests
 repair() { agyx_ensure_entry || die "cannot prepare app entry"; }
-[ "${1-}" = uninstall ] || agyx_migrate
+if [ "${1-}" != uninstall ] && [ -d "$data" ]; then
+  agyx_migrate
+  repair
+fi
 notyet() { echo "agyx is not set up yet; run agyx once in a terminal to set it up (or set AGYX_ASSUME_YES=1)"; exit 0; }
 
 need() {
-  valid "${1-}" || bad "invalid profile name: ${1-}"
+  agyx_valid_name "${1-}" || bad "invalid profile name: ${1-}"
   ! agyx_subcommand "$1" || bad "profile name is reserved: $1"
 }
 exists() { need "${1-}"; [ -d "$data/profiles/$1/antigravity-cli" ] || bad "no such profile: $1"; }
@@ -68,9 +68,9 @@ names() { for d in "$data"/profiles/*/; do [ -d "$d" ] && basename "$d"; done; }
 dflt() { [ -f "$data/default" ] && cat "$data/default"; }
 # Saved email only: never open the token, even for metadata.
 email_of() {
-  e=
+  e=''
   [ ! -f "$data/profiles/$1/email" ] || IFS= read -r e < "$data/profiles/$1/email"
-  case $e in *[[:space:]]*) e= ;; esac
+  case $e in *[[:space:]]*) e='' ;; esac
   printf '%s' "$e"
 }
 logged_in() { [ -f "$data/profiles/$1/$tok" ] && [ ! -L "$data/profiles/$1/$tok" ]; }
@@ -104,8 +104,9 @@ case $cmd in
         agyx_new_log "$data/profiles/$1" || die "cannot create login log"
         login_log=$AGYX_LOGFILE
         trap : INT
-        "$shim" --profile "$1" --log-file "$login_log"; rc=$?
+        (unset AGYX_RUNTIME; "$shim" --profile "$1" --log-file "$login_log"); rc=$?
         trap - INT
+        [ ! -s "$login_log" ] || agyx_check_storage "$login_log"
         if logged_in "$1"; then
           e=$(agyx_email_file "$login_log")
           if [ -n "$e" ]; then printf '%s\n' "$e" > "$data/profiles/$1/email"
@@ -139,8 +140,9 @@ case $cmd in
     ;;
   uninstall)
     [ $# -eq 0 ] || bad "uninstall takes no arguments"
+    agyx_legacy
     agyx_set_links_file
-    if [ "${AGYX_ASSUME_YES-}" != 1 ] && [ -z "${AGYX_TTY-}" ] && { [ ! -t 0 ] || [ ! -t 2 ]; }; then
+    if [ "${AGYX_ASSUME_YES-}" != 1 ] && ! agyx_has_tty; then
       die "uninstall needs a terminal to ask (or set AGYX_ASSUME_YES=1); nothing was removed."
     fi
     # Match open executable/DB files, not token contents or process environments.
@@ -151,12 +153,12 @@ case $cmd in
     if [ -n "$pids" ]; then
       die "agy is still running (PIDs: ${pids% }). Close it first, then run agyx uninstall again; nothing was removed."
     fi
-    pl=; for n in $(names); do pl="$pl${pl:+, }$n"; done
+    pl=''; for n in $(names); do pl="$pl${pl:+, }$n"; done
     kind=other
     case $me in */Cellar/*/*) formula=${me#*/Cellar/}; formula=${formula%%/*}; kind=brew ;;
       *) [ -e "${me%/*/*}/.git" ] && kind=checkout ;; esac
     plink=$rh/.local/bin/agyx
-    if [ "$kind" = checkout ] && { [ ! -L "$plink" ] || [ ! "$plink" -ef "$me" ]; }; then plink=; fi
+    if [ "$kind" = checkout ] && { [ ! -L "$plink" ] || [ ! "$plink" -ef "$me" ]; }; then plink=''; fi
     {
       echo "agyx uninstall will remove:"
       [ -d "$data" ] && echo "  $(agyx_tilde "$data")/   profiles ${pl:-none} (private app files, logins and logs; moved to Trash)"
@@ -170,19 +172,14 @@ case $cmd in
       echo "Kept: ~/.gemini (shared settings, history and conversations) and plain agy."
       [ -d "$data" ] && echo "Apps set up with $(agyx_tilde "$data")/agy (for example T3 Code) will stop working."
     } >&2
-    if [ "${AGYX_ASSUME_YES-}" != 1 ]; then
-      printf 'Remove? [y/N] ' >&2
-      ans=
-      read -r ans < "${AGYX_TTY:-/dev/tty}" || [ -n "$ans" ] || ans=n
-      case $ans in [Yy]*) ;; *) echo >&2; die "nothing was removed." ;; esac
-    fi
+    agyx_ask n 'Remove? [y/N] ' || { echo >&2; die "nothing was removed."; }
     (umask 077; mkdir -p "${AGYX_TRASH_DIR:-$rh/.Trash}") || die "cannot create Trash directory"
     trash=$(mktemp -d "${AGYX_TRASH_DIR:-$rh/.Trash}/agyx-uninstall-$(date +%Y%m%d%H%M%S)-XXXXXX") || die "cannot create uninstall Trash directory"
     # Legacy profiles can also be uninstalled without a separate migration prompt.
     for n in $(names); do agyx_delete_old_keychain "$data/profiles/$n"; done
     [ ! -d "$data" ] || mv "$data" "$trash/data" || die "could not move $data to the Trash"
     [ ! -f "$AGYX_LINKS_FILE" ] || mv "$AGYX_LINKS_FILE" "$trash/symlinks" || die "cannot move old whitelist to the Trash"
-    agyx_remove_blocker || die "cannot remove old token blocker"
+    agyx_do_remove_blocker || die "cannot remove old token blocker"
     echo "agyx: removed. Moved to the Trash: $(agyx_tilde "$trash")"
     case $kind in
       brew)
@@ -202,6 +199,7 @@ case $cmd in
     if agyx_find_real; then
       echo "real agy: $real${AGYX_REAL_AGY:+ (from AGYX_REAL_AGY)}"
       echo "version: $(AGY_CLI_DISABLE_AUTO_UPDATE=true "$real" --version 2>&1 | head -n 1)"
+      agyx_check_binary "$real"
     else
       echo "real agy: NOT FOUND. Install agy, or point agyx at it with AGYX_REAL_AGY=/path/to/agy"
     fi

@@ -1,7 +1,44 @@
 # shellcheck shell=sh
-# shellcheck disable=SC2154,SC2034 # R, P, data and AGYX_SHIM are set by callers
+# shellcheck disable=SC2154,SC2034 # R, P, data, AGYX_SHIM and AGYX_RUNTIME are set by callers
 # R = real HOME; P = profile app directory. Never read or copy a token.
-AGYX_VERSION=0.2.0-beta.3 # the one place the version lives (the formula's url tag must match)
+AGYX_VERSION=0.2.0-beta.4 # the one place the version lives (the formula's url tag must match)
+
+agyx_valid_name() {
+  case ${1-} in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789_-]*|[!abcdefghijklmnopqrstuvwxyz]*) return 1 ;; esac
+  [ "${#1}" -le 32 ]
+}
+
+# Management subcommands of bin/agyx; they are also the reserved profile names (the only list).
+agyx_subcommand() {
+  case ${1-} in doctor|profile|uninstall) return 0 ;; esac
+  return 1
+}
+
+agyx_has_tty() { [ -n "${AGYX_TTY-}" ] || { [ -t 0 ] && [ -t 2 ]; }; }
+
+# $1 = y (default Yes) or n (default No), $2 = prompt. Caller checks agyx_has_tty first.
+agyx_ask() {
+  [ "${AGYX_ASSUME_YES-}" = 1 ] && return 0
+  printf '%s' "$2" >&2
+  _ans=''
+  read -r _ans < "${AGYX_TTY:-/dev/tty}" || [ -n "$_ans" ] || _ans=n
+  case $1:$_ans in y:|y:[Yy]*|n:[Yy]*) return 0 ;; esac
+  return 1
+}
+
+agyx_legacy() {
+  command -v agyx_do_remove_blocker >/dev/null 2>&1 && return 0
+  # shellcheck source=legacy.sh
+  . "${AGYX_RUNTIME:-${here:+$here/runtime}}/legacy.sh"
+}
+
+agyx_remove_blocker() { agyx_legacy && agyx_do_remove_blocker; }
+
+agyx_migrate() {
+  for _d in "$data"/profiles/*; do
+    if [ -d "$_d/home" ] || [ -L "$_d/home" ]; then agyx_legacy && agyx_run_migrate; return; fi
+  done
+}
 
 agyx_private() {
   case $1 in antigravity-oauth-token|settings.json|jetski_state.pbtxt|jetbox_summaries_proto.pb) return 0 ;; esac
@@ -68,25 +105,35 @@ agyx_no_orphan_sidecars() {
   done
 }
 
-agyx_repair_shared() (
-  agyx_needs_repair || return 0
-  if [ "${AGYX_ASSUME_YES-}" != 1 ]; then
-    [ -n "${AGYX_TTY-}" ] || { [ -t 0 ] && [ -t 2 ]; } || {
-      echo "agyx: shared entries need repair; run once in a terminal (or set AGYX_ASSUME_YES=1); inspect agyx doctor; nothing repaired" >&2
-      return 1
-    }
-    {
-      echo "agyx will repair shared entries for all profiles. Close all agy sessions first."
-      echo "Directory conflicts: newer wins (shared wins ties); the other copy goes to the Trash."
-      echo "History: append missing lines. Shared DB/other files stay; profile copies go to the Trash."
-      echo "The four private files are never touched."
-      printf 'Continue? [Y/n] '
-    } >&2
-    _ans=
-    read -r _ans < "${AGYX_TTY:-/dev/tty}" || [ -n "$_ans" ] || _ans=n
-    case $_ans in ''|[Yy]*) ;; *) echo "agyx: shared repair cancelled; nothing repaired" >&2; return 1 ;; esac
-  fi
-  # Check after consent: native writers may have been running while the question was open.
+# Move a non-conflicting profile entry into shared (keeping any DB sidecars together) and link it.
+agyx_adopt_one() {
+  case ${1##*/} in *.db) agyx_no_orphan_sidecars "$2" || return 1 ;; esac
+  mv "$1" "$2" || return 1
+  case ${1##*/} in *.db)
+    for _suffix in -wal -shm -journal; do
+      [ -e "$1$_suffix" ] || [ -L "$1$_suffix" ] || continue
+      mv "$1$_suffix" "$2$_suffix" || return 1
+    done ;;
+  esac
+  ln -s "$2" "$1"
+}
+
+agyx_confirm_repair() {
+  [ "${AGYX_ASSUME_YES-}" = 1 ] && return 0
+  agyx_has_tty || {
+    echo "agyx: shared entries need repair; run once in a terminal (or set AGYX_ASSUME_YES=1); inspect agyx doctor; nothing repaired" >&2
+    return 1
+  }
+  {
+    echo "agyx will repair shared entries for all profiles. Close all agy sessions first."
+    echo "Directory conflicts: newer wins (shared wins ties); the other copy goes to the Trash."
+    echo "History: append missing lines. Shared DB/other files stay; profile copies go to the Trash."
+    echo "The four private files are never touched."
+  } >&2
+  agyx_ask y 'Continue? [Y/n] ' || { echo "agyx: shared repair cancelled; nothing repaired" >&2; return 1; }
+}
+
+agyx_do_repair() (
   set -- "$_shared/conversation_summaries.db"
   for _dir in "$data"/profiles/*; do set -- "$@" "$_dir/antigravity-cli/conversation_summaries.db"; done
   _pids=$(/usr/sbin/lsof -nP -t "$@" 2>/dev/null | tr '\n' ' ')
@@ -102,10 +149,11 @@ agyx_repair_shared() (
       agyx_sidecar "$_name" && continue
       _dest=$_shared/$_name _saved=$_trash/${_dir##*/}/$_name
       [ ! -L "$_dest" ] || { echo "agyx: unexpected shared link: $_dest; repair stopped" >&2; return 1; }
-      _db_dest=$_dest
-      case $_name in *.db) [ -e "$_dest" ] || agyx_no_orphan_sidecars "$_dest" || return 1 ;; esac
-      if [ ! -e "$_dest" ]; then mv "$_entry" "$_dest" || return 1
-      elif [ -d "$_entry" ] && [ -d "$_dest" ]; then
+      if [ ! -e "$_dest" ]; then
+        agyx_adopt_one "$_entry" "$_dest" || return 1
+        continue
+      fi
+      if [ -d "$_entry" ] && [ -d "$_dest" ]; then
         agyx_merge_tree "$_entry" "$_dest" "$_saved" || return 1
       else
         mkdir -p "${_saved%/*}" || return 1
@@ -120,24 +168,27 @@ agyx_repair_shared() (
           rm "$_add" || return 1
         fi
         mv "$_entry" "$_saved" || return 1
-        _db_dest=$_saved
+        case $_name in *.db)
+          for _suffix in -wal -shm -journal; do
+            [ -e "$_entry$_suffix" ] || [ -L "$_entry$_suffix" ] || continue
+            mv "$_entry$_suffix" "$_saved$_suffix" || return 1
+          done ;;
+        esac
       fi
-      case $_name in *.db)
-        for _suffix in -wal -shm -journal; do
-          [ -e "$_entry$_suffix" ] || [ -L "$_entry$_suffix" ] || continue
-          mv "$_entry$_suffix" "$_db_dest$_suffix" || return 1
-        done ;;
-      esac
       ln -s "$_dest" "$_entry" || return 1
     done
   done
   echo "agyx: shared entries repaired; displaced copies are in $_trash" >&2
 )
 
-# Serialize preparation/repair, not native agy sessions. Never keep the lock while agy runs.
+# Serialize preparation/repair, not prompts or native agy sessions.
 agyx_sync_app() (
   umask 077
-  _shared=$R/.gemini/antigravity-cli
+  _shared=$R/.gemini/antigravity-cli _consented=0
+  if agyx_needs_repair; then
+    agyx_confirm_repair || return 1
+    _consented=1
+  fi
   mkdir -p "$P" "$_shared" || return 1
   _lock=$R/.gemini/.agyx-shared-prepare-lock _tries=${AGYX_LOCK_TRIES:-100}
   # ponytail: global spin-wait lock (up to ~5s); switch to flock/shlock only if launch concurrency outgrows this
@@ -148,7 +199,13 @@ agyx_sync_app() (
   done
   trap 'rmdir "$_lock"' EXIT
   trap 'exit 1' HUP INT TERM
-  agyx_repair_shared || return 1
+  if agyx_needs_repair; then
+    [ "$_consented" = 1 ] || [ "${AGYX_ASSUME_YES-}" = 1 ] || {
+      echo "agyx: shared entries changed concurrently; run again to confirm repair" >&2
+      return 1
+    }
+    agyx_do_repair || return 1
+  fi
   for _n in $(agyx_shared_entries dirs); do mkdir -p "$_shared/$_n" || return 1; done
   for _n in $(agyx_shared_entries files); do
     [ ! -e "$_shared/$_n" ] && [ ! -L "$_shared/$_n" ] || continue
@@ -179,9 +236,7 @@ agyx_sync_app() (
         return 1
       }
     elif [ ! -L "$_p" ] && [ ! -e "$_shared/$_n" ] && [ ! -L "$_shared/$_n" ]; then
-      mv -n "$_p" "$_shared/" || return 1
-      # Another launch may have adopted the same name; leave this copy as drift.
-      [ -e "$_p" ] || ln -s "$_shared/$_n" "$_p" || return 1
+      agyx_adopt_one "$_p" "$_shared/$_n" || return 1
     fi
   done
 )
@@ -190,10 +245,10 @@ agyx_sync_app() (
 agyx_app_arg() {
   _from=$(cd "$R/.gemini" && pwd -P) || return 1
   _to=$(cd "$P" && pwd -P) || return 1
-  _up=
+  _up=''
   while :; do
     case $_to in "$_from"/*) break ;; esac
-    [ "$_from" != / ] || { _from=; break; }
+    [ "$_from" != / ] || { _from=''; break; }
     _from=${_from%/*}; [ -n "$_from" ] || _from=/
     _up=../$_up
   done
@@ -230,74 +285,6 @@ agyx_email_file() {
   case $_el in *[[:space:]]*) ;; *) printf '%s' "$_el" ;; esac
 }
 
-agyx_set_links_file() {
-  case ${XDG_CONFIG_HOME-} in
-    /*) AGYX_LINKS_FILE=$XDG_CONFIG_HOME/agyx/symlinks ;;
-    *) AGYX_LINKS_FILE=$R/.config/agyx/symlinks ;;
-  esac
-}
-
-# Only remove the exact blocker created by 0.1.3, never plain agy's file or an unknown directory.
-agyx_remove_blocker() {
-  _block=$R/.gemini/antigravity-cli/antigravity-oauth-token
-  [ -d "$_block" ] && [ ! -L "$_block" ] && [ "$(ls -A "$_block")" = README ] && [ ! -L "$_block/README" ] || return 0
-  if printf '%s\n' \
-    'agyx keeps this directory here so the Antigravity CLI (agy) cannot write a token file at this path:' \
-    'all agyx profiles share this ~/.gemini, so such a file would be shared by every Google account.' \
-    "Logins live only in each profile's own keychain. Delete this directory only after uninstalling agyx." | cmp -s - "$_block/README"; then
-    rm "$_block/README" && rmdir "$_block" || return 1
-  fi
-}
-
-agyx_delete_old_keychain() {
-  _home=$1/home
-  _kc=$_home/Library/Keychains/login.keychain-db
-  [ -e "$_kc" ] || return 0
-  [ ! -L "$_home" ] && [ ! -L "$_home/Library" ] && [ ! -L "$_home/Library/Keychains" ] && [ ! -L "$_kc" ] || die "unsafe legacy keychain path: $_kc"
-  HOME=$_home "${AGYX_SECURITY:-/usr/bin/security}" delete-keychain "$_kc" >/dev/null 2>&1 || die "cannot delete old profile keychain: $_kc; migration stopped"
-}
-
-agyx_migrate() {
-  _old=
-  for _d in "$data"/profiles/*; do
-    [ -d "$_d/home" ] || continue
-    [ ! -L "$_d" ] && [ ! -L "$_d/home" ] || die "unsafe legacy profile: $_d"
-    _old=1
-  done
-  [ -n "$_old" ] || return 0
-  if [ "${AGYX_ASSUME_YES-}" != 1 ]; then
-    [ -n "${AGYX_TTY-}" ] || { [ -t 0 ] && [ -t 2 ]; } || die "old profiles need migration; run once in a terminal (or set AGYX_ASSUME_YES=1); nothing changed"
-    {
-      echo "agyx will migrate all old profiles to real HOME and private file logins."
-      echo "Each profile must sign in again. Old profile keychains will be deleted; home/ goes to the Trash."
-      echo "Email and logs stay; the old whitelist goes to the Trash and the agyx token blocker is removed."
-      printf 'Continue? [Y/n] '
-    } >&2
-    _ans=
-    read -r _ans < "${AGYX_TTY:-/dev/tty}" || [ -n "$_ans" ] || _ans=n
-    case $_ans in ''|[Yy]*) ;; *) die "migration cancelled; nothing changed" ;; esac
-  fi
-  (umask 077; mkdir -p "${AGYX_TRASH_DIR:-$R/.Trash}") || die "cannot create Trash directory"
-  # Delete before moving, with the old HOME and explicit keychain path only.
-  for _d in "$data"/profiles/*; do
-    [ -d "$_d/home" ] || continue
-    agyx_delete_old_keychain "$_d"
-    _trash=$(mktemp -d "${AGYX_TRASH_DIR:-$R/.Trash}/agyx-${_d##*/}-$(date +%Y%m%d%H%M%S)-XXXXXX") || die "cannot create migration Trash directory"
-    mv "$_d/home" "$_trash/home" || die "cannot move old profile home to the Trash"
-    (umask 077; mkdir -p "$_d/antigravity-cli") || die "cannot create profile app directory"
-    echo "agyx: profile ${_d##*/}: old home moved to $_trash; sign in again with agyx profile login ${_d##*/}" >&2
-  done
-  agyx_remove_blocker || die "cannot remove old token blocker"
-  agyx_set_links_file
-  [ ! -f "$AGYX_LINKS_FILE" ] || mv "$AGYX_LINKS_FILE" "$_trash/symlinks" || die "cannot move old whitelist to the Trash"
-}
-
-# Management subcommands of bin/agyx; they are also the reserved profile names (the only list).
-agyx_subcommand() {
-  case $1 in doctor|profile|uninstall) return 0 ;; esac
-  return 1
-}
-
 # A future agy may ignore WSL and fall back to keychain-first, mixing accounts.
 agyx_check_storage() {
   case $1 in /*) _storage_log=$1 ;; *) _storage_log=$PWD/$1 ;; esac
@@ -306,8 +293,32 @@ agyx_check_storage() {
   fi
 }
 
+# Pre-exec binary marker check (cached by stat stamp) so bin/agy can exec native agy directly.
+agyx_check_binary() {
+  _stamp=$(stat -f '%d:%i:%m:%z' "$1" 2>/dev/null):$1
+  if [ -f "$data/.verified-agy" ]; then
+    _saved=''
+    IFS= read -r _saved < "$data/.verified-agy" || :
+    [ "$_saved" = "$_stamp" ] && return 0
+  fi
+  if LC_ALL=C grep -Fq WSL_DISTRO_NAME "$1" 2>/dev/null &&
+     LC_ALL=C grep -Fq app_data_dir "$1" 2>/dev/null &&
+     LC_ALL=C grep -Fq 'Using file-based token storage' "$1" 2>/dev/null; then
+    (umask 077; printf '%s\n' "$_stamp" > "$data/.verified-agy") 2>/dev/null || :
+  else
+    echo "agyx: WARNING: file-based token storage markers NOT confirmed in $1. Stop using profiles until agy compatibility is checked: keychain fallback can mix accounts and delete the profile token file." >&2
+  fi
+}
+
+agyx_check_recent_log() {
+  ls -t "$1"/log/*.log 2>/dev/null | while IFS= read -r _nl; do
+    [ -s "$_nl" ] || continue
+    agyx_check_storage "$_nl"
+    break
+  done
+}
+
 # Per-profile agy log: <profile dir>/log/cli-YYYYMMDD_HHMMSS.log, a new file per launch.
-# agyx checks storage mode after exit; it never links or prunes logs.
 # agy takes --log-file only BEFORE its subcommand (`agy --log-file F models` works, `agy models
 # --log-file F` is rejected). The commands below never write a log, so no file is made for them; a
 # log file the caller chose is left alone.
@@ -318,7 +329,6 @@ agyx_wants_log() {
 }
 # $1 = profile dir. Creates a new empty log file (never one that exists: a second launch in the
 # same second gets _02, _03 ...) and sets AGYX_LOGFILE. Forks only for the date.
-# AGYX_LOG_STAMP replaces the timestamp (tests).
 agyx_new_log() {
   _ld=$1/log
   [ -d "$_ld" ] || (umask 077; mkdir -p "$_ld") || return 1
@@ -383,30 +393,17 @@ agyx_own_link() {
   agyx_resolve_path "$1" 2>/dev/null && agyx_is_shim "$_resolved"
 }
 
-agyx_clean_old_entry() {
-  if [ -L "$data/real-agy" ]; then
-    case $(readlink "$data/real-agy") in /*/agy) rm "$data/real-agy" || return 1 ;; esac
-  fi
-  [ -d "$data/bin" ] && [ ! -L "$data/bin" ] && agyx_own_link "$data/bin/agy" || return 0
-  (umask 077; mkdir -p "${AGYX_TRASH_DIR:-$R/.Trash}") || return 1
-  _entry_trash=$(mktemp -d "${AGYX_TRASH_DIR:-$R/.Trash}/agyx-entry-layout-XXXXXX") || return 1
-  mv "$data/bin/agy" "$_entry_trash/agy" || return 1
-  [ -z "$(find "$data/bin" -prune -empty -print)" ] || mv "$data/bin" "$_entry_trash/bin" || return 1
-}
-
 # <data>/agy is the only app entry. Preserve unrelated files/links at that path.
 agyx_ensure_entry() {
-  agyx_clean_old_entry || return 1
+  if [ -L "$data/real-agy" ] || [ -d "$data/bin" ]; then
+    agyx_legacy && agyx_clean_old_entry || return 1
+  fi
   [ "$data/agy" -ef "$AGYX_SHIM" ] && return 0
   if [ -e "$data/agy" ] || [ -L "$data/agy" ]; then agyx_own_link "$data/agy" || return 0; fi
   (umask 077; mkdir -p "$data") && ln -sfn "$AGYX_SHIM" "$data/agy"
 }
 
-# Sets AGYX_STABLE to the path agyx stores or passes on for itself. Homebrew keeps each version in
-# its own Cellar directory and deletes old ones, while <prefix>/opt/<formula> is a stable link to
-# the current version: <prefix>/Cellar/<formula>/<version>/<rest> maps to <prefix>/opt/<formula>/<rest>
-# when that exists (the formula is agyx or the beta agyx-beta). Any other (resolved) path is kept
-# as it is, e.g. a git checkout.
+# Map Homebrew's versioned Cellar path to <prefix>/opt/<formula>/... when it exists.
 agyx_stable() {
   case $1 in
     */Cellar/*/*)
@@ -417,7 +414,7 @@ agyx_stable() {
   AGYX_STABLE=$1
 }
 
-agyx_tilde() { # print $1 with the real home shown as ~ (paths outside it stay absolute)
+agyx_tilde() {
   # shellcheck disable=SC2088 # a literal ~ is intended
   case $1 in
     "$R") printf '~' ;;
@@ -441,28 +438,19 @@ agyx_missing_agy() {
   exit 1
 }
 
-# Nothing is written to the user's file system until the user agreed once. "Set up" = the data dir
-# exists. Commands that write call this first. Without a terminal (stdin and stderr) it refuses;
-# AGYX_ASSUME_YES=1 skips the question. AGYX_TTY=<file> is for tests only: it replaces the terminal
-# check and /dev/tty as the place the answer is read from.
+# Nothing is written to the user's file system until the user agreed once ("Set up" = data exists).
 agyx_gate() {
   [ -d "$data" ] && return 0
-  # agy first: without it there is nothing to set up (no prompt, nothing written)
   agyx_find_real || agyx_missing_agy
   if [ "${AGYX_ASSUME_YES-}" != 1 ]; then
-    if [ -z "${AGYX_TTY-}" ] && { [ ! -t 0 ] || [ ! -t 2 ]; }; then
-      die "agyx is not set up yet. Run agyx once in a terminal to set it up (or set AGYX_ASSUME_YES=1)."
-    fi
+    agyx_has_tty || die "agyx is not set up yet. Run agyx once in a terminal to set it up (or set AGYX_ASSUME_YES=1)."
     {
       echo "agyx will set up:"
       echo "  $(agyx_tilde "$data")/  profiles (private app settings and file login per account)"
       echo "  $(agyx_tilde "$data")/agy  entry for apps that need a binary named agy"
       echo "Profiles use your real HOME and share conversations and history; your login keychain is not touched."
-      printf 'Continue? [Y/n] '
     } >&2
-    _ans=
-    read -r _ans < "${AGYX_TTY:-/dev/tty}" || [ -n "$_ans" ] || _ans=n
-    case $_ans in ''|[Yy]*) ;; *) echo >&2; die "not set up; nothing was written." ;; esac
+    agyx_ask y 'Continue? [Y/n] ' || { echo >&2; die "not set up; nothing was written."; }
   fi
   (umask 077; mkdir -p "$data") || die "cannot create $data"
 }

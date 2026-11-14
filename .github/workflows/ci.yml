@@ -17,7 +17,7 @@ jobs:
       - name: Install shellcheck
         run: command -v shellcheck >/dev/null || brew install shellcheck
       - name: shellcheck
-        run: shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh runtime/bash_env runtime/zsh/.zshenv test/run.sh test/release.sh scripts/release.sh
+        run: shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh runtime/legacy.sh runtime/bash_env runtime/zsh/.zshenv test/run.sh test/release.sh scripts/release.sh
       - name: Tests
         run: sh test/run.sh </dev/null
       - name: Release script tests

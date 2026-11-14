@@ -43,11 +43,11 @@ Profile selection: leading `--profile NAME` (or `--profile=NAME`) > `AGYX_PROFIL
 
 ## Consent and paths
 
-On first use, commands that write ask once before creating the data directory. No terminal means refusal and no writes. `AGYX_ASSUME_YES=1` skips the question for scripts. An existing data directory counts as consent, except that migration and shared-entry repair ask separately. Help, version, list, doctor and showing the default do not set up a fresh installation. On existing installs they may maintain the app entry and clean its old layout below. No shell startup files or PATH settings are edited.
+On first use, commands that write ask once before creating the data directory. No terminal means refusal and no writes. `AGYX_ASSUME_YES=1` skips the question for scripts. An existing data directory counts as consent, except that migration and shared-entry repair ask separately. `--help` and `--version` never write to disk; `list`, `doctor` and showing the default do not set up a fresh installation, and only maintain `<data>/agy` (cleaning obsolete entry links) after any 0.1.x migration has been approved. No shell startup files or PATH settings are edited.
 
 Data directory: `${AGYX_DATA_DIR:-~/.local/share/agyx}`. Give apps such as T3 Code **`<data>/agy`** (normally `~/.local/share/agyx/agy`), the only app shim. Each launch searches PATH for native agy, skipping agyx shims, then falls back to `~/.local/bin/agy` for GUI apps with a minimal PATH; `AGYX_REAL_AGY=/absolute/path/to/agy` overrides both. No binary path is cached, and invocation links are resolved before execution. The entry and shell bridge use Homebrew's stable `opt` path across upgrades; plain agy on PATH is not shadowed.
 
-The first invocation on an existing install removes the old `<data>/real-agy` cache link and moves agyx's old `<data>/bin/agy` link (plus `bin/` if then empty) to the Trash without another prompt. Unrelated files, links and nonempty directories are preserved. Update apps still using the old entry path.
+Once any legacy profiles are migrated, the next agyx command removes the old `<data>/real-agy` cache link and moves agyx's old `<data>/bin/agy` link (plus `bin/` if then empty) to the Trash without another prompt. Unrelated files, links and nonempty directories are preserved. Update apps still using the old entry path.
 
 Profile directories and their `antigravity-cli/` directories are created with mode 0700. Layout:
 
@@ -82,18 +82,18 @@ For agy only, the shim supplies `WSL_DISTRO_NAME=agyx` when the existing value i
 
 Bash and Zsh startup bridges restore WSL and `BASH_ENV`/`ZDOTDIR`, remove all `AGYX_ORIG_*` context, then source the user's startup file. HOME is already real; no HOME helper is exported. `AGYX_PROFILE` remains for nested `agyx`; caller-supplied `AGYX_DATA_DIR`/`AGYX_REAL_AGY` remain for custom locations. **Directly executed programs (including MCP servers), POSIX sh and shells that skip startup files can still inherit fake WSL and the bridge context:** agy has no general child-environment hook. Native `ANTIGRAVITY_*` and `AGY_CLI_*` variables are not cleaned by the bridge.
 
-Each launch gets a unique private log; same-second launches get `_02`, `_03`, etc. The existing no-log list (`help`, `changelog`, `mcp`, `update`, `--help`, `-h`, `--version`) skips only the log flag, not the app-dir flag. An explicit user `--log-file` is kept. After a launch with a log file exits, agyx checks that this launch's log contains `Using file-based token storage` (WSL or SSH reason). If missing, it warns on stderr that keychain fallback can mix accounts and delete the profile token file. `doctor` applies the same check to each profile's newest log. This is an after-exit diagnostic, not prevention: stop using profiles if warned and check agy compatibility. Commands that produce no log cannot be checked. Logs are not pruned automatically.
+Each launch gets a unique private log; same-second launches get `_02`, `_03`, etc., and then `exec`s native agy directly (no wrapper process, preserving PID and signals). The no-log list (`help`, `changelog`, `mcp`, `update`, `--help`, `-h`, `--version`) skips only the log flag, not the app-dir flag. An explicit user `--log-file` is kept. Before `exec`, agyx checks (cached by binary stat stamp) that the native binary still carries its file-storage markers, and checks the profile's most recent non-empty log for `Using file-based token storage`; `profile login` checks its login log immediately on exit and `doctor` checks each profile's newest log. Stop using profiles if warned and check agy compatibility. Logs are not pruned automatically.
 
 ## Migration from 0.1.3
 
-Old profile keychain logins cannot be carried over. On the first invocation with legacy `profiles/<name>/home/` directories, agyx asks once for all profiles and explains that **each account must sign in again**. Without a terminal it refuses and changes nothing; `AGYX_ASSUME_YES=1` skips the question. Help/version do not migrate. Close old agy sessions before approving migration.
+Old profile keychain logins cannot be carried over. On the first invocation with legacy `profiles/<name>/home/` directories, agyx asks once for all profiles and explains that **each account must sign in again**. Without a terminal it refuses and changes nothing; `AGYX_ASSUME_YES=1` skips the question. Help/version do not migrate. Close old agy sessions before approving migration (migration checks open handles and refuses if busy).
 
-After consent, agyx:
+After consent, agyx creates a single `~/.Trash/agyx-migrate-<timestamp>-*/` directory and:
 
 1. Deletes each old profile keychain with `security delete-keychain`, its explicit path, and HOME set only to that old profile home. Failure stops migration; the real keychain is never deleted.
-2. Moves each old `home/` to a unique `~/.Trash/agyx-<profile>-<timestamp>-*/home/` directory and creates `antigravity-cli/`. Saved email and logs stay.
+2. Moves each old `home/` to `<migration-trash>/<profile>/home` and creates `antigravity-cli/`. Saved email and logs stay.
 3. Removes the old shared token blocker **only** when it contains exactly agyx's original README and nothing else. Plain agy's token files and unknown directories are untouched.
-4. Moves the old `${XDG_CONFIG_HOME:-~/.config}/agyx/symlinks` whitelist file into the last profile's migration Trash folder, keeping its surrounding config directory.
+4. Moves the old `${XDG_CONFIG_HOME:-~/.config}/agyx/symlinks` whitelist file to `<migration-trash>/symlinks`, keeping its surrounding config directory.
 
 List then reports the old profiles as not logged in. Run `agyx profile login NAME` for each one. Old leftovers live in the macOS Trash, never a backup directory under agyx. Test overrides `AGYX_SECURITY`, `AGYX_TRASH_DIR` and `AGYX_TTY` are for isolated tests, not normal use.
 
@@ -149,7 +149,7 @@ Keep the real checkout, global config, shared app directory and installed agyx u
 ```sh
 sh test/run.sh
 sh test/release.sh
-shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh runtime/bash_env runtime/zsh/.zshenv test/run.sh test/release.sh scripts/release.sh
+shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh runtime/legacy.sh runtime/bash_env runtime/zsh/.zshenv test/run.sh test/release.sh scripts/release.sh
 ```
 
 Tests use stubs and temporary homes/data, with PATH excluding the real agy. Release tests use only throwaway local git repositories; they do not publish a release.
