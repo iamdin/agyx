@@ -13,10 +13,147 @@ agyx_sidecar() {
   return 1
 }
 
-# Link shared entries, then adopt new agy entries without overwriting either side.
-agyx_sync_app() {
+# The known shared layout; seed before the first native launch, not the next one.
+agyx_shared_entries() {
+  case $1 in
+    dirs) printf '%s\n' annotations bin brain builtin cache conversations crashes implicit presence sidecar_data ;;
+    files) printf '%s\n' conversation_summaries.db history.jsonl installation_id ;;
+  esac
+}
+
+# A subshell keeps recursive merge paths from overwriting their caller's variables.
+agyx_merge_tree() (
+  if [ -d "$1" ] && [ ! -L "$1" ] && [ -d "$2" ] && [ ! -L "$2" ]; then
+    for _item in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+      [ -e "$_item" ] || [ -L "$_item" ] || continue
+      agyx_merge_tree "$_item" "$2/${_item##*/}" "$3/${_item##*/}" || return 1
+    done
+    rmdir "$1"
+  elif [ ! -e "$2" ] && [ ! -L "$2" ]; then
+    mv "$1" "$2"
+  else
+    mkdir -p "${3%/*}" || return 1
+    if [ "$1" -nt "$2" ]; then mv "$2" "$3" && mv "$1" "$2"
+    else mv "$1" "$3"; fi
+  fi
+)
+
+# Moving existing known entries also needs consent and a stopped native writer.
+agyx_needs_repair() (
+  for _dir in "$data"/profiles/*; do
+    [ -d "$_dir/antigravity-cli" ] && [ ! -L "$_dir" ] && [ ! -L "$_dir/antigravity-cli" ] || continue
+    for _entry in "$_dir/antigravity-cli"/* "$_dir/antigravity-cli"/.[!.]* "$_dir/antigravity-cli"/..?*; do
+      [ -e "$_entry" ] && [ ! -L "$_entry" ] || continue
+      _name=${_entry##*/}
+      agyx_private "$_name" && continue
+      agyx_sidecar "$_name" && continue
+      for _known in $(agyx_shared_entries dirs) $(agyx_shared_entries files); do [ "$_name" != "$_known" ] || return 0; done
+      [ ! -e "$_shared/$_name" ] && [ ! -L "$_shared/$_name" ] || return 0
+      for _other in "$data"/profiles/*; do
+        [ "$_other" != "$_dir" ] && [ ! -L "$_other" ] && [ ! -L "$_other/antigravity-cli" ] || continue
+        [ ! -e "$_other/antigravity-cli/$_name" ] || [ -L "$_other/antigravity-cli/$_name" ] || return 0
+      done
+    done
+  done
+  return 1
+)
+
+# A missing DB with surviving sidecars needs manual recovery, not an empty replacement.
+agyx_no_orphan_sidecars() {
+  for _suffix in -wal -shm -journal; do
+    if [ -e "$1$_suffix" ] || [ -L "$1$_suffix" ]; then
+      echo "agyx: orphan shared SQLite sidecar: $1$_suffix; repair stopped" >&2
+      return 1
+    fi
+  done
+}
+
+agyx_repair_shared() (
+  agyx_needs_repair || return 0
+  if [ "${AGYX_ASSUME_YES-}" != 1 ]; then
+    [ -n "${AGYX_TTY-}" ] || { [ -t 0 ] && [ -t 2 ]; } || {
+      echo "agyx: shared entries need repair; run once in a terminal (or set AGYX_ASSUME_YES=1); inspect agyx doctor; nothing repaired" >&2
+      return 1
+    }
+    {
+      echo "agyx will repair shared entries for all profiles. Close all agy sessions first."
+      echo "Directory conflicts: newer wins (shared wins ties); the other copy goes to the Trash."
+      echo "History: append missing lines. Shared DB/other files stay; profile copies go to the Trash."
+      echo "The four private files are never touched."
+      printf 'Continue? [Y/n] '
+    } >&2
+    _ans=
+    read -r _ans < "${AGYX_TTY:-/dev/tty}" || [ -n "$_ans" ] || _ans=n
+    case $_ans in ''|[Yy]*) ;; *) echo "agyx: shared repair cancelled; nothing repaired" >&2; return 1 ;; esac
+  fi
+  # Check after consent: native writers may have been running while the question was open.
+  set -- "$_shared/conversation_summaries.db"
+  for _dir in "$data"/profiles/*; do set -- "$@" "$_dir/antigravity-cli/conversation_summaries.db"; done
+  _pids=$(/usr/sbin/lsof -nP -t "$@" 2>/dev/null | tr '\n' ' ')
+  [ -z "$_pids" ] || { echo "agyx: close agy before shared repair (PIDs: $_pids); nothing repaired" >&2; return 1; }
+  mkdir -p "${AGYX_TRASH_DIR:-$R/.Trash}" || return 1
+  _trash=$(mktemp -d "${AGYX_TRASH_DIR:-$R/.Trash}/agyx-shared-repair-XXXXXX") || return 1
+  for _dir in "$data"/profiles/*; do
+    [ -d "$_dir/antigravity-cli" ] && [ ! -L "$_dir" ] && [ ! -L "$_dir/antigravity-cli" ] || continue
+    for _entry in "$_dir/antigravity-cli"/* "$_dir/antigravity-cli"/.[!.]* "$_dir/antigravity-cli"/..?*; do
+      [ -e "$_entry" ] && [ ! -L "$_entry" ] || continue
+      _name=${_entry##*/}
+      agyx_private "$_name" && continue
+      agyx_sidecar "$_name" && continue
+      _dest=$_shared/$_name _saved=$_trash/${_dir##*/}/$_name
+      [ ! -L "$_dest" ] || { echo "agyx: unexpected shared link: $_dest; repair stopped" >&2; return 1; }
+      _db_dest=$_dest
+      case $_name in *.db) [ -e "$_dest" ] || agyx_no_orphan_sidecars "$_dest" || return 1 ;; esac
+      if [ ! -e "$_dest" ]; then mv "$_entry" "$_dest" || return 1
+      elif [ -d "$_entry" ] && [ -d "$_dest" ]; then
+        agyx_merge_tree "$_entry" "$_dest" "$_saved" || return 1
+      else
+        mkdir -p "${_saved%/*}" || return 1
+        if [ "$_name" = history.jsonl ]; then
+          [ -f "$_entry" ] && [ -f "$_dest" ] || return 1
+          _add=$(mktemp "$_trash/.history-XXXXXX") || return 1
+          LC_ALL=C awk 'FILENAME == ARGV[1] {seen[$0]=1; next} !seen[$0]++ {print}' "$_dest" "$_entry" > "$_add" || return 1
+          if [ -s "$_add" ]; then
+            if [ -s "$_dest" ] && [ "$(tail -c 1 "$_dest" | wc -l)" -eq 0 ]; then printf '\n' >> "$_dest" || return 1; fi
+            cat "$_add" >> "$_dest" || return 1
+          fi
+          rm "$_add" || return 1
+        fi
+        mv "$_entry" "$_saved" || return 1
+        _db_dest=$_saved
+      fi
+      case $_name in *.db)
+        for _suffix in -wal -shm -journal; do
+          [ -e "$_entry$_suffix" ] || [ -L "$_entry$_suffix" ] || continue
+          mv "$_entry$_suffix" "$_db_dest$_suffix" || return 1
+        done ;;
+      esac
+      ln -s "$_dest" "$_entry" || return 1
+    done
+  done
+  echo "agyx: shared entries repaired; displaced copies are in $_trash" >&2
+)
+
+# Serialize preparation/repair, not native agy sessions. Never keep the lock while agy runs.
+agyx_sync_app() (
+  umask 077
   _shared=$R/.gemini/antigravity-cli
-  (umask 077; mkdir -p "$P" "$_shared") || return 1
+  mkdir -p "$P" "$_shared" || return 1
+  _lock=$R/.gemini/.agyx-shared-prepare-lock
+  mkdir "$_lock" 2>/dev/null || { echo "agyx: shared preparation is busy; if no agyx is preparing, remove stale lock with: rmdir $_lock" >&2; return 1; }
+  trap 'rmdir "$_lock"' EXIT
+  trap 'exit 1' HUP INT TERM
+  agyx_repair_shared || return 1
+  for _n in $(agyx_shared_entries dirs); do mkdir -p "$_shared/$_n" || return 1; done
+  for _n in $(agyx_shared_entries files); do
+    [ ! -e "$_shared/$_n" ] && [ ! -L "$_shared/$_n" ] || continue
+    case $_n in *.db) agyx_no_orphan_sidecars "$_shared/$_n" || return 1 ;; esac
+    # SQLite initializes a zero-byte DB; an empty JSONL stream has no records.
+    if [ "$_n" = installation_id ]; then
+      _id=$(uuidgen) || return 1
+      printf %s "$_id" | tr '[:upper:]' '[:lower:]' > "$_shared/$_n" || return 1
+    else : > "$_shared/$_n" || return 1; fi
+  done
   for _s in "$_shared"/* "$_shared"/.[!.]* "$_shared"/..?*; do
     [ -e "$_s" ] || [ -L "$_s" ] || continue
     _n=${_s##*/}
@@ -42,7 +179,7 @@ agyx_sync_app() {
       [ -e "$_p" ] || ln -s "$_shared/$_n" "$_p" || return 1
     fi
   done
-}
+)
 
 # Relative to agy's ~/.gemini, including custom data dirs outside HOME. Both dirs must exist.
 agyx_app_arg() {

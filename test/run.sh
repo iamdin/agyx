@@ -200,12 +200,9 @@ for private in antigravity-oauth-token settings.json jetski_state.pbtxt jetbox_s
   eq "not-shared-$private" no "$([ -e "$app/$private" ] && echo yes || echo no)"
 done
 printf newly-created > "$app/future-entry"
-printf collision-shared > "$shared/collision"
-printf collision-profile > "$app/collision"
 launch >/dev/null
 eq adopted newly-created "$(cat "$shared/future-entry")"
 eq adoption-link "$shared/future-entry" "$(readlink "$app/future-entry")"
-eq drift-kept collision-profile "$(cat "$app/collision")"
 rm "$app/conversation_summaries.db"
 printf replaced-db > "$app/conversation_summaries.db"
 eq doctor-replaced-db-drift 1 "$(ax doctor 2>/dev/null | grep -c 'antigravity-cli conversation_summaries.db: DRIFT')"
@@ -294,6 +291,8 @@ eq duplicate-warning 1 "$(ax profile list | grep -c '^WARNING: profiles')"
 eq no-stale-login-email 1 "$(ax profile list | grep -c '^next .*logged in, email unknown')"
 eq stale-email 1 "$(ax profile list | grep -c '^personal .*not logged in')"
 # Doctor never reads token contents (deliberately not JSON), reports modes, drift and logs.
+printf collision-shared > "$shared/collision"
+printf collision-profile > "$app/collision"
 (umask 022; printf invalid-json > "$app/antigravity-oauth-token")
 ln -s "$shared/missing" "$app/broken"
 out=$(FAKE_KEYCHAIN_ITEM=1 ax doctor)
@@ -304,6 +303,147 @@ eq doctor-link 1 "$(printf '%s\n' "$out" | grep -c 'antigravity-cli broken: WARN
 eq doctor-keychain-info 1 "$(printf '%s\n' "$out" | grep -c '^keychain: INFO plain agy')"
 eq doctor-no-secret 0 "$(grep -Ec ' -[wg]( |$)' "$SECLOG")"
 eq doctor-no-token-content 0 "$(printf '%s\n' "$out" | grep -c invalid-json)"
+rm "$app/collision"
+# Fresh profiles share every known entry before either fake native process writes.
+fr=$T/shared-repair frhome=$T/shared-repair/home frdata=$T/shared-repair/data
+mkdir -p "$frhome" "$frdata/profiles/one/antigravity-cli" "$frdata/profiles/two/antigravity-cli"
+fresh_run() { env HOME="$frhome" AGYX_DATA_DIR="$frdata" AGYX_TRASH_DIR="$fr/trash" "$@"; }
+one=$frdata/profiles/one/antigravity-cli two=$frdata/profiles/two/antigravity-cli fs=$frhome/.gemini/antigravity-cli
+fresh_run FAKE_RUN='[ -L "$FAKE_APP/conversations" ] && printf first > "$FAKE_APP/conversations/first"' "$here/bin/agy" --profile one >/dev/null
+eq first-profile-linked-before-write first "$(cat "$fs/conversations/first")"
+fresh_run FAKE_RUN='[ -f "$FAKE_APP/conversations/first" ] && printf second > "$FAKE_APP/conversations/second"' "$here/bin/agy" --profile two >/dev/null
+eq second-profile-shares-from-first-launch second "$(cat "$one/conversations/second")"
+for e in $(. "$here/runtime/sync.sh"; agyx_shared_entries dirs; agyx_shared_entries files); do
+  eq "fresh-both-$e" yes "$([ "$one/$e" -ef "$two/$e" ] && [ -L "$one/$e" ] && [ -L "$two/$e" ] && echo yes)"
+done
+eq fresh-history-empty 0 "$(wc -c < "$fs/history.jsonl" | tr -d ' ')"
+eq fresh-id-valid 1 "$(grep -Ec '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$' "$fs/installation_id")"
+for e in antigravity-oauth-token settings.json jetski_state.pbtxt jetbox_summaries_proto.pb; do
+  (umask 077; printf dummy-private > "$one/$e")
+done
+private_stat=$(stat -f '%i:%p:%m:%z' "$one/antigravity-oauth-token" "$one/settings.json" "$one/jetski_state.pbtxt" "$one/jetbox_summaries_proto.pb")
+# Build real drift with recursive, hidden, spaced and differently-typed conflicts.
+rm "$one/conversations" "$one/brain" "$one/history.jsonl" "$one/conversation_summaries.db" "$one/installation_id"
+mkdir -p "$one/conversations/nested" "$fs/conversations/nested" "$one/brain" "$one/conversations/type-clash"
+printf profile-newer > "$one/conversations/nested/newer file"
+printf shared-older > "$fs/conversations/nested/newer file"
+printf profile-older > "$one/conversations/nested/older"
+printf shared-newer > "$fs/conversations/nested/older"
+printf shared-type > "$fs/conversations/type-clash"
+printf hidden > "$one/conversations/.hidden"
+printf profile-only > "$one/conversations/only"
+ln -s "$fr/outside-target" "$one/conversations/dangling-link"
+printf shared-tie > "$fs/conversations/tie"
+printf profile-tie > "$one/conversations/tie"
+touch -t 202001010000 "$fs/conversations/nested/newer file" "$one/conversations/nested/older"
+touch -t 202101010000 "$one/conversations/nested/newer file" "$fs/conversations/nested/older"
+touch -t 202201010000 "$one/conversations/type-clash"
+touch -t 202001010000 "$fs/conversations/type-clash" "$fs/conversations/tie" "$one/conversations/tie"
+printf 'common\nshared-last' > "$fs/history.jsonl"
+printf 'common\nprofile-only\nprofile-only\n' > "$one/history.jsonl"
+printf shared-db > "$fs/conversation_summaries.db"
+printf profile-db > "$one/conversation_summaries.db"
+printf profile-wal > "$one/conversation_summaries.db-wal"
+printf shared-id > "$fs/installation_id"
+printf profile-id > "$one/installation_id"
+printf 'n\n' > "$fr/no"; printf 'y\n' > "$fr/yes"
+err drift-no-tty fresh_run "$here/bin/agy" --profile one
+eq drift-no-tty-kept profile-only "$(cat "$one/conversations/only")"
+eq drift-no-tty-no-trash no "$([ -e "$fr/trash" ] && echo yes || echo no)"
+eq drift-doctor-still-reports 1 "$(fresh_run "$here/bin/agyx" doctor 2>/dev/null | grep -c 'antigravity-cli conversations: DRIFT')"
+eq drift-doctor-no-repair profile-only "$(cat "$one/conversations/only")"
+err drift-declined fresh_run AGYX_TTY="$fr/no" "$here/bin/agy" --profile one
+eq drift-declined-kept profile-db "$(cat "$one/conversation_summaries.db")"
+# A running native writer prevents repair even when consent is supplied.
+cat > "$fr/writer with spaces" <<'EOF'
+#!/bin/sh
+sleep 10 & child=$!
+trap 'kill "$child"; wait "$child" 2>/dev/null; exit' TERM
+exec 9< "$2"
+: > "$1"
+wait "$child"
+EOF
+chmod +x "$fr/writer with spaces"
+"$fr/writer with spaces" "$fr/ready" "$fs/conversation_summaries.db" & writer=$!
+i=0; while [ ! -f "$fr/ready" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+err drift-busy fresh_run AGYX_REAL_AGY="$fr/writer with spaces" AGYX_ASSUME_YES=1 "$here/bin/agy" --profile one
+eq drift-busy-diagnostic 1 "$(grep -c 'close agy before shared repair' "$T/err")"
+kill "$writer"; wait "$writer" 2>/dev/null
+eq drift-busy-kept profile-db "$(cat "$one/conversation_summaries.db")"
+fresh_run AGYX_TTY="$fr/yes" "$here/bin/agy" --profile two > "$fr/out" 2> "$fr/err"; rc=$?
+eq drift-repair-success 0 "$rc"
+eq drift-one-prompt 1 "$(grep -c 'Continue?' "$fr/err")"
+trash=$(find "$fr/trash" -type d -name 'agyx-shared-repair-*')
+eq repair-profile-newer profile-newer "$(cat "$fs/conversations/nested/newer file")"
+eq repair-shared-older-trashed shared-older "$(cat "$trash/one/conversations/nested/newer file")"
+eq repair-shared-newer shared-newer "$(cat "$fs/conversations/nested/older")"
+eq repair-profile-older-trashed profile-older "$(cat "$trash/one/conversations/nested/older")"
+eq repair-tie-shared shared-tie "$(cat "$fs/conversations/tie")"
+eq repair-tie-profile-trashed profile-tie "$(cat "$trash/one/conversations/tie")"
+eq repair-type-newer directory "$([ -d "$fs/conversations/type-clash" ] && echo directory)"
+eq repair-type-loser-trashed shared-type "$(cat "$trash/one/conversations/type-clash")"
+eq repair-hidden hidden "$(cat "$fs/conversations/.hidden")"
+eq repair-unique profile-only "$(cat "$fs/conversations/only")"
+eq repair-nested-link-not-followed "$fr/outside-target" "$(readlink "$fs/conversations/dangling-link")"
+eq repair-nested-link-target-untouched no "$([ -e "$fr/outside-target" ] && echo yes || echo no)"
+eq repair-history 'common shared-last profile-only ' "$(tr '\n' ' ' < "$fs/history.jsonl")"
+eq repair-history-original 'common profile-only profile-only ' "$(tr '\n' ' ' < "$trash/one/history.jsonl")"
+eq repair-db-shared-kept shared-db "$(cat "$fs/conversation_summaries.db")"
+eq repair-db-trashed profile-db "$(cat "$trash/one/conversation_summaries.db")"
+eq repair-db-wal-trashed profile-wal "$(cat "$trash/one/conversation_summaries.db-wal")"
+eq repair-id-shared-kept shared-id "$(cat "$fs/installation_id")"
+eq repair-id-trashed profile-id "$(cat "$trash/one/installation_id")"
+eq repair-private-stat-unchanged "$private_stat" "$(stat -f '%i:%p:%m:%z' "$one/antigravity-oauth-token" "$one/settings.json" "$one/jetski_state.pbtxt" "$one/jetbox_summaries_proto.pb")"
+for e in conversations brain history.jsonl conversation_summaries.db installation_id; do
+  eq "repair-link-$e" "$fs/$e" "$(readlink "$one/$e")"
+done
+fresh_run "$here/bin/agy" --profile one >/dev/null 2> "$fr/err"
+eq repair-idempotent '' "$(cat "$fr/err")"
+eq repair-idempotent-history 3 "$(wc -l < "$fs/history.jsonl" | tr -d ' ')"
+eq repair-idempotent-trash-count 1 "$(find "$fr/trash" -type d -name 'agyx-shared-repair-*' | wc -l | tr -d ' ')"
+eq repair-doctor-clean 0 "$(fresh_run "$here/bin/agyx" doctor 2>/dev/null | grep -c DRIFT)"
+# Empty shared history and two unadopted copies also repair without duplicate lines.
+rm "$two/history.jsonl"
+printf 'only-line\nonly-line\n' > "$two/history.jsonl"
+: > "$fs/history.jsonl"
+mkdir "$one/future-shared" "$two/future-shared"
+printf one > "$one/future-shared/one"
+printf two > "$two/future-shared/two"
+fresh_run AGYX_ASSUME_YES=1 "$here/bin/agy" --profile two >/dev/null 2> "$fr/err"; rc=$?
+eq repair-assume-yes 0 "$rc"
+eq repair-assume-no-prompt 0 "$(grep -c 'Continue?' "$fr/err")"
+eq repair-empty-shared-history only-line "$(cat "$fs/history.jsonl")"
+eq repair-unadopted-pair one,two "$(cat "$fs/future-shared/one"),$(cat "$fs/future-shared/two")"
+eq repair-unadopted-links yes "$([ -L "$one/future-shared" ] && [ "$one/future-shared" -ef "$two/future-shared" ] && echo yes)"
+# Adopt an older profile's sole known entry before creating an empty shared target.
+rm "$one/brain" "$two/brain"; rmdir "$fs/brain"
+mkdir "$one/brain"; printf prior > "$one/brain/prior"
+fresh_run AGYX_ASSUME_YES=1 "$here/bin/agy" --profile two >/dev/null 2> "$fr/err"
+eq seed-preserves-older-profile prior "$(cat "$fs/brain/prior")"
+eq seed-links-older-profile "$fs/brain" "$(readlink "$one/brain")"
+# Adopting an old DB keeps its WAL together and never overwrites an orphan shared WAL.
+rm "$one/conversation_summaries.db" "$two/conversation_summaries.db" "$fs/conversation_summaries.db"
+printf adopted-db > "$one/conversation_summaries.db"
+printf adopted-wal > "$one/conversation_summaries.db-wal"
+printf orphan-wal > "$fs/conversation_summaries.db-wal"
+err repair-orphan-sidecar fresh_run AGYX_ASSUME_YES=1 "$here/bin/agy" --profile two
+eq repair-orphan-source-intact adopted-db "$(cat "$one/conversation_summaries.db")"
+eq repair-orphan-target-intact orphan-wal "$(cat "$fs/conversation_summaries.db-wal")"
+rm "$fs/conversation_summaries.db-wal"
+fresh_run AGYX_ASSUME_YES=1 "$here/bin/agy" --profile two >/dev/null 2> "$fr/err"; rc=$?
+eq repair-adopt-db 0 "$rc"
+eq repair-adopt-db-value adopted-db "$(cat "$fs/conversation_summaries.db")"
+eq repair-adopt-db-wal adopted-wal "$(cat "$fs/conversation_summaries.db-wal")"
+eq repair-adopt-db-link "$fs/conversation_summaries.db" "$(readlink "$one/conversation_summaries.db")"
+rm "$fs/conversation_summaries.db"
+err seed-orphan-sidecar fresh_run "$here/bin/agy" --profile two
+eq seed-orphan-sidecar-preserved adopted-wal "$(cat "$fs/conversation_summaries.db-wal")"
+eq seed-orphan-no-fake-db no "$([ -e "$fs/conversation_summaries.db" ] && echo yes || echo no)"
+printf adopted-db > "$fs/conversation_summaries.db"
+# Concurrent preparers cannot mutate a repair in progress.
+mkdir "$frhome/.gemini/.agyx-shared-prepare-lock"
+err prepare-lock-busy fresh_run "$here/bin/agy" --profile one
+rmdir "$frhome/.gemini/.agyx-shared-prepare-lock"
 # First-run gate: read-only commands and refusal leave disk alone.
 fresh=$T/fresh
 for command in '--help' '--version' 'profile list' 'profile default' doctor; do
