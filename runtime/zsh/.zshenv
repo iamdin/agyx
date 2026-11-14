@@ -1,5 +1,5 @@
-# agyx bridge: restore the real environment, then load the user's own .zshenv.
-[ -n "${AGYX_REAL_HOME-}" ] && { HOME=$AGYX_REAL_HOME; export HOME; }
+# agyx bridge: remove our file-storage detector, then load the user's own .zshenv.
+if [ "${AGYX_ORIG_WSL_SET-}" = 1 ]; then WSL_DISTRO_NAME=$AGYX_ORIG_WSL; export WSL_DISTRO_NAME; else unset WSL_DISTRO_NAME; fi
 if [ "${AGYX_ORIG_ZDOTDIR_SET-}" = 1 ]; then ZDOTDIR=$AGYX_ORIG_ZDOTDIR; export ZDOTDIR; else unset ZDOTDIR; fi
 if [ "${AGYX_ORIG_BASH_ENV_SET-}" = 1 ]; then BASH_ENV=$AGYX_ORIG_BASH_ENV; export BASH_ENV; else unset BASH_ENV; fi
 if [ -r "${ZDOTDIR:-$HOME}/.zshenv" ]; then . "${ZDOTDIR:-$HOME}/.zshenv"; fi

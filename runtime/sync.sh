@@ -1,226 +1,80 @@
 # shellcheck shell=sh
-# shellcheck disable=SC2154,SC2034 # R, P and data are set by the sourcing script; AGYX_* are read by the callers
-# Sourced by bin/agy (sync on every launch) and bin/agyx (doctor, setup).
-# R = real home, P = profile home, data = agyx data dir; all set by the caller.
-# The sync functions use only shell builtins when everything is already correct (no forks);
-# they never write to stdout (warnings go to stderr).
-
+# shellcheck disable=SC2154,SC2034 # R, P, data and AGYX_SHIM are set by callers
+# R = real HOME; P = profile app directory. Never read or copy a token.
 AGYX_VERSION=0.1.3 # the one place the version lives (the formula's url tag must match)
-AGYX_DEFAULT_LINKS=".gitconfig .ssh .config .npm .npmrc .bun .bunfig.toml .cache .cargo .rustup go Code GitHub"
 
-# ---- the shared ~/.gemini ----
-# <profile home>/.gemini is one symlink to the real ~/.gemini: everything agy keeps there is shared.
-# The only private data of a profile is its keychain (home/Library/Keychains) and its "email" file.
-
-# The token-file blocker. agy reads its login from the keychain and falls back to
-# .gemini/antigravity-cli/antigravity-oauth-token, a file it writes when saving to the keychain fails.
-# With a shared .gemini that file would be shared by every account, so agyx keeps a DIRECTORY at that
-# path. This is an assumption about agy that is verified separately; it lives only in the next
-# three functions.
-agyx_blocker_state() { # sets AGYX_BLOCKER and AGYX_BLOCKER_STATE: ok | missing | blocking
-  AGYX_BLOCKER=$R/.gemini/antigravity-cli/antigravity-oauth-token
-  if [ -d "$AGYX_BLOCKER" ] && [ ! -L "$AGYX_BLOCKER" ]; then AGYX_BLOCKER_STATE=ok
-  elif [ -e "$AGYX_BLOCKER" ] || [ -L "$AGYX_BLOCKER" ]; then AGYX_BLOCKER_STATE=blocking
-  else AGYX_BLOCKER_STATE=missing; fi
-}
-
-agyx_make_blocker() {
-  (umask 077; mkdir -p "$AGYX_BLOCKER") &&
-    cat > "$AGYX_BLOCKER/README" 2>/dev/null <<'EOT'
-agyx keeps this directory here so the Antigravity CLI (agy) cannot write a token file at this path:
-all agyx profiles share this ~/.gemini, so such a file would be shared by every Google account.
-Logins live only in each profile's own keychain. Delete this directory only after uninstalling agyx.
-EOT
-}
-
-# Returns 0 when the blocker is in place (creating it when missing). When something that is not a
-# directory sits at its path, prints what to do and returns 1; that file is never read, moved or deleted.
-agyx_ensure_blocker() {
-  agyx_blocker_state
-  case $AGYX_BLOCKER_STATE in
-    ok) return 0 ;;
-    missing)
-      agyx_make_blocker || echo "agyx: warning: could not create $AGYX_BLOCKER" >&2
-      return 0 ;;
-  esac
-  # In a terminal a token file can be moved to the Trash on request (default No). It is never read.
-  if { [ -f "$AGYX_BLOCKER" ] || [ -L "$AGYX_BLOCKER" ]; } && { [ -n "${AGYX_TTY-}" ] || { [ -t 0 ] && [ -t 2 ]; }; }; then
-    {
-      echo "agyx: found a login token file at $(agyx_tilde "$AGYX_BLOCKER")"
-      echo "  It is probably plain agy's login. While it exists, every agyx profile could read it."
-      printf '  Move it to the Trash? Plain agy will ask you to sign in again. [y/N] '
-    } >&2
-    _ans=
-    read -r _ans < "${AGYX_TTY:-/dev/tty}" || [ -n "$_ans" ] || _ans=n
-    case $_ans in
-      [Yy]*)
-        _td=${AGYX_TRASH_DIR:-$R/.Trash}/agyx-token-$(date +%Y%m%d%H%M%S)
-        if (umask 077; mkdir -p "$_td") && mv "$AGYX_BLOCKER" "$_td/antigravity-oauth-token"; then
-          echo "agyx: moved the token file to $(agyx_tilde "$_td")" >&2
-          agyx_make_blocker || echo "agyx: warning: could not create $AGYX_BLOCKER" >&2
-          return 0
-        fi
-        echo "agyx: warning: could not move the token file" >&2 ;;
-      *) echo >&2 ;;
-    esac
-  fi
-  {
-    echo "agyx: not starting this profile: $(agyx_tilde "$AGYX_BLOCKER") exists and is not a directory."
-    echo "It is probably a Google login token (for example the plain agy saved its login to a file)."
-    echo "agyx shares ~/.gemini between all profiles, so every account could read that file."
-    echo "Move it away yourself (agyx never reads, moves or deletes it), for example:"
-    echo "  mv $(agyx_tilde "$AGYX_BLOCKER") ~/antigravity-oauth-token.saved"
-    echo "If it is the plain agy's login, plain agy will ask you to sign in again."
-  } >&2
+agyx_private() {
+  case $1 in antigravity-oauth-token|settings.json|jetski_state.pbtxt|jetbox_summaries_proto.pb) return 0 ;; esac
   return 1
 }
 
-# Move $1 into the Trash folder of this migration, keeping the relative path $2.
-agyx_trash() {
-  _td=$AGYX_TRASH/$2
-  (umask 077; mkdir -p "${_td%/*}") && mv "$1" "$_td" && _mtr=$((_mtr + 1))
-}
-
-# Merge the profile's real .gemini ($2) into the shared one ($1). Walk (parents first): missing on
-# the shared side -> mv; two directories -> go deeper; identical files -> drop the profile copy;
-# different files -> the newer one ends up in the shared tree and the other goes to the Trash; file
-# against directory -> the profile entry goes to the Trash. Symlinks are moved as they are, never
-# followed. Whatever is left afterwards goes to the Trash too. Names with a newline are not supported.
-# Uses only _m* variables.
-agyx_merge_dir() {
-  _mv=0
-  _mlist=$(find "$2" -mindepth 1 2>/dev/null)
-  while IFS= read -r _mp; do
-    [ -n "$_mp" ] || continue
-    [ -e "$_mp" ] || [ -L "$_mp" ] || continue # moved or dropped together with its parent
-    _mr=${_mp#"$2"/}
-    _md=$1/$_mr
-    if [ ! -e "$_md" ] && [ ! -L "$_md" ]; then
-      mv "$_mp" "$_md" && _mv=$((_mv + 1))
-    elif [ -L "$_mp" ]; then
-      agyx_trash "$_mp" "$_mr"
-    elif [ -d "$_mp" ]; then
-      [ -d "$_md" ] || agyx_trash "$_mp" "$_mr"
-    elif [ -f "$_mp" ]; then
-      if [ -d "$_md" ] || [ -L "$_md" ]; then
-        agyx_trash "$_mp" "$_mr"
-      elif cmp -s "$_mp" "$_md"; then
-        rm -f "$_mp"
-      elif [ "$_mp" -nt "$_md" ]; then
-        agyx_trash "$_md" "$_mr" && mv "$_mp" "$_md" && _mv=$((_mv + 1))
-      else
-        agyx_trash "$_mp" "$_mr"
-      fi
-    else
-      agyx_trash "$_mp" "$_mr" # sockets, fifos, ...
-    fi
-  done <<EOT
-$_mlist
-EOT
-  find "$2" -depth -mindepth 1 -type d -empty -exec rmdir {} + 2>/dev/null
-  for _mp in "$2"/* "$2"/.[!.]* "$2"/..?*; do
-    [ -e "$_mp" ] || [ -L "$_mp" ] || continue
-    agyx_trash "$_mp" "${_mp##*/}"
+# Link shared entries, then adopt new agy entries without overwriting either side.
+agyx_sync_app() {
+  _shared=$R/.gemini/antigravity-cli
+  (umask 077; mkdir -p "$P" "$_shared") || return 1
+  for _s in "$_shared"/* "$_shared"/.[!.]* "$_shared"/..?*; do
+    [ -e "$_s" ] || [ -L "$_s" ] || continue
+    _n=${_s##*/}
+    agyx_private "$_n" && continue
+    [ -e "$P/$_n" ] || [ -L "$P/$_n" ] || ln -s "$_s" "$P/$_n" || return 1
   done
-  rmdir "$2"
-}
-
-# Needs the keychain check from bin/agyx/bin/agy: agyx_kc_has_item NAME (see below).
-# One-time migration of profile $1 from the per-entry layout (a real .gemini directory).
-agyx_migrate_gemini() {
-  _pn=$1 _g=$P/.gemini _gs=$R/.gemini
-  AGYX_TRASH=${AGYX_TRASH_DIR:-$R/.Trash}/agyx-$_pn-$(date +%Y%m%d%H%M%S)
-  _mtr=0 _mlk=0
-  # 0. keep the account email (from the profile's own token file or log) before anything moves
-  if [ ! -s "${P%/*}/email" ]; then
-    _e=$(agyx_email_token "$_g/antigravity-cli/antigravity-oauth-token")
-    [ -n "$_e" ] || _e=$(agyx_email_log "$_g/antigravity-cli/log")
-    [ -z "$_e" ] || printf '%s\n' "$_e" > "${P%/*}/email"
-  fi
-  # 1. symlinks into the shared tree (the old per-entry links) are removed
-  _ml=$(find "$_g" -type l 2>/dev/null)
-  while IFS= read -r _lp; do
-    [ -n "$_lp" ] || continue
-    case $(readlink "$_lp") in "$_gs"/*) rm -f "$_lp" && _mlk=$((_mlk + 1)) ;; esac
-  done <<EOT
-$_ml
-EOT
-  # 2. logs and per-profile leftovers that have no value once shared, and SQLite sidecars
-  for _x in log cli.log jetbox_summaries_proto.pb; do
-    [ -e "$_g/antigravity-cli/$_x" ] || [ -L "$_g/antigravity-cli/$_x" ] && agyx_trash "$_g/antigravity-cli/$_x" "antigravity-cli/$_x"
-  done
-  _ml=$(find "$_g" ! -type d \( -name '*-wal' -o -name '*-shm' -o -name '*-journal' \) 2>/dev/null)
-  while IFS= read -r _lp; do
-    [ -n "$_lp" ] || continue
-    agyx_trash "$_lp" "${_lp#"$_g"/}"
-  done <<EOT
-$_ml
-EOT
-  # 3. the profile's fallback login token file
-  _tk=$_g/antigravity-cli/antigravity-oauth-token
-  if [ -f "$_tk" ] || [ -L "$_tk" ]; then
-    agyx_trash "$_tk" antigravity-cli/antigravity-oauth-token
-    if agyx_kc_has_item "$_pn"; then
-      echo "agyx: profile $_pn: its login token file was moved to the Trash ($(agyx_tilde "$AGYX_TRASH")). Its keychain holds a login, so nothing else is needed." >&2
-    else
-      echo "agyx: profile $_pn: its login token file was moved to the Trash ($(agyx_tilde "$AGYX_TRASH")), and its keychain holds no login: run 'agyx profile login $_pn' again if agy asks you to sign in." >&2
+  for _p in "$P"/* "$P"/.[!.]* "$P"/..?*; do
+    [ -e "$_p" ] || [ -L "$_p" ] || continue
+    _n=${_p##*/}
+    if agyx_private "$_n"; then
+      [ ! -L "$_p" ] && [ -f "$_p" ] || {
+        echo "agyx: private entry $_p must be a regular file, not a link or directory" >&2
+        return 1
+      }
+    elif [ ! -L "$_p" ] && [ ! -e "$_shared/$_n" ] && [ ! -L "$_shared/$_n" ]; then
+      mv -n "$_p" "$_shared/" || return 1
+      # Another launch may have adopted the same name; leave this copy as drift.
+      [ -e "$_p" ] || ln -s "$_shared/$_n" "$_p" || return 1
     fi
-  fi
-  # 4. everything else is merged into the shared tree, 5. the empty tree is removed
-  agyx_merge_dir "$_gs" "$_g" || return 1
-  # 6. one summary line
-  echo "agyx: profile $_pn: its .gemini was merged into the shared $(agyx_tilde "$_gs"): $_mv entries moved, $_mlk old links removed, $_mtr items to the Trash$([ "$_mtr" -eq 0 ] || printf ' (%s)' "$(agyx_tilde "$AGYX_TRASH")")" >&2
+  done
 }
 
-# Make <profile home>/.gemini the single link to the shared tree. Steady state: one test, no forks.
-agyx_sync_gemini() { # $1 = profile name
-  if [ -L "$P/.gemini" ]; then
-    [ "$P/.gemini" -ef "$R/.gemini" ] && return 0
-    rm -f "$P/.gemini" && ln -s "$R/.gemini" "$P/.gemini"
-  elif [ -d "$P/.gemini" ]; then
-    agyx_migrate_gemini "$1" && ln -s "$R/.gemini" "$P/.gemini"
-  elif [ -e "$P/.gemini" ]; then
-    echo "agyx: warning: $P/.gemini is not a directory or a link; left untouched" >&2
-  else
-    ln -s "$R/.gemini" "$P/.gemini"
-  fi
+# Relative to agy's ~/.gemini, including custom data dirs outside HOME. Both dirs must exist.
+agyx_app_arg() {
+  _from=$(cd "$R/.gemini" && pwd -P) || return 1
+  _to=$(cd "$P" && pwd -P) || return 1
+  _up=
+  while :; do
+    case $_to in "$_from"/*) break ;; esac
+    [ "$_from" != / ] || { _from=; break; }
+    _from=${_from%/*}; [ -n "$_from" ] || _from=/
+    _up=../$_up
+  done
+  AGYX_APP_ARG=$_up${_to#"$_from"/}
 }
 
-# Account email helpers (they print the email or nothing). Only id_token_email of the token file is
-# ever read from it, never the access or refresh token.
-agyx_email_token() { # file
-  [ -f "$1" ] || return 0
-  _et=$(plutil -extract id_token_email raw -o - "$1" 2>/dev/null | tr -d '[:cntrl:]')
-  case $_et in ''|*[[:space:]]*) ;; *) printf '%s' "$_et" ;; esac
+agyx_report() {
+  _shared=$R/.gemini/antigravity-cli
+  for _p in "$P"/* "$P"/.[!.]* "$P"/..?*; do
+    [ -e "$_p" ] || [ -L "$_p" ] || continue
+    _n=${_p##*/}
+    if agyx_private "$_n"; then
+      [ ! -L "$_p" ] && [ -f "$_p" ] || echo "  app $_n: WARNING private entry is not a regular file"
+    elif [ -L "$_p" ] && [ "$(readlink "$_p")" = "$_shared/$_n" ] && [ -e "$_p" ]; then
+      echo "  app $_n: linked"
+    elif [ -L "$_p" ]; then echo "  app $_n: WARNING broken or unexpected link"
+    elif [ -e "$_shared/$_n" ] || [ -L "$_shared/$_n" ]; then echo "  app $_n: DRIFT (present on both sides; left untouched)"
+    else echo "  app $_n: local (adopted on next launch)"; fi
+  done
+  for _s in "$_shared"/* "$_shared"/.[!.]* "$_shared"/..?*; do
+    [ -e "$_s" ] || [ -L "$_s" ] || continue
+    _n=${_s##*/}; agyx_private "$_n" && continue
+    [ -e "$P/$_n" ] || [ -L "$P/$_n" ] || echo "  app $_n: missing link (linked on next launch)"
+  done
 }
-agyx_email_file() { # log file: last email= on an applyAuthResult line
+
+# Email comes only from this login's log, never from its token or another profile's logs.
+agyx_email_file() {
   [ -f "$1" ] || return 0
   _el=$(grep applyAuthResult "$1" 2>/dev/null | sed -n 's/.*email=\([^][ ,;"}()]*\).*/\1/p' | tail -n 1 | tr -d '[:cntrl:]')
   case $_el in *[[:space:]]*) ;; *) printf '%s' "$_el" ;; esac
 }
-agyx_email_log() { # log dir: the same for its newest file
-  _lf=$(ls -t "$1" 2>/dev/null | head -n 1)
-  [ -n "$_lf" ] && agyx_email_file "$1/$_lf"
-  return 0
-}
 
-# Does profile $1's keychain hold agy's login item? Never asks for the secret (no -w / -g).
-agyx_kc_has_item() {
-  _kc=$data/profiles/$1/home/Library/Keychains/login.keychain-db
-  [ -e "$_kc" ] || return 1
-  HOME=$data/profiles/$1/home "$sec" find-generic-password -s gemini -a antigravity "$_kc" >/dev/null 2>&1
-}
-
-# Names that may be linked: a single path component, not handled elsewhere.
-agyx_valid_link() {
-  case $1 in
-    ''|.|..|*/*|.gemini|Library|.local) return 1 ;;
-  esac
-  return 0
-}
-
-# Whitelist file: ${XDG_CONFIG_HOME:-$R/.config}/agyx/symlinks. XDG_CONFIG_HOME counts only when it is an
-# absolute path; the default is resolved from the real home R, never from a profile home.
 agyx_set_links_file() {
   case ${XDG_CONFIG_HOME-} in
     /*) AGYX_LINKS_FILE=$XDG_CONFIG_HOME/agyx/symlinks ;;
@@ -228,61 +82,60 @@ agyx_set_links_file() {
   esac
 }
 
-# Call "$1 name" for each whitelist name (from that file, else the built-in default).
-# Comments, blanks and surrounding whitespace are ignored; invalid names are passed on as-is
-# to the callback, which decides what to do (skip with a warning, report, ...).
-agyx_each_link() {
+# Only remove the exact blocker created by 0.1.3, never plain agy's file or an unknown directory.
+agyx_remove_blocker() {
+  _block=$R/.gemini/antigravity-cli/antigravity-oauth-token
+  [ -d "$_block" ] && [ ! -L "$_block" ] && [ "$(ls -A "$_block")" = README ] && [ ! -L "$_block/README" ] || return 0
+  if printf '%s\n' \
+    'agyx keeps this directory here so the Antigravity CLI (agy) cannot write a token file at this path:' \
+    'all agyx profiles share this ~/.gemini, so such a file would be shared by every Google account.' \
+    "Logins live only in each profile's own keychain. Delete this directory only after uninstalling agyx." | cmp -s - "$_block/README"; then
+    rm "$_block/README" && rmdir "$_block" || return 1
+  fi
+}
+
+agyx_delete_old_keychain() {
+  _home=$1/home
+  _kc=$_home/Library/Keychains/login.keychain-db
+  [ -e "$_kc" ] || return 0
+  [ ! -L "$_home" ] && [ ! -L "$_home/Library" ] && [ ! -L "$_home/Library/Keychains" ] && [ ! -L "$_kc" ] || die "unsafe legacy keychain path: $_kc"
+  HOME=$_home "${AGYX_SECURITY:-/usr/bin/security}" delete-keychain "$_kc" >/dev/null 2>&1 || die "cannot delete old profile keychain: $_kc; migration stopped"
+}
+
+agyx_migrate() {
+  _old=
+  for _d in "$data"/profiles/*; do
+    [ -d "$_d/home" ] || continue
+    [ ! -L "$_d" ] && [ ! -L "$_d/home" ] || die "unsafe legacy profile: $_d"
+    _old=1
+  done
+  [ -n "$_old" ] || return 0
+  if [ "${AGYX_ASSUME_YES-}" != 1 ]; then
+    [ -n "${AGYX_TTY-}" ] || { [ -t 0 ] && [ -t 2 ]; } || die "old profiles need migration; run once in a terminal (or set AGYX_ASSUME_YES=1); nothing changed"
+    {
+      echo "agyx will migrate all old profiles to real HOME and private file logins."
+      echo "Each profile must sign in again. Old profile keychains will be deleted; home/ goes to the Trash."
+      echo "Email and logs stay; the old whitelist and agyx token blocker are removed."
+      printf 'Continue? [Y/n] '
+    } >&2
+    _ans=
+    read -r _ans < "${AGYX_TTY:-/dev/tty}" || [ -n "$_ans" ] || _ans=n
+    case $_ans in ''|[Yy]*) ;; *) die "migration cancelled; nothing changed" ;; esac
+  fi
+  (umask 077; mkdir -p "${AGYX_TRASH_DIR:-$R/.Trash}") || die "cannot create Trash directory"
+  # Delete before moving, with the old HOME and explicit keychain path only.
+  for _d in "$data"/profiles/*; do
+    [ -d "$_d/home" ] || continue
+    agyx_delete_old_keychain "$_d"
+    _trash=$(mktemp -d "${AGYX_TRASH_DIR:-$R/.Trash}/agyx-${_d##*/}-$(date +%Y%m%d%H%M%S)-XXXXXX") || die "cannot create migration Trash directory"
+    mv "$_d/home" "$_trash/home" || die "cannot move old profile home to the Trash"
+    (umask 077; mkdir -p "$_d/app") || die "cannot create profile app directory"
+    echo "agyx: profile ${_d##*/}: old home moved to $_trash; sign in again with agyx profile login ${_d##*/}" >&2
+  done
+  agyx_remove_blocker || die "cannot remove old token blocker"
   agyx_set_links_file
-  if [ -f "$AGYX_LINKS_FILE" ]; then
-    while IFS= read -r _l || [ -n "$_l" ]; do
-      _l=${_l#"${_l%%[![:space:]]*}"}
-      _l=${_l%"${_l##*[![:space:]]}"}
-      case $_l in ''|'#'*) continue ;; esac
-      "$1" "$_l"
-    done < "$AGYX_LINKS_FILE"
-  else
-    for _l in $AGYX_DEFAULT_LINKS; do "$1" "$_l"; done
-  fi
+  [ ! -f "$AGYX_LINKS_FILE" ] || rm "$AGYX_LINKS_FILE" || die "cannot remove old whitelist"
 }
-
-agyx_link_one() {
-  if ! agyx_valid_link "$1"; then
-    echo "agyx: warning: symlinks: skipping invalid name '$1'" >&2
-    return 0
-  fi
-  if [ -L "$P/$1" ]; then
-    if [ -e "$P/$1" ]; then return 0; fi # live link (to R/<name> or elsewhere): nothing to do
-    # dangling: remove it only if it pointed at the real home entry that is now gone
-    [ -e "$R/$1" ] || [ "$(readlink "$P/$1")" != "$R/$1" ] || rm -f "$P/$1"
-  elif [ ! -e "$P/$1" ] && [ -e "$R/$1" ]; then
-    ln -s "$R/$1" "$P/$1"
-  fi
-  return 0
-}
-
-agyx_sync_home() { agyx_each_link agyx_link_one; }
-
-# ---- doctor helpers (forks are fine here) ----
-
-agyx_report_link() {
-  agyx_valid_link "$1" || { echo "  symlinks $1: invalid name (skipped)"; return 0; }
-  if [ -L "$P/$1" ] && [ "$P/$1" -ef "$R/$1" ] && [ -e "$R/$1" ]; then echo "  symlinks $1: linked"
-  elif [ ! -e "$R/$1" ] && [ ! -L "$P/$1" ]; then echo "  symlinks $1: missing in the real home"
-  elif [ ! -e "$P/$1" ] && [ ! -L "$P/$1" ]; then echo "  symlinks $1: not linked yet (linked on next launch)"
-  elif [ -L "$P/$1" ] && [ ! -e "$P/$1" ] && [ ! -e "$R/$1" ] && [ "$(readlink "$P/$1")" = "$R/$1" ]; then echo "  symlinks $1: dangling link (removed on next launch)"
-  else echo "  symlinks $1: CONFLICT (not a link to $R/$1; left untouched)"; fi
-}
-
-agyx_report() {
-  if [ -L "$P/.gemini" ] && [ "$P/.gemini" -ef "$R/.gemini" ]; then echo "  .gemini: linked to the shared $(agyx_tilde "$R/.gemini")"
-  elif [ -d "$P/.gemini" ] && [ ! -L "$P/.gemini" ]; then echo "  .gemini: real directory, will be migrated into the shared one on next launch"
-  elif [ ! -e "$P/.gemini" ] && [ ! -L "$P/.gemini" ]; then echo "  .gemini: not linked yet (linked on next launch)"
-  else echo "  .gemini: not the link to the shared $(agyx_tilde "$R/.gemini") (fixed on next launch)"; fi
-  agyx_each_link agyx_report_link
-}
-
-# ---- automatic setup (there is no setup command) ----
-# Callers define die(); R, data and AGYX_SHIM (the packaged bin/agy) must be set.
 
 # Management subcommands of bin/agyx; they are also the reserved profile names (the only list).
 agyx_subcommand() {
@@ -343,6 +196,7 @@ agyx_find_real() {
   if [ -x "$real" ] && [ ! "$real" -ef "$AGYX_SHIM" ]; then return 0; fi
   agyx_scan_path || return 1
   real=$_found
+  [ "${1-}" != readonly ] || return 0
   (umask 077; mkdir -p "$data") && ln -sfn "$real" "$data/real-agy" ||
     echo "agyx: warning: could not store $data/real-agy; the search will repeat on the next run" >&2
   return 0
@@ -376,21 +230,6 @@ agyx_stable() {
       if [ -e "$_pre/opt/agyx/$_rest" ]; then AGYX_STABLE=$_pre/opt/agyx/$_rest; return 0; fi ;;
   esac
   AGYX_STABLE=$1
-}
-
-# The whitelist file, written with the default list when missing (one stderr line, never stdout).
-# If it cannot be written the built-in default list still applies.
-agyx_ensure_links_file() {
-  agyx_set_links_file
-  [ -e "$AGYX_LINKS_FILE" ] && return 0
-  if mkdir -p "${AGYX_LINKS_FILE%/*}" 2>/dev/null && {
-    echo "# Names in your real home that agyx links into every profile home (one per line, # = comment)."
-    echo "# Not allowed: ., .., names with a slash, .gemini, Library, .local."
-    printf '%s\n' $AGYX_DEFAULT_LINKS
-  } > "$AGYX_LINKS_FILE" 2>/dev/null; then
-    echo "agyx: wrote $AGYX_LINKS_FILE (edit it to change what profiles share)" >&2
-  fi
-  return 0
 }
 
 agyx_tilde() { # print $1 with the real home shown as ~ (paths outside it stay absolute)
@@ -434,13 +273,11 @@ agyx_gate() {
     if [ -z "${AGYX_TTY-}" ] && { [ ! -t 0 ] || [ ! -t 2 ]; }; then
       die "agyx is not set up yet. Run agyx once in a terminal to set it up (or set AGYX_ASSUME_YES=1)."
     fi
-    agyx_set_links_file
     {
       echo "agyx will set up:"
-      echo "  $(agyx_tilde "$data")/  profiles (one HOME and keychain per account), a link to agy at $(agyx_tilde "$_found")"
+      echo "  $(agyx_tilde "$data")/  profiles (private app settings and file login per account), a link to agy at $(agyx_tilde "$_found")"
       echo "  $(agyx_tilde "$data")/bin/agy  entry for apps that need a binary named agy"
-      echo "  $(agyx_tilde "$AGYX_LINKS_FILE")  home entries linked into every profile (editable)"
-      echo "Profiles share your ~/.gemini settings and history; your login keychain is not touched."
+      echo "Profiles use your real HOME and share conversations and history; your login keychain is not touched."
       printf 'Continue? [Y/n] '
     } >&2
     _ans=

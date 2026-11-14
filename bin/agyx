@@ -39,7 +39,7 @@ fi
 if [ "${1-}" = --version ]; then
   echo "agyx $AGYX_VERSION"
   # shellcheck disable=SC2154 # real and _found are set by agyx_find_real / agyx_scan_path
-  if [ -d "$data" ]; then agyx_find_real && _r=$real || _r=
+  if [ -d "$data" ]; then agyx_find_real readonly && _r=$real || _r=
   elif [ -n "${AGYX_REAL_AGY-}" ]; then _r=$AGYX_REAL_AGY
   else agyx_scan_path && _r=$_found || _r=; fi
   [ -n "$_r" ] && [ -x "$_r" ] && echo "agy $(AGY_CLI_DISABLE_AUTO_UPDATE=true "$_r" --version 2>&1 | head -n 1)"
@@ -49,63 +49,36 @@ fi
 # agy subcommand or flag, including -h/--help). umask is untouched so agy inherits the caller's.
 agyx_subcommand "${1-}" || exec "$shim" "$@"
 
-tok=home/.gemini/antigravity-cli/antigravity-oauth-token
+tok=app/antigravity-oauth-token
 sec=${AGYX_SECURITY:-/usr/bin/security}  # AGYX_SECURITY is only for tests
 # Nothing is written before the user agreed once (agyx_gate, for the commands that write); read-only
 # commands report "not set up yet". Once set up, missing pieces are repaired silently.
-repair() { agyx_ensure_entry; agyx_ensure_links_file; }
-[ -d "$data" ] && [ "${1-}" != uninstall ] && repair
+repair() { agyx_ensure_entry; }
+[ "${1-}" = uninstall ] || agyx_migrate
 notyet() { echo "agyx is not set up yet; run agyx once in a terminal to set it up (or set AGYX_ASSUME_YES=1)"; exit 0; }
 
 need() {
   valid "${1-}" || bad "invalid profile name: ${1-}"
   ! agyx_subcommand "$1" || bad "profile name is reserved: $1"
 }
-exists() { need "${1-}"; [ -d "$data/profiles/$1/home" ] || bad "no such profile: $1"; }
+exists() { need "${1-}"; [ -d "$data/profiles/$1/app" ] || bad "no such profile: $1"; }
 names() { for d in "$data"/profiles/*/; do [ -d "$d" ] && basename "$d"; done; }
 dflt() { [ -f "$data/default" ] && cat "$data/default"; }
-# Email of a profile: the one line in <profile>/email (written after a successful login); else the
-# id_token_email field of a token file in the profile's own (not yet migrated) .gemini; else empty.
+# Saved email only: never open the token, even for metadata.
 email_of() {
   e=
-  [ -f "$data/profiles/$1/email" ] && IFS= read -r e < "$data/profiles/$1/email"
-  case $e in ''|*[[:space:]]*)
-    e=
-    [ -L "$data/profiles/$1/home/.gemini" ] || e=$(agyx_email_token "$data/profiles/$1/$tok") ;;
-  esac
+  [ ! -f "$data/profiles/$1/email" ] || IFS= read -r e < "$data/profiles/$1/email"
+  case $e in *[[:space:]]*) e= ;; esac
   printf '%s' "$e"
 }
-# Does the profile keychain hold agy's login item? Never asks for the secret (no -w / -g).
-kc_has_item() { agyx_kc_has_item "$1"; }
-# Logged in = token file present or the profile keychain holds agy's login item.
-logged_in() { { [ ! -L "$data/profiles/$1/home/.gemini" ] && [ -f "$data/profiles/$1/$tok" ]; } || kc_has_item "$1"; }
-# The account email of a login that just finished: the last email= on an applyAuthResult line in the
-# shared agy log files modified after the marker file $1 was written (older files are ignored).
-login_email() {
-  ld=$rh/.gemini/antigravity-cli/log
-  le=
-  lfl=$(find "$ld" -type f -newer "$1" 2>/dev/null)
-  [ -n "$lfl" ] || return 0
-  # shellcheck disable=SC2086,SC2045 # log file names contain no spaces or globbing characters
-  for lf in $(ls -tr $lfl 2>/dev/null); do
-    lx=$(grep applyAuthResult "$lf" 2>/dev/null | sed -n 's/.*email=\([^][ ,;"}()]*\).*/\1/p' | tail -n 1 | tr -d '[:cntrl:]')
-    case $lx in ''|*[[:space:]]*) ;; *) le=$lx ;; esac
-  done
-  printf '%s' "$le"
-}
+logged_in() { [ -f "$data/profiles/$1/$tok" ] && [ ! -L "$data/profiles/$1/$tok" ]; }
 status() {
   if ! logged_in "$1"; then echo "not logged in"; return 0; fi
   e=$(email_of "$1")
   echo "${e:-logged in, email unknown}"
 }
-kcstate() {
-  kc=$data/profiles/$1/home/Library/Keychains/login.keychain-db
-  [ -e "$kc" ] || { echo "keychain missing (created on next launch)"; return 0; }
-  kd=$(HOME=$data/profiles/$1/home "$sec" default-keychain -d user 2>/dev/null | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//')
-  if [ "$kd" = "$kc" ]; then echo "keychain ok (default for this profile)"; else echo "keychain NOT the default for this profile (found: ${kd:-none})"; fi
-}
 dup_warning() {
-  for n in $(names); do e=$(email_of "$n"); [ -n "$e" ] && echo "$e $n"; done | awk '
+  for n in $(names); do logged_in "$n" || continue; e=$(email_of "$n"); [ -n "$e" ] && echo "$e $n"; done | awk '
     { c[$1]++; p[$1] = p[$1] " " $2 }
     END { for (e in c) if (c[e] > 1) print "WARNING: profiles" p[e] " are logged in to the same Google account (" e ")" }'
 }
@@ -121,29 +94,21 @@ case $cmd in
         [ $# -eq 1 ] || bad "profile login needs exactly one profile name"
         need "${1-}"
         agyx_gate; repair
-        (umask 077; mkdir -p "$data/profiles/$1/home") || die "cannot create profile"
+        [ ! -L "$data/profiles/$1" ] && [ ! -L "$data/profiles/$1/app" ] || die "profile must not be a symlink"
+        (umask 077; mkdir -p "$data/profiles/$1/app") || die "cannot create profile"
         if logged_in "$1"; then
           echo "agyx: profile '$1' is already logged in ($(status "$1")). Starting agy in it anyway; sign in again from there only if you want to change the account." >&2
         fi
-        # run agy as a child (not exec) to set the default afterwards; SIGINT reaches agy, not us
-        # the shim gives every launch its own log file in <profile>/log, so the email read
-        # afterwards comes from the files created since the marker, not from another instance;
-        # if agy wrote nothing there, fall back to the shared logs modified after the marker
-        mk=$data/profiles/$1/.login-start ld=$data/profiles/$1/log
-        : > "$mk"
+        agyx_new_log "$data/profiles/$1" || die "cannot create login log"
+        login_log=$AGYX_LOGFILE
         trap : INT
-        "$shim" --profile "$1"; rc=$?
+        "$shim" --profile "$1" --log-file "$login_log"; rc=$?
         trap - INT
         if logged_in "$1"; then
-          e=
-          lfl=$(find "$ld" -name 'cli-*.log' -newer "$mk" -size +0c 2>/dev/null)
-          if [ -n "$lfl" ]; then
-            # shellcheck disable=SC2086,SC2045 # our own log names contain no spaces
-            for lf in $(ls -tr $lfl); do lx=$(agyx_email_file "$lf"); [ -z "$lx" ] || e=$lx; done
-          else e=$(login_email "$mk"); fi
-          [ -z "$e" ] || printf '%s\n' "$e" > "$data/profiles/$1/email"
+          e=$(agyx_email_file "$login_log")
+          if [ -n "$e" ]; then printf '%s\n' "$e" > "$data/profiles/$1/email"
+          else rm -f "$data/profiles/$1/email"; fi
         fi
-        rm -f "$mk"
         if logged_in "$1" && [ -z "$(dflt)" ]; then
           printf '%s\n' "$1" > "$data/default" &&
             echo "agyx: '$1' is now the default profile (change it with: agyx profile default NAME)"
@@ -172,8 +137,7 @@ case $cmd in
     ;;
   uninstall)
     [ $# -eq 0 ] || bad "uninstall takes no arguments"
-    agyx_set_links_file; agyx_blocker_state
-    cfgdir=${AGYX_LINKS_FILE%/*}
+    agyx_set_links_file
     if [ "${AGYX_ASSUME_YES-}" != 1 ] && [ -z "${AGYX_TTY-}" ] && { [ ! -t 0 ] || [ ! -t 2 ]; }; then
       die "uninstall needs a terminal to ask (or set AGYX_ASSUME_YES=1); nothing was removed."
     fi
@@ -185,16 +149,15 @@ case $cmd in
       die "agy is still running (PIDs: ${pids% }). Close it first, then run agyx uninstall again; nothing was removed."
     fi
     pl=; for n in $(names); do pl="$pl${pl:+, }$n"; done
-    bl=0; [ "$AGYX_BLOCKER_STATE" = ok ] && [ "$(ls -A "$AGYX_BLOCKER")" = README ] && bl=1
     kind=other
     case $me in */Cellar/agyx/*) kind=brew ;; *) [ -e "${me%/*/*}/.git" ] && kind=checkout ;; esac
     plink=$rh/.local/bin/agyx
     if [ "$kind" = checkout ] && { [ ! -L "$plink" ] || [ ! "$plink" -ef "$me" ]; }; then plink=; fi
     {
       echo "agyx uninstall will remove:"
-      [ -d "$data" ] && echo "  $(agyx_tilde "$data")/   profiles ${pl:-none} (their keychains and logins are deleted)"
-      [ -d "$cfgdir" ] && echo "  $(agyx_tilde "$cfgdir")/   your symlinks list"
-      [ "$bl" = 1 ] && echo "  $(agyx_tilde "$AGYX_BLOCKER")/   the token-file blocker"
+      [ -d "$data" ] && echo "  $(agyx_tilde "$data")/   profiles ${pl:-none} (private app files, logins and logs; moved to Trash)"
+      [ ! -f "$AGYX_LINKS_FILE" ] || echo "  $(agyx_tilde "$AGYX_LINKS_FILE")   old whitelist (moved to Trash)"
+      echo "  Any old profile keychains are deleted; only agyx's exact token blocker is removed."
       case $kind in
         brew) echo "  agyx itself   (brew uninstall agyx)" ;;
         checkout) if [ -n "$plink" ]; then echo "  agyx itself   (the link $(agyx_tilde "$plink"))"; else echo "  agyx itself   (nothing: it runs from a checkout, which is left alone)"; fi ;;
@@ -209,18 +172,13 @@ case $cmd in
       read -r ans < "${AGYX_TTY:-/dev/tty}" || [ -n "$ans" ] || ans=n
       case $ans in [Yy]*) ;; *) echo >&2; die "nothing was removed." ;; esac
     fi
-    trash=${AGYX_TRASH_DIR:-$rh/.Trash}/agyx-uninstall-$(date +%Y%m%d%H%M%S)
-    (umask 077; mkdir -p "$trash") || die "cannot create $trash"
-    # delete every profile keychain first, so no login stays on disk
-    for n in $(names); do
-      kc=$data/profiles/$n/home/Library/Keychains/login.keychain-db
-      [ -e "$kc" ] || continue
-      HOME=$data/profiles/$n/home "$sec" delete-keychain "$kc" >/dev/null 2>&1 ||
-        echo "agyx: warning: could not delete the keychain of profile $n ($(agyx_tilde "$kc"))" >&2
-    done
+    (umask 077; mkdir -p "${AGYX_TRASH_DIR:-$rh/.Trash}") || die "cannot create Trash directory"
+    trash=$(mktemp -d "${AGYX_TRASH_DIR:-$rh/.Trash}/agyx-uninstall-$(date +%Y%m%d%H%M%S)-XXXXXX") || die "cannot create uninstall Trash directory"
+    # Legacy profiles can also be uninstalled without a separate migration prompt.
+    for n in $(names); do agyx_delete_old_keychain "$data/profiles/$n"; done
     [ ! -d "$data" ] || mv "$data" "$trash/data" || die "could not move $data to the Trash"
-    [ ! -d "$cfgdir" ] || mv "$cfgdir" "$trash/config" || die "could not move $cfgdir to the Trash"
-    if [ "$bl" = 1 ]; then rm -f "$AGYX_BLOCKER/README"; rmdir "$AGYX_BLOCKER"; fi
+    [ ! -f "$AGYX_LINKS_FILE" ] || mv "$AGYX_LINKS_FILE" "$trash/symlinks" || die "cannot move old whitelist to the Trash"
+    agyx_remove_blocker || die "cannot remove old token blocker"
     echo "agyx: removed. Moved to the Trash: $(agyx_tilde "$trash")"
     case $kind in
       brew)
@@ -237,7 +195,7 @@ case $cmd in
     echo "agyx version: $AGYX_VERSION"
     [ -d "$data" ] || notyet
     # shellcheck disable=SC2154 # real is set by agyx_find_real
-    if agyx_find_real; then
+    if agyx_find_real readonly; then
       echo "real agy: $(readlink "$real" 2>/dev/null || echo "$real")${AGYX_REAL_AGY:+ (from AGYX_REAL_AGY)}"
       echo "version: $(AGY_CLI_DISABLE_AUTO_UPDATE=true "$real" --version 2>&1 | head -n 1)"
     else
@@ -251,25 +209,23 @@ case $cmd in
     else
       echo "agy entry: $data/bin/agy is MISSING or not agyx's (it is the path to give apps that need a binary named agy)"
     fi
-    kd=$(HOME=$rh "$sec" default-keychain -d user 2>/dev/null | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//')
-    case $kd in
-      "$data"/*) echo "keychain: WARNING the real default keychain is inside the agyx data dir ($kd)" ;;
-      *) echo "keychain: real default keychain is ${kd:-unknown}, outside the agyx data dir" ;;
-    esac
-    agyx_blocker_state
-    case $AGYX_BLOCKER_STATE in
-      ok) echo "token blocker: ok ($(agyx_tilde "$AGYX_BLOCKER") is a directory)" ;;
-      missing) echo "token blocker: missing (created on next launch): $(agyx_tilde "$AGYX_BLOCKER")" ;;
-      *) echo "token blocker: BLOCKING: $(agyx_tilde "$AGYX_BLOCKER") is not a directory (a token file shared by every account); profiles will not start until you move it away" ;;
-    esac
+    echo "profile mode: real HOME; WSL_DISTRO_NAME=${WSL_DISTRO_NAME:-agyx}; --app_data_dir=<profile>/app (relative to ~/.gemini)"
+    if HOME=$rh "$sec" find-generic-password -s gemini -a antigravity >/dev/null 2>&1; then
+      echo "keychain: INFO plain agy has a login (gemini/antigravity); agyx does not use it"
+    fi
     d=$(dflt); echo "default: ${d:-none}"
-    if [ -f "$AGYX_LINKS_FILE" ]; then echo "symlinks: $AGYX_LINKS_FILE"; else echo "symlinks: $AGYX_LINKS_FILE (missing and could not be written: built-in default list in use)"; fi
     for n in $(names); do
       p=$data/profiles/$n
       t=$p/$tok
-      echo "profile $n: $(status "$n"), home $(ls -ld "$p/home" | cut -c1-10)$([ -f "$t" ] && echo ", token $(ls -l "$t" | cut -c1-10)"), $(kcstate "$n")"
-      # shellcheck disable=SC2034 # used by the functions in sync.sh
-      P=$p/home
+      echo "profile $n: $(status "$n")"
+      if [ -L "$t" ]; then echo "  token: WARNING symlink (profile will not start)"
+      elif [ -f "$t" ]; then
+        mode=$(stat -f %Lp "$t")
+        if [ "$mode" = 600 ]; then echo "  token: present, mode 0600"
+        else echo "  token: WARNING mode $mode (expected 0600)"; fi
+      else echo "  token: missing (sign in again)"; fi
+      # shellcheck disable=SC2034 # P is used by sync.sh
+      P=$p/app
       agyx_report
       nl=$(ls -t "$p"/log/*.log 2>/dev/null | head -n 1); nl=${nl##*/}
       echo "  logs: $(agyx_tilde "$p/log")/, newest: ${nl:-none yet}"
