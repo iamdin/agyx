@@ -119,7 +119,7 @@ err override-management-shim env AGYX_REAL_AGY="$T/alias/management" "$here/bin/
 err override-missing-no-fallback env AGYX_REAL_AGY="$T/missing-agy" "$here/bin/agy" --profile work
 eq doctor-new-entry 1 "$(ax doctor 2>/dev/null | grep -c "agy entry: $DD/agy (in place")"
 eq doctor-native-fallback 1 "$(AGYX_REAL_AGY='' ax doctor 2>/dev/null | grep -c "^real agy: $RH/.local/bin/agy$")"
-eq beta-version 1 "$(ax --version | grep -c '^agyx 0.2.0-beta.4$')"
+eq beta-version 1 "$(ax --version | grep -c '^agyx 0.2.0-beta.5$')"
 # Only doctor above queried item existence; launches still must make no security calls.
 eq doctor-item-queries-only 2 "$(wc -l < "$SECLOG" | tr -d ' ')"
 : > "$SECLOG"
@@ -325,7 +325,7 @@ eq storage-unmarked-stdout 1 "$(grep -c '^PROFILE=work$' "$T/out")"
 eq storage-unmarked-warning 1 "$(grep -c 'WARNING: file-based token storage markers NOT confirmed' "$T/err")"
 eq storage-warning-risk 1 "$(grep -c 'keychain fallback can mix accounts and delete the profile token file' "$T/err")"
 launch >/dev/null 2>"$T/err"
-eq storage-verified-cached yes "$([ -s "$DD/.verified-agy" ] && [ ! -s "$T/err" ] && echo yes)"
+eq storage-verified-cached yes "$([ -s "$DD/.verified" ] && [ ! -s "$T/err" ] && echo yes)"
 (FAKE_STORAGE=keychain launch >/dev/null 2>"$T/err"); rc=$?
 eq storage-keychain-first-exit 0 "$rc"
 # A skipped/no-log invocation must not inspect an older bad log.
@@ -547,9 +547,9 @@ mkdir -p "$T/preconsent/home" "$T/preconsent/data/profiles/p/antigravity-cli/bra
 err repair-refusal-no-shared-dir env HOME="$T/preconsent/home" AGYX_DATA_DIR="$T/preconsent/data" AGYX_TTY="$fr/no" "$here/bin/agy" --profile p
 eq repair-refusal-zero-gemini absent "$([ -e "$T/preconsent/home/.gemini" ] && echo present || echo absent)"
 # Concurrent preparers wait for an active preparation, and still fail if a stale lock remains.
-mkdir "$frhome/.gemini/.agyx-shared-prepare-lock"
+mkdir "$frdata/.lock"
 err prepare-lock-busy fresh_run AGYX_LOCK_TRIES=2 "$here/bin/agy" --profile one
-(sleep 0.15; rmdir "$frhome/.gemini/.agyx-shared-prepare-lock") &
+(sleep 0.15; rmdir "$frdata/.lock") &
 wait_pid=$!
 fresh_run "$here/bin/agy" --profile one >/dev/null 2>"$fr/err"; rc=$?
 wait "$wait_pid"
@@ -679,6 +679,6 @@ brewtest() { # $1 = Cellar dir (formula/version), $2 = opt name, $3 = formula br
 }
 : > "$BREWLOG"
 brewtest agyx/0.1.3 agyx agyx
-brewtest agyx-beta/0.2.0-beta.4 agyx-beta agyx-beta
+brewtest agyx-beta/0.2.0-beta.5 agyx-beta agyx-beta
 printf 'passed: %s, failed: %s\n' "$pass" "$fail"
 [ "$fail" = 0 ]

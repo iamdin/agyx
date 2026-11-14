@@ -1,7 +1,7 @@
 # shellcheck shell=sh
 # shellcheck disable=SC2154,SC2034 # R, P, data, AGYX_SHIM and AGYX_RUNTIME are set by callers
 # R = real HOME; P = profile app directory. Never read or copy a token.
-AGYX_VERSION=0.2.0-beta.4 # the one place the version lives (the formula's url tag must match)
+AGYX_VERSION=0.2.0-beta.5 # the one place the version lives (the formula's url tag must match)
 
 agyx_valid_name() {
   case ${1-} in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789_-]*|[!abcdefghijklmnopqrstuvwxyz]*) return 1 ;; esac
@@ -190,7 +190,7 @@ agyx_sync_app() (
     _consented=1
   fi
   mkdir -p "$P" "$_shared" || return 1
-  _lock=$R/.gemini/.agyx-shared-prepare-lock _tries=${AGYX_LOCK_TRIES:-100}
+  _lock=$data/.lock _tries=${AGYX_LOCK_TRIES:-100}
   # ponytail: global spin-wait lock (up to ~5s); switch to flock/shlock only if launch concurrency outgrows this
   while ! mkdir "$_lock" 2>/dev/null; do
     _tries=$((_tries - 1))
@@ -296,15 +296,15 @@ agyx_check_storage() {
 # Pre-exec binary marker check (cached by stat stamp) so bin/agy can exec native agy directly.
 agyx_check_binary() {
   _stamp=$(stat -f '%d:%i:%m:%z' "$1" 2>/dev/null):$1
-  if [ -f "$data/.verified-agy" ]; then
+  if [ -f "$data/.verified" ]; then
     _saved=''
-    IFS= read -r _saved < "$data/.verified-agy" || :
+    IFS= read -r _saved < "$data/.verified" || :
     [ "$_saved" = "$_stamp" ] && return 0
   fi
   if LC_ALL=C grep -Fq WSL_DISTRO_NAME "$1" 2>/dev/null &&
      LC_ALL=C grep -Fq app_data_dir "$1" 2>/dev/null &&
      LC_ALL=C grep -Fq 'Using file-based token storage' "$1" 2>/dev/null; then
-    (umask 077; printf '%s\n' "$_stamp" > "$data/.verified-agy") 2>/dev/null || :
+    (umask 077; printf '%s\n' "$_stamp" > "$data/.verified") 2>/dev/null || :
   else
     echo "agyx: WARNING: file-based token storage markers NOT confirmed in $1. Stop using profiles until agy compatibility is checked: keychain fallback can mix accounts and delete the profile token file." >&2
   fi
