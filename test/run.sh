@@ -22,8 +22,12 @@ for a in "$@"; do
   case $a in --log-file=*) log=${a#*=} ;; esac
   prev=$a
 done
-if [ -n "$log" ] && [ "${FAKE_STORAGE-}" != missing ]; then
-  printf 'Using file-based token storage because %s environment detected\n' "${FAKE_STORAGE:-WSL}" >> "$log"
+if [ -n "$log" ]; then
+  case ${FAKE_STORAGE:-WSL} in
+    missing) ;;
+    keychain) printf 'Using keychain token storage\n' >> "$log" ;;
+    *) printf 'Using file-based token storage because %s environment detected\n' "${FAKE_STORAGE:-WSL}" >> "$log" ;;
+  esac
 fi
 [ -z "$app" ] || app=$HOME/.gemini/$app
 export FAKE_APP=$app
@@ -170,6 +174,8 @@ eq storage-missing-status 7 "$rc"
 eq storage-missing-stdout 1 "$(grep -c '^PROFILE=work$' "$T/out")"
 eq storage-missing-warning 1 "$(grep -c 'WARNING: file-based token storage NOT confirmed' "$T/err")"
 eq storage-warning-risk 1 "$(grep -c 'keychain fallback can mix accounts and delete the profile token file' "$T/err")"
+(FAKE_STORAGE=keychain launch >/dev/null 2>"$T/err"); rc=$?
+eq storage-keychain-decision-warning '0,1' "$rc,$(grep -c 'WARNING: file-based token storage NOT confirmed' "$T/err")"
 (FAKE_STORAGE=SSH FAKE_STATUS=8 launch -p hello >/dev/null 2>"$T/err"); rc=$?
 eq storage-ssh-status 8 "$rc"
 eq storage-ssh-no-warning '' "$(cat "$T/err")"
@@ -280,6 +286,7 @@ eq migration-log-kept kept "$(cat "$legacy/profiles/old/log/old.log")"
 eq migration-trash 2 "$(find "$AGYX_TRASH_DIR" -name home -type d | wc -l | tr -d ' ')"
 eq migration-blocker-removed absent "$([ -e "$shared/antigravity-oauth-token" ] && echo present || echo absent)"
 eq migration-whitelist-removed absent "$([ -e "$RH/.config/agyx/symlinks" ] && echo present || echo absent)"
+eq migration-whitelist-trashed whitelist "$(cat "$(find "$AGYX_TRASH_DIR" -type f -name symlinks)")"
 (AGYX_DATA_DIR=$legacy ax profile list >/dev/null)
 eq migration-idempotent 2 "$(grep -c delete-keychain "$SECLOG")"
 # A failed keychain deletion must stop, not silently abandon the login in the Trash.

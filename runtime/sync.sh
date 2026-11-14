@@ -115,7 +115,7 @@ agyx_migrate() {
     {
       echo "agyx will migrate all old profiles to real HOME and private file logins."
       echo "Each profile must sign in again. Old profile keychains will be deleted; home/ goes to the Trash."
-      echo "Email and logs stay; the old whitelist and agyx token blocker are removed."
+      echo "Email and logs stay; the old whitelist goes to the Trash and the agyx token blocker is removed."
       printf 'Continue? [Y/n] '
     } >&2
     _ans=
@@ -134,7 +134,7 @@ agyx_migrate() {
   done
   agyx_remove_blocker || die "cannot remove old token blocker"
   agyx_set_links_file
-  [ ! -f "$AGYX_LINKS_FILE" ] || rm "$AGYX_LINKS_FILE" || die "cannot remove old whitelist"
+  [ ! -f "$AGYX_LINKS_FILE" ] || mv "$AGYX_LINKS_FILE" "$_trash/symlinks" || die "cannot move old whitelist to the Trash"
 }
 
 # Management subcommands of bin/agyx; they are also the reserved profile names (the only list).

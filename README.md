@@ -87,7 +87,7 @@ After consent, agyx:
 1. Deletes each old profile keychain with `security delete-keychain`, its explicit path, and HOME set only to that old profile home. Failure stops migration; the real keychain is never deleted.
 2. Moves each old `home/` to a unique `~/.Trash/agyx-<profile>-<timestamp>-*/home/` directory and creates `app/`. Saved email and logs stay.
 3. Removes the old shared token blocker **only** when it contains exactly agyx's original README and nothing else. Plain agy's token files and unknown directories are untouched.
-4. Removes the old `${XDG_CONFIG_HOME:-~/.config}/agyx/symlinks` whitelist file, not its surrounding config directory.
+4. Moves the old `${XDG_CONFIG_HOME:-~/.config}/agyx/symlinks` whitelist file into the last profile's migration Trash folder, keeping its surrounding config directory.
 
 List then reports the old profiles as not logged in. Run `agyx profile login NAME` for each one. Old leftovers live in the macOS Trash, never a backup directory under agyx. Test overrides `AGYX_REAL_HOME`, `AGYX_SECURITY`, `AGYX_TRASH_DIR` and `AGYX_TTY` are for isolated tests, not normal use.
 
@@ -120,7 +120,20 @@ AX=/absolute/path/to/checkout/bin/agyx
 
 In both sessions, ask agy to run a Bash/Zsh command that checks HOME and whether WSL_DISTRO_NAME is set; HOME must be real and the synthetic WSL value must be absent. Check profile logs for file-storage selection and the profile token path, not keychain selection. Do not print token files or entire process environments.
 
-Test agy's native logout in account A, verify only A loses its login, then sign A back in; B and plain agy must stay logged in as before. To exercise refresh, leave both accounts signed in until the normal access-token lifetime expires (at least one hour), then issue an authenticated prompt in A and B separately and confirm identities again. There is no verified safe force-refresh flag: do not edit tokens, change the system clock or revoke Google grants just for this test. Afterwards close test sessions and run `"$AX" uninstall` with the same temporary data dir (the checkout remains); empty the resulting test Trash folder when no longer needed.
+Test agy's native logout in account A, verify only A loses its login, then sign A back in; B and plain agy must stay logged in as before. To exercise refresh, leave both accounts signed in until the normal access-token lifetime expires (at least one hour), then issue an authenticated prompt in A and B separately and confirm identities again. There is no verified safe force-refresh flag: do not edit tokens, change the system clock or revoke Google grants just for this test. Afterwards close test sessions and move **only the temporary data directory** to the Trash; on the second Mac, also move only the temporary code directory there. Do **not** run `agyx uninstall` for test cleanup: even with a temporary `AGYX_DATA_DIR`, it removes the real global whitelist and token blocker still needed by an installed 0.1.3. For the temporary data directory created above:
+
+```sh
+case "$AGYX_DATA_DIR" in
+  /tmp/agyx-manual.*)
+    mkdir -p "$HOME/.Trash" &&
+      trash=$(mktemp -d "$HOME/.Trash/agyx-manual-XXXXXX") &&
+      mv "$AGYX_DATA_DIR" "$trash/data" && unset AGYX_DATA_DIR
+    ;;
+  *) printf 'Refusing: not the temporary test data directory\n' >&2 ;;
+esac
+```
+
+Keep the real checkout, global config, shared app directory and installed agyx untouched. Test tokens remain in the Trash until you empty that specific test folder.
 
 ## Tests
 
