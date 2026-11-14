@@ -109,7 +109,13 @@ List then reports the old profiles as not logged in. Run `agyx profile login NAM
 
 ## Security
 
-Each profile login is a plaintext token file (`<data>/profiles/NAME/antigravity-cli/antigravity-oauth-token`, mode 0600) instead of a keychain item; do not sync or share the agyx data dir.
+Each profile login is stored as a `0600` token file inside a `0700` directory (`<data>/profiles/NAME/antigravity-cli/antigravity-oauth-token`) — the exact same format `agy` itself uses on Linux, SSH, WSL and containers. On an encrypted disk (e.g. macOS FileVault), day-to-day security is comparable to the login keychain (where `agy` writes via `/usr/bin/security` without per-app ACL prompts), similar to `~/.ssh/id_ed25519` or `~/.aws/credentials`.
+
+Keep three things in mind:
+
+- **Same-user process access:** any program or script running under your OS user can read the token file without an OS prompt.
+- **No cloud sync or unencrypted backups:** do not put `~/.local/share/agyx` into dotfiles repos or sync folders (iCloud, Syncthing, etc.), and keep backups encrypted.
+- **Empty the Trash after uninstall:** `agyx uninstall` moves profile data to the OS Trash rather than deleting it in place; empty the Trash to destroy old tokens.
 
 ## Risks and manual verification
 
