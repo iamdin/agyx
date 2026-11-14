@@ -101,8 +101,7 @@ case $cmd in
         if logged_in "$1"; then
           echo "agyx: profile '$1' is already logged in ($(status "$1")). Starting agy in it anyway; sign in again from there only if you want to change the account." >&2
         fi
-        agyx_new_log "$data/profiles/$1" || die "cannot create login log"
-        login_log=$AGYX_LOGFILE
+        login_log=$(mktemp "${TMPDIR:-/tmp}/agyx-login-XXXXXX") || die "cannot create temporary login log"
         trap : INT
         (unset AGYX_RUNTIME; "$shim" --profile "$1" --log-file "$login_log"); rc=$?
         trap - INT
@@ -112,6 +111,7 @@ case $cmd in
           if [ -n "$e" ]; then printf '%s\n' "$e" > "$data/profiles/$1/email"
           else rm -f "$data/profiles/$1/email"; fi
         fi
+        rm -f "$login_log"
         if logged_in "$1" && [ -z "$(dflt)" ]; then
           printf '%s\n' "$1" > "$data/default" &&
             echo "agyx: '$1' is now the default profile (change it with: agyx profile default NAME)"
@@ -145,10 +145,13 @@ case $cmd in
     if [ "${AGYX_ASSUME_YES-}" != 1 ] && ! agyx_has_tty; then
       die "uninstall needs a terminal to ask (or set AGYX_ASSUME_YES=1); nothing was removed."
     fi
-    # Match open executable/DB files, not token contents or process environments.
+    # Only check open files inside agyx's own data/profile paths (never block plain native agy).
     set -- "$data/agy" "$data/bin/agy" "$data/real-agy"
-    if agyx_find_real; then set -- "$@" "$real"; fi
-    for d in "$data"/profiles/*/antigravity-cli; do set -- "$@" "$d/conversation_summaries.db"; done
+    for d in "$data"/profiles/*/antigravity-cli; do
+      [ -d "$d" ] || continue
+      set -- "$@" "$d" "$d/conversation_summaries.db"
+      for lg in "$d"/log/*.log; do [ -f "$lg" ] && set -- "$@" "$lg"; done
+    done
     pids=$(/usr/sbin/lsof -nP -t "$@" 2>/dev/null | sort -u | tr '\n' ' ')
     if [ -n "$pids" ]; then
       die "agy is still running (PIDs: ${pids% }). Close it first, then run agyx uninstall again; nothing was removed."
@@ -235,10 +238,10 @@ case $cmd in
       # shellcheck disable=SC2034 # P is used by sync.sh
       P=$p/antigravity-cli
       agyx_report
-      nl=$(ls -t "$p"/log/*.log 2>/dev/null | head -n 1)
+      nl=$(ls -t "$P"/log/*.log 2>/dev/null | head -n 1)
       [ -z "$nl" ] || agyx_check_storage "$nl"
       nl=${nl##*/}
-      echo "  logs: $(agyx_tilde "$p/log")/, newest: ${nl:-none yet}"
+      echo "  logs: $(agyx_tilde "$P/log")/, newest: ${nl:-none yet}"
     done
     dup_warning
     ;;

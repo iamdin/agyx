@@ -1,6 +1,6 @@
 # shellcheck shell=sh
 # shellcheck disable=SC2154 # R, data and AGYX_SHIM are set by callers
-# Transitional 0.1.x / 0.2.0-beta.1 migration and obsolete entry-layout cleanup.
+# Transitional 0.1.x / 0.2.0-beta migration and obsolete layout cleanup.
 
 agyx_set_links_file() {
   case ${XDG_CONFIG_HOME-} in
@@ -39,7 +39,7 @@ agyx_run_migrate() {
     {
       echo "agyx will migrate all old profiles to real HOME and private file logins."
       echo "Each profile must sign in again. Old profile keychains will be deleted; home/ goes to the Trash."
-      echo "Email and logs stay; the old whitelist goes to the Trash and the agyx token blocker is removed."
+      echo "Email stays; old logs, whitelist and the agyx token blocker are cleaned up."
     } >&2
     agyx_ask y 'Continue? [Y/n] ' || die "migration cancelled; nothing changed"
   fi
@@ -58,6 +58,7 @@ agyx_run_migrate() {
     agyx_delete_old_keychain "$_d"
     mkdir -p "$_trash/${_d##*/}" || die "cannot prepare migration Trash directory"
     mv "$_d/home" "$_trash/${_d##*/}/home" || die "cannot move old profile home to the Trash"
+    [ ! -d "$_d/log" ] || [ -L "$_d/log" ] || mv "$_d/log" "$_trash/${_d##*/}/log" || die "cannot move old profile logs to the Trash"
     (umask 077; mkdir -p "$_d/antigravity-cli") || die "cannot create profile app directory"
     echo "agyx: profile ${_d##*/}: old home moved to $_trash/${_d##*/}/home; sign in again with agyx profile login ${_d##*/}" >&2
   done
@@ -67,12 +68,24 @@ agyx_run_migrate() {
 }
 
 agyx_clean_old_entry() {
+  rm -f "$data/.verified" "$data/.verified-agy"
   if [ -L "$data/real-agy" ]; then
     case $(readlink "$data/real-agy") in /*/agy) rm "$data/real-agy" || return 1 ;; esac
   fi
-  [ -d "$data/bin" ] && [ ! -L "$data/bin" ] && agyx_own_link "$data/bin/agy" || return 0
-  (umask 077; mkdir -p "${AGYX_TRASH_DIR:-$R/.Trash}") || return 1
-  _entry_trash=$(mktemp -d "${AGYX_TRASH_DIR:-$R/.Trash}/agyx-entry-layout-XXXXXX") || return 1
-  mv "$data/bin/agy" "$_entry_trash/agy" || return 1
-  [ -z "$(find "$data/bin" -prune -empty -print)" ] || mv "$data/bin" "$_entry_trash/bin" || return 1
+  _entry_trash=''
+  if [ -d "$data/bin" ] && [ ! -L "$data/bin" ] && agyx_own_link "$data/bin/agy"; then
+    (umask 077; mkdir -p "${AGYX_TRASH_DIR:-$R/.Trash}") || return 1
+    _entry_trash=$(mktemp -d "${AGYX_TRASH_DIR:-$R/.Trash}/agyx-entry-layout-XXXXXX") || return 1
+    mv "$data/bin/agy" "$_entry_trash/agy" || return 1
+    [ -z "$(find "$data/bin" -prune -empty -print)" ] || mv "$data/bin" "$_entry_trash/bin" || return 1
+  fi
+  for _d in "$data"/profiles/*; do
+    [ -d "$_d/log" ] && [ ! -L "$_d/log" ] && [ ! -L "$_d" ] || continue
+    if [ -z "$_entry_trash" ]; then
+      (umask 077; mkdir -p "${AGYX_TRASH_DIR:-$R/.Trash}") || return 1
+      _entry_trash=$(mktemp -d "${AGYX_TRASH_DIR:-$R/.Trash}/agyx-entry-layout-XXXXXX") || return 1
+    fi
+    mkdir -p "$_entry_trash/logs" || return 1
+    mv "$_d/log" "$_entry_trash/logs/${_d##*/}" || return 1
+  done
 }

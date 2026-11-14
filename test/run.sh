@@ -15,6 +15,7 @@ mkdir -p "$HOME" "$AGYX_DATA_DIR/profiles/work/antigravity-cli" "$AGYX_DATA_DIR/
 RH=$HOME DD=$AGYX_DATA_DIR
 cat > "$T/fake-agy" <<'EOF'
 #!/bin/sh
+# Markers checked by agyx doctor: WSL_DISTRO_NAME app_data_dir Using file-based token storage
 app= log=
 for a in "$@"; do case $a in --app_data_dir=*) app=${a#*=} ;; esac; done
 prev=
@@ -23,15 +24,25 @@ for a in "$@"; do
   case $a in --log-file=*) log=${a#*=} ;; esac
   prev=$a
 done
+[ -z "$app" ] || app=$HOME/.gemini/$app
+export FAKE_APP=$app
+if [ -z "$log" ] && [ -n "$app" ]; then
+  case ${1-} in
+    help|changelog|mcp|update|--help|-h|--version) ;;
+    *)
+      mkdir -p "$app/log"
+      log=$app/log/cli-native.log
+      ln -sfn log/cli-native.log "$app/cli.log"
+      ;;
+  esac
+fi
 if [ -n "$log" ]; then
   case ${FAKE_STORAGE:-WSL} in
     missing) ;;
-    keychain) printf 'Using keychain token storage\n' >> "$log" ;;
-    *) printf 'Using file-based token storage because %s environment detected\n' "${FAKE_STORAGE:-WSL}" >> "$log" ;;
+    keychain) printf 'Using keychain token storage\n' > "$log" ;;
+    *) printf 'Using file-based token storage because %s environment detected\n' "${FAKE_STORAGE:-WSL}" > "$log" ;;
   esac
 fi
-[ -z "$app" ] || app=$HOME/.gemini/$app
-export FAKE_APP=$app
 if [ "${FAKE_LOGIN-}" = 1 ]; then
   (umask 077; printf 'not-a-real-token\n' > "$app/antigravity-oauth-token")
   printf 'applyAuthResult ok email=%s\n' "${FAKE_EMAIL-own@example.com}" >> "$log"
@@ -119,22 +130,26 @@ err override-management-shim env AGYX_REAL_AGY="$T/alias/management" "$here/bin/
 err override-missing-no-fallback env AGYX_REAL_AGY="$T/missing-agy" "$here/bin/agy" --profile work
 eq doctor-new-entry 1 "$(ax doctor 2>/dev/null | grep -c "agy entry: $DD/agy (in place")"
 eq doctor-native-fallback 1 "$(AGYX_REAL_AGY='' ax doctor 2>/dev/null | grep -c "^real agy: $RH/.local/bin/agy$")"
-eq beta-version 1 "$(ax --version | grep -c '^agyx 0.2.0-beta.5$')"
+eq beta-version 1 "$(ax --version | grep -c '^agyx 0.2.0-beta.6$')"
 # Only doctor above queried item existence; launches still must make no security calls.
 eq doctor-item-queries-only 2 "$(wc -l < "$SECLOG" | tr -d ' ')"
 : > "$SECLOG"
-# Help/version are strictly read-only; doctor/launches clean old layout idempotently without following bin links.
-mkdir "$DD/bin"
+# Help/version are strictly read-only; doctor/launches clean old layout, old .verified and outer profile logs.
+mkdir -p "$DD/bin" "$DD/profiles/work/log"
+printf oldlog > "$DD/profiles/work/log/cli-old.log"
+printf stamp > "$DD/.verified"
 ln -s "$T/native one/agy" "$DD/real-agy"
 ln -s "$here/bin/agy" "$DD/bin/agy"
 ax --version >/dev/null
 ax --help >/dev/null
-eq help-version-readonly yes "$([ -L "$DD/real-agy" ] && [ -L "$DD/bin/agy" ] && echo yes)"
+eq help-version-readonly yes "$([ -L "$DD/real-agy" ] && [ -L "$DD/bin/agy" ] && [ -f "$DD/.verified" ] && [ -d "$DD/profiles/work/log" ] && echo yes)"
 ax doctor >/dev/null
 layout_trash=$(find "$AGYX_TRASH_DIR" -type d -name 'agyx-entry-layout-*')
-eq old-cache-removed no "$([ -L "$DD/real-agy" ] && echo yes || echo no)"
+eq old-cache-removed no "$([ -L "$DD/real-agy" ] || [ -e "$DD/.verified" ] && echo yes || echo no)"
 eq old-entry-trashed "$here/bin/agy" "$(readlink "$layout_trash/agy")"
 eq old-empty-bin-trashed yes "$([ -d "$layout_trash/bin" ] && [ ! -e "$DD/bin" ] && echo yes)"
+eq old-outer-logs-trashed oldlog "$(cat "$layout_trash/logs/work/cli-old.log")"
+eq no-outer-logs-left no "$([ -e "$DD/profiles/work/log" ] && echo yes || echo no)"
 ax doctor >/dev/null
 eq layout-cleanup-once 1 "$(find "$AGYX_TRASH_DIR" -type d -name 'agyx-entry-layout-*' | wc -l | tr -d ' ')"
 : > "$SECLOG"
@@ -170,13 +185,12 @@ err official-missing env HOME="$T/no-native-home" AGYX_DATA_DIR="$T/no-native-da
 eq missing-native-no-setup no "$([ -e "$T/no-native-data" ] && echo yes || echo no)"
 (env AGYX_DATA_DIR="$T/gui-data" AGYX_REAL_AGY='' AGYX_ASSUME_YES=1 FAKE_LOGIN=1 "$here/bin/agyx" profile login p >/dev/null)
 eq gui-first-setup-entry "$here/bin/agy" "$(readlink "$T/gui-data/agy")"
-# The app flag precedes all subcommands, even those that skip --log-file.
+# The app flag precedes all subcommands; agyx never injects --log-file (native agy manages logs).
 for cmd in interactive -p acp mcp login logout models agent agents plugins plugin remote-control mic-serve install help changelog update --help -h --version; do
   if [ "$cmd" = interactive ]; then out=$(launch); else out=$(launch "$cmd"); fi
   first=$(printf '%s\n' "$out" | grep '^ARG=' | head -n 1)
   eq "app-first-$cmd" 1 "$(printf '%s\n' "$first" | grep -c '^ARG=--app_data_dir=')"
-  case $cmd in help|changelog|mcp|update|--help|-h|--version) want=0 ;; *) want=1 ;; esac
-  eq "log-$cmd" "$want" "$(printf '%s\n' "$out" | grep -c '^ARG=--log-file$')"
+  eq "no-injected-log-$cmd" 0 "$(printf '%s\n' "$out" | grep -c '^ARG=--log-file$')"
 done
 out=$(launch --profile work -- 'hello world' '' --profile personal -- x)
 eq argv 'ARG=hello world|ARG=|ARG=--profile|ARG=personal|ARG=--|ARG=x|' "$(printf '%s\n' "$out" | grep '^ARG=' | tail -n 6 | tr '\n' '|')"
@@ -184,10 +198,6 @@ eq own-log 1 "$(launch --log-file "$T/own.log" | grep -c '^ARG=--log-file$')"
 err override-app launch --app_data_dir=elsewhere
 err override-gemini launch --gemini_dir /elsewhere
 err override-single-dash launch -app_data_dir=elsewhere
-# Log allocation is unique even at a fixed timestamp.
-(AGYX_LOG_STAMP=20000101_000000 launch >/dev/null)
-(AGYX_LOG_STAMP=20000101_000000 launch >/dev/null)
-eq unique-log-names 2 "$(find "$DD/profiles/work/log" -name 'cli-20000101_000000*.log' | wc -l | tr -d ' ')"
 # Resolve the relative argument, including spaces and data outside HOME.
 out=$(launch)
 rel=$(printf '%s\n' "$out" | sed -n 's/^ARG=--app_data_dir=//p')
@@ -286,6 +296,17 @@ eq sqlite-integrity ok "$(sqlite3 "$sqldb" 'PRAGMA integrity_check;')"
 for private in antigravity-oauth-token settings.json jetski_state.pbtxt jetbox_summaries_proto.pb; do
   eq "not-shared-$private" no "$([ -e "$app/$private" ] && echo yes || echo no)"
 done
+# Per-account cache/log/updater links from older betas are automatically detached to stay private.
+mkdir -p "$shared/cache"
+printf shared-proj > "$shared/cache/default_project_id.txt"
+ln -s "$shared/cache" "$app/cache"
+launch >/dev/null
+eq former-shared-cache-detached no "$([ -L "$app/cache" ] && echo yes || echo no)"
+mkdir -p "$app/cache"
+printf work-proj > "$app/cache/default_project_id.txt"
+launch >/dev/null
+eq private-cache-not-adopted shared-proj "$(cat "$shared/cache/default_project_id.txt")"
+eq private-cache-kept work-proj "$(cat "$app/cache/default_project_id.txt")"
 printf newly-created > "$app/future-entry"
 printf future-db > "$app/future.db"
 printf future-wal > "$app/future.db-wal"
@@ -312,7 +333,7 @@ ln -s "$app" "$DD/profiles/alias"
 err profile-dir-symlink launch --profile alias
 err profile-login-symlink ax profile login alias
 rm "$DD/profiles/alias"
-# Direct exec + pre-launch binary/log storage guards preserve PID, stdin, exit status and INT/TERM/HUP.
+# Direct exec + doctor binary check + native log storage guards preserve PID, stdin, exit status and INT/TERM/HUP.
 cat > "$T/unmarked-agy" <<'EOF'
 #!/bin/sh
 printf 'PROFILE=%s\n' "$AGYX_PROFILE"
@@ -322,23 +343,21 @@ chmod +x "$T/unmarked-agy"
 (AGYX_REAL_AGY="$T/unmarked-agy" FAKE_STATUS=7 launch -p hello >"$T/out" 2>"$T/err"); rc=$?
 eq storage-unmarked-status 7 "$rc"
 eq storage-unmarked-stdout 1 "$(grep -c '^PROFILE=work$' "$T/out")"
-eq storage-unmarked-warning 1 "$(grep -c 'WARNING: file-based token storage markers NOT confirmed' "$T/err")"
+eq storage-no-verified-file no "$([ -e "$DD/.verified" ] && echo yes || echo no)"
+(AGYX_REAL_AGY="$T/unmarked-agy" ax doctor >/dev/null 2>"$T/err")
+eq doctor-unmarked-binary-warning 1 "$(grep -c 'WARNING: file-based token storage markers NOT confirmed' "$T/err")"
 eq storage-warning-risk 1 "$(grep -c 'keychain fallback can mix accounts and delete the profile token file' "$T/err")"
-launch >/dev/null 2>"$T/err"
-eq storage-verified-cached yes "$([ -s "$DD/.verified" ] && [ ! -s "$T/err" ] && echo yes)"
 (FAKE_STORAGE=keychain launch >/dev/null 2>"$T/err"); rc=$?
 eq storage-keychain-first-exit 0 "$rc"
-# A skipped/no-log invocation must not inspect an older bad log.
+# Next launch sees the previous non-empty bad native log and warns before exec.
 launch mcp list >/dev/null 2>"$T/err"
-eq storage-no-log-no-warning '' "$(cat "$T/err")"
-# Next logged launch sees the previous non-empty bad log and warns before exec.
-sleep 1
-launch >/dev/null 2>"$T/err"
 eq storage-recent-log-warning 1 "$(grep -c 'WARNING: file-based token storage NOT confirmed' "$T/err")"
+launch >/dev/null 2>"$T/err"
 launch >/dev/null 2>"$T/err"
 eq storage-wsl-clears-warning '' "$(cat "$T/err")"
 (FAKE_LOGIN=1 FAKE_STORAGE=keychain ax profile login badstore >/dev/null 2>"$T/err")
 eq storage-login-immediate-warning 1 "$(grep -c 'WARNING: file-based token storage NOT confirmed' "$T/err")"
+eq storage-login-temp-cleaned 0 "$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'agyx-login-*' 2>/dev/null | wc -l | tr -d ' ')"
 rm -rf "$DD/profiles/badstore"
 eq storage-stdin 'stdin preserved' "$(printf 'stdin preserved\n' | FAKE_RUN='IFS= read -r line; printf "%s" "$line"' launch)"
 # Direct exec means no wrapper shell sits above agy, and INT/TERM/HUP all arrive with default dispositions intact.
@@ -362,14 +381,15 @@ for sig in INT TERM HUP; do
   eq "exec-$sig-no-warning" '' "$(cat "$T/err")"
 done
 # Newest log only: an older positive marker cannot hide a new keychain fallback.
-printf 'Using file-based token storage because WSL environment detected\n' > "$app/../log/guard-old.log"
+mkdir -p "$app/log"
+printf 'Using file-based token storage because WSL environment detected\n' > "$app/log/guard-old.log"
 sleep 1
-printf 'Using keychain token storage\n' > "$app/../log/guard-new.log"
+printf 'Using keychain token storage\n' > "$app/log/guard-new.log"
 ax doctor >/dev/null 2>"$T/err"
-eq doctor-storage-newest 1 "$(grep -c 'NOT confirmed in .*work/log/guard-new.log' "$T/err")"
-printf 'Using file-based token storage because SSH environment detected\n' >> "$app/../log/guard-new.log"
+eq doctor-storage-newest 1 "$(grep -c 'NOT confirmed in .*work/antigravity-cli/log/guard-new.log' "$T/err")"
+printf 'Using file-based token storage because SSH environment detected\n' >> "$app/log/guard-new.log"
 ax doctor >/dev/null 2>"$T/err"
-eq doctor-storage-confirmed 0 "$(grep -c 'NOT confirmed in .*work/log/' "$T/err")"
+eq doctor-storage-confirmed 0 "$(grep -c 'NOT confirmed in .*work/antigravity-cli/log/' "$T/err")"
 # Token existence only; no parser needed, email comes from own launch log.
 (FAKE_LOGIN=1 ax profile login new >/dev/null)
 eq login-default-unchanged work "$(cat "$DD/default")"
@@ -615,7 +635,7 @@ eq migration-keychains 2 "$(grep -c 'delete-keychain' "$SECLOG")"
 eq migration-explicit-home 2 "$(grep -c "^HOME=$legacy/profiles/.*home delete-keychain $legacy/profiles/.*home/Library/Keychains/login.keychain-db$" "$SECLOG")"
 eq migration-home-gone absent "$([ -d "$legacy/profiles/old/home" ] && echo present || echo absent)"
 eq migration-email-kept old@example.com "$(cat "$legacy/profiles/old/email")"
-eq migration-log-kept kept "$(cat "$legacy/profiles/old/log/old.log")"
+eq migration-outer-log-trashed absent "$([ -e "$legacy/profiles/old/log" ] && echo present || echo absent)"
 eq migration-app-mode 700 "$(stat -f %Lp "$legacy/profiles/old/antigravity-cli")"
 eq migration-single-trash-root 1 "$(find "$AGYX_TRASH_DIR" -maxdepth 1 -type d -name 'agyx-migrate-*' | wc -l | tr -d ' ')"
 eq migration-trash 2 "$(find "$AGYX_TRASH_DIR" -name home -type d | wc -l | tr -d ' ')"
@@ -638,7 +658,13 @@ printf unknown > "$shared/antigravity-oauth-token/README"
 eq unknown-blocker-kept unknown "$(cat "$shared/antigravity-oauth-token/README")"
 rm "$shared/antigravity-oauth-token/README"; rmdir "$shared/antigravity-oauth-token"
 printf plain-agy > "$shared/antigravity-oauth-token"
-# Uninstall refuses an open profile DB even if its old executable cache is gone.
+# Uninstall refuses an open profile DB, but never blocks an unrelated plain native agy process.
+"$fr/writer with spaces" "$fr/plain-ready" "$T/fake-agy" & plain_writer=$!
+i=0; while [ ! -f "$fr/plain-ready" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+mkdir -p "$T/uninst-plain/profiles/p/antigravity-cli"
+(AGYX_DATA_DIR=$T/uninst-plain AGYX_ASSUME_YES=1 ax uninstall >/dev/null 2>"$T/err"); rc=$?
+eq uninstall-ignores-plain-agy 0 "$rc"
+kill "$plain_writer"; wait "$plain_writer" 2>/dev/null
 "$fr/writer with spaces" "$fr/uninstall-ready" "$app/conversation_summaries.db" & writer=$!
 i=0; while [ ! -f "$fr/uninstall-ready" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 err uninstall-live-profile env AGYX_ASSUME_YES=1 "$here/bin/agyx" uninstall
@@ -679,6 +705,6 @@ brewtest() { # $1 = Cellar dir (formula/version), $2 = opt name, $3 = formula br
 }
 : > "$BREWLOG"
 brewtest agyx/0.1.3 agyx agyx
-brewtest agyx-beta/0.2.0-beta.5 agyx-beta agyx-beta
+brewtest agyx-beta/0.2.0-beta.6 agyx-beta agyx-beta
 printf 'passed: %s, failed: %s\n' "$pass" "$fail"
 [ "$fail" = 0 ]

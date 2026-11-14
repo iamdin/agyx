@@ -1,7 +1,7 @@
 # shellcheck shell=sh
 # shellcheck disable=SC2154,SC2034 # R, P, data, AGYX_SHIM and AGYX_RUNTIME are set by callers
 # R = real HOME; P = profile app directory. Never read or copy a token.
-AGYX_VERSION=0.2.0-beta.5 # the one place the version lives (the formula's url tag must match)
+AGYX_VERSION=0.2.0-beta.6 # the one place the version lives (the formula's url tag must match)
 
 agyx_valid_name() {
   case ${1-} in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789_-]*|[!abcdefghijklmnopqrstuvwxyz]*) return 1 ;; esac
@@ -40,8 +40,17 @@ agyx_migrate() {
   done
 }
 
-agyx_private() {
+# Strict per-account regular files (token and atomic-rename state).
+agyx_private_file() {
   case $1 in antigravity-oauth-token|settings.json|jetski_state.pbtxt|jetbox_summaries_proto.pb) return 0 ;; esac
+  return 1
+}
+
+# All per-account entries (never linked from ~/.gemini/antigravity-cli):
+# cache holds default_project_id.txt; log + cli.log are managed & pruned by native agy per profile.
+agyx_private() {
+  agyx_private_file "$1" && return 0
+  case $1 in cache|crashes|log|cli.log|updater|last_check.timestamp) return 0 ;; esac
   return 1
 }
 
@@ -53,7 +62,7 @@ agyx_sidecar() {
 # The known shared layout; seed before the first native launch, not the next one.
 agyx_shared_entries() {
   case $1 in
-    dirs) printf '%s\n' annotations bin brain builtin cache conversations crashes implicit presence sidecar_data ;;
+    dirs) printf '%s\n' annotations bin brain builtin conversations implicit presence sidecar_data ;;
     files) printf '%s\n' conversation_summaries.db history.jsonl installation_id ;;
   esac
 }
@@ -128,7 +137,7 @@ agyx_confirm_repair() {
     echo "agyx will repair shared entries for all profiles. Close all agy sessions first."
     echo "Directory conflicts: newer wins (shared wins ties); the other copy goes to the Trash."
     echo "History: append missing lines. Shared DB/other files stay; profile copies go to the Trash."
-    echo "The four private files are never touched."
+    echo "Private profile entries are never touched."
   } >&2
   agyx_ask y 'Continue? [Y/n] ' || { echo "agyx: shared repair cancelled; nothing repaired" >&2; return 1; }
 }
@@ -230,11 +239,16 @@ agyx_sync_app() (
       [ ! -L "$_p" ] || [ -e "$_p" ] || rm "$_p" || return 1
       continue
     fi
-    if agyx_private "$_n"; then
+    if agyx_private_file "$_n"; then
       [ ! -L "$_p" ] && [ -f "$_p" ] || {
         echo "agyx: private entry $_p must be a regular file, not a link or directory" >&2
         return 1
       }
+    elif agyx_private "$_n"; then
+      # Detach former shared links (cache, crashes, log, cli.log, updater, last_check.timestamp).
+      if [ -L "$_p" ]; then
+        case $(readlink "$_p") in "$_shared/$_n") rm "$_p" || return 1 ;; esac
+      fi
     elif [ ! -L "$_p" ] && [ ! -e "$_shared/$_n" ] && [ ! -L "$_shared/$_n" ]; then
       agyx_adopt_one "$_p" "$_shared/$_n" || return 1
     fi
@@ -261,8 +275,12 @@ agyx_report() {
     [ -e "$_p" ] || [ -L "$_p" ] || continue
     _n=${_p##*/}
     agyx_sidecar "$_n" && continue
-    if agyx_private "$_n"; then
+    if agyx_private_file "$_n"; then
       [ ! -L "$_p" ] && [ -f "$_p" ] || echo "  antigravity-cli $_n: WARNING private entry is not a regular file"
+    elif agyx_private "$_n"; then
+      if [ -L "$_p" ] && [ "$(readlink "$_p")" = "$_shared/$_n" ]; then
+        echo "  antigravity-cli $_n: shared link (detached on next launch)"
+      fi
     elif [ -L "$_p" ] && [ "$(readlink "$_p")" = "$_shared/$_n" ] && [ -e "$_p" ]; then
       echo "  antigravity-cli $_n: linked"
     elif [ -L "$_p" ]; then echo "  antigravity-cli $_n: WARNING broken or unexpected link"
@@ -293,52 +311,22 @@ agyx_check_storage() {
   fi
 }
 
-# Pre-exec binary marker check (cached by stat stamp) so bin/agy can exec native agy directly.
+# Doctor-only static check on native agy binary (no cache files written to disk).
 agyx_check_binary() {
-  _stamp=$(stat -f '%d:%i:%m:%z' "$1" 2>/dev/null):$1
-  if [ -f "$data/.verified" ]; then
-    _saved=''
-    IFS= read -r _saved < "$data/.verified" || :
-    [ "$_saved" = "$_stamp" ] && return 0
-  fi
-  if LC_ALL=C grep -Fq WSL_DISTRO_NAME "$1" 2>/dev/null &&
-     LC_ALL=C grep -Fq app_data_dir "$1" 2>/dev/null &&
-     LC_ALL=C grep -Fq 'Using file-based token storage' "$1" 2>/dev/null; then
-    (umask 077; printf '%s\n' "$_stamp" > "$data/.verified") 2>/dev/null || :
-  else
+  if ! LC_ALL=C grep -Fq WSL_DISTRO_NAME "$1" 2>/dev/null ||
+     ! LC_ALL=C grep -Fq app_data_dir "$1" 2>/dev/null ||
+     ! LC_ALL=C grep -Fq 'Using file-based token storage' "$1" 2>/dev/null; then
     echo "agyx: WARNING: file-based token storage markers NOT confirmed in $1. Stop using profiles until agy compatibility is checked: keychain fallback can mix accounts and delete the profile token file." >&2
   fi
 }
 
+# Check the newest non-empty native log in $1 (<profile>/antigravity-cli/log).
 agyx_check_recent_log() {
   ls -t "$1"/log/*.log 2>/dev/null | while IFS= read -r _nl; do
     [ -s "$_nl" ] || continue
     agyx_check_storage "$_nl"
     break
   done
-}
-
-# Per-profile agy log: <profile dir>/log/cli-YYYYMMDD_HHMMSS.log, a new file per launch.
-# agy takes --log-file only BEFORE its subcommand (`agy --log-file F models` works, `agy models
-# --log-file F` is rejected). The commands below never write a log, so no file is made for them; a
-# log file the caller chose is left alone.
-agyx_wants_log() {
-  case ${1-} in help|changelog|mcp|update|--help|-h|--version) return 1 ;; esac
-  for _a in "$@"; do case $_a in --log-file|--log-file=*) return 1 ;; esac; done
-  return 0
-}
-# $1 = profile dir. Creates a new empty log file (never one that exists: a second launch in the
-# same second gets _02, _03 ...) and sets AGYX_LOGFILE. Forks only for the date.
-agyx_new_log() {
-  _ld=$1/log
-  [ -d "$_ld" ] || (umask 077; mkdir -p "$_ld") || return 1
-  _b=$_ld/cli-${AGYX_LOG_STAMP:-$(date +%Y%m%d_%H%M%S)}
-  AGYX_LOGFILE=$_b.log; _i=1
-  while ! (umask 077; set -C; : > "$AGYX_LOGFILE") 2>/dev/null; do
-    _i=$((_i + 1)); [ "$_i" -lt 100 ] || return 1
-    AGYX_LOGFILE=${_b}_$(printf %02d "$_i").log
-  done
-  return 0
 }
 
 # Resolve invocation links, including relative links; native agy must not see a cache alias.
@@ -393,9 +381,17 @@ agyx_own_link() {
   agyx_resolve_path "$1" 2>/dev/null && agyx_is_shim "$_resolved"
 }
 
+agyx_has_obsolete_layout() {
+  [ -L "$data/real-agy" ] || [ -d "$data/bin" ] || [ -e "$data/.verified" ] || [ -e "$data/.verified-agy" ] && return 0
+  for _d in "$data"/profiles/*; do
+    [ -d "$_d/log" ] && [ ! -L "$_d/log" ] && return 0
+  done
+  return 1
+}
+
 # <data>/agy is the only app entry. Preserve unrelated files/links at that path.
 agyx_ensure_entry() {
-  if [ -L "$data/real-agy" ] || [ -d "$data/bin" ]; then
+  if agyx_has_obsolete_layout; then
     agyx_legacy && agyx_clean_old_entry || return 1
   fi
   [ "$data/agy" -ef "$AGYX_SHIM" ] && return 0

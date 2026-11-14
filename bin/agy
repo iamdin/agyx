@@ -87,16 +87,8 @@ ZDOTDIR=$bz BASH_ENV=$bb
 export WSL_DISTRO_NAME AGYX_ORIG_WSL AGYX_ORIG_ZDOTDIR AGYX_ORIG_BASH_ENV \
   AGYX_PROFILE AGY_CLI_DISABLE_AUTO_UPDATE ZDOTDIR BASH_ENV
 
-# 4. pre-exec storage checks + per-launch log allocation, then direct exec (preserves PID & signals)
+# 4. check newest native log in <profile>/antigravity-cli/log, then direct exec (native agy manages & prunes logs)
+agyx_check_recent_log "$P"
+unset AGYX_RUNTIME AGYX_ASSUME_YES AGYX_TTY AGYX_SECURITY AGYX_TRASH_DIR AGYX_LOCK_TRIES
 # shellcheck disable=SC2154 # real is set by agyx_find_real
-agyx_check_binary "$real"
-if agyx_wants_log "$@"; then
-  agyx_check_recent_log "$data/profiles/$name"
-  if agyx_new_log "$data/profiles/$name"; then
-    set -- --log-file "$AGYX_LOGFILE" "$@"
-  else
-    echo "agyx: warning: could not create a log file in $data/profiles/$name/log; agy writes its default log" >&2
-  fi
-fi
-unset AGYX_RUNTIME AGYX_ASSUME_YES AGYX_TTY AGYX_SECURITY AGYX_TRASH_DIR AGYX_LOG_STAMP AGYX_LOCK_TRIES
 exec "$real" "--app_data_dir=$AGYX_APP_ARG" "$@"

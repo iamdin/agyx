@@ -53,20 +53,21 @@ Profile directories and their `antigravity-cli/` directories are created with mo
 
 ```text
 <data>/profiles/<name>/
+  email                            account email from this login's log
   antigravity-cli/
     antigravity-oauth-token         private regular file, mode 0600
     settings.json                  private regular file
     jetski_state.pbtxt              private regular file
     jetbox_summaries_proto.pb       private regular file
+    cache/                         private per-account cache (e.g. default_project_id.txt)
+    log/ + cli.log                 private native agy logs (auto-pruned by agy)
     conversations -> ~/.gemini/antigravity-cli/conversations
     brain         -> ~/.gemini/antigravity-cli/brain
     history.jsonl -> ~/.gemini/antigravity-cli/history.jsonl
     ...           -> ~/.gemini/antigravity-cli/<same name>
-  email                            account email from this login's log
-  log/cli-YYYYMMDD_HHMMSS.log       separate agy log for each launch
 ```
 
-The four private files are never linked from the shared directory. agyx never reads, copies or parses a token, including for the account email. "Logged in" means a regular profile token file exists, not proof the token is still valid. Email comes only from the `applyAuthResult email=` line in the log of that `profile login`; if unknown, list says so. Duplicate saved emails on logged-in profiles produce a warning.
+Per-account private entries (`antigravity-oauth-token`, `settings.json`, `jetski_state.pbtxt`, `jetbox_summaries_proto.pb`, `cache`, `crashes`, `log`, `cli.log`, `updater`, `last_check.timestamp`) are never linked from the shared directory. agyx never reads, copies or parses a token, including for the account email. "Logged in" means a regular profile token file exists, not proof the token is still valid. Email comes only from the `applyAuthResult email=` line in the temporary log of that `profile login`; if unknown, list says so. Duplicate saved emails on logged-in profiles produce a warning.
 
 Before agy starts, agyx creates and links the known shared directories, an empty history stream and SQLite database (agy initializes its schema), and a valid installation ID. Existing profile entries are adopted before creating empty targets. Other shared entries, including hidden ones, are linked too. **SQLite sidecars** (`*-wal`, `*-shm`, `*-journal`) are never linked or independently adopted; doctor ignores them and sync removes broken sidecar links.
 
@@ -82,7 +83,7 @@ For agy only, the shim supplies `WSL_DISTRO_NAME=agyx` when the existing value i
 
 Bash and Zsh startup bridges restore WSL and `BASH_ENV`/`ZDOTDIR`, remove all `AGYX_ORIG_*` context, then source the user's startup file. HOME is already real; no HOME helper is exported. `AGYX_PROFILE` remains for nested `agyx`; caller-supplied `AGYX_DATA_DIR`/`AGYX_REAL_AGY` remain for custom locations. **Directly executed programs (including MCP servers), POSIX sh and shells that skip startup files can still inherit fake WSL and the bridge context:** agy has no general child-environment hook. Native `ANTIGRAVITY_*` and `AGY_CLI_*` variables are not cleaned by the bridge.
 
-Each launch gets a unique private log; same-second launches get `_02`, `_03`, etc., and then `exec`s native agy directly (no wrapper process, preserving PID and signals). The no-log list (`help`, `changelog`, `mcp`, `update`, `--help`, `-h`, `--version`) skips only the log flag, not the app-dir flag. An explicit user `--log-file` is kept. Before `exec`, agyx checks (cached by binary stat stamp) that the native binary still carries its file-storage markers, and checks the profile's most recent non-empty log for `Using file-based token storage`; `profile login` checks its login log immediately on exit and `doctor` checks each profile's newest log. Stop using profiles if warned and check agy compatibility. Logs are not pruned automatically.
+Native agy manages and auto-prunes its own per-profile logs under `<profile>/antigravity-cli/log/`, and the shim `exec`s native agy directly (no wrapper process, no `--log-file` injection, preserving PID and signals). Before `exec`, agyx checks the profile's most recent non-empty log for `Using file-based token storage`; `profile login` checks its temporary login log immediately on exit, and `doctor` checks both the native binary's file-storage markers and each profile's newest log. Stop using profiles if warned and check agy compatibility.
 
 ## Migration from 0.1.3
 
@@ -91,7 +92,7 @@ Old profile keychain logins cannot be carried over. On the first invocation with
 After consent, agyx creates a single `~/.Trash/agyx-migrate-<timestamp>-*/` directory and:
 
 1. Deletes each old profile keychain with `security delete-keychain`, its explicit path, and HOME set only to that old profile home. Failure stops migration; the real keychain is never deleted.
-2. Moves each old `home/` to `<migration-trash>/<profile>/home` and creates `antigravity-cli/`. Saved email and logs stay.
+2. Moves each old `home/` (and any old outer `log/`) to `<migration-trash>/<profile>/` and creates `antigravity-cli/`. Saved email stays.
 3. Removes the old shared token blocker **only** when it contains exactly agyx's original README and nothing else. Plain agy's token files and unknown directories are untouched.
 4. Moves the old `${XDG_CONFIG_HOME:-~/.config}/agyx/symlinks` whitelist file to `<migration-trash>/symlinks`, keeping its surrounding config directory.
 
