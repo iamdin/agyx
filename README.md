@@ -43,9 +43,11 @@ Profile selection: leading `--profile NAME` (or `--profile=NAME`) > `AGYX_PROFIL
 
 ## Consent and paths
 
-On first use, commands that write ask once before creating the data directory. No terminal means refusal and no writes. `AGYX_ASSUME_YES=1` skips the question for scripts. An existing data directory counts as consent, except that migration and shared-entry repair ask separately. Help, version, list, doctor and showing the default do not set up a fresh installation. No shell startup files or PATH settings are edited.
+On first use, commands that write ask once before creating the data directory. No terminal means refusal and no writes. `AGYX_ASSUME_YES=1` skips the question for scripts. An existing data directory counts as consent, except that migration and shared-entry repair ask separately. Help, version, list, doctor and showing the default do not set up a fresh installation. On existing installs they may maintain the app entry and clean its old layout below. No shell startup files or PATH settings are edited.
 
-Data directory: `${AGYX_DATA_DIR:-~/.local/share/agyx}`. `AGYX_REAL_AGY=/absolute/path/to/agy` overrides binary discovery; otherwise the first real agy on PATH is cached as `<data>/real-agy`. `<data>/bin/agy` is a shim for apps requiring a binary named agy (for example T3 Code). It uses the selected profile, just like agyx; agyx does not shadow plain agy on PATH. Its entry and shell bridge use the stable Homebrew `opt/agyx` path so they survive upgrades.
+Data directory: `${AGYX_DATA_DIR:-~/.local/share/agyx}`. Give apps such as T3 Code **`<data>/agy`** (normally `~/.local/share/agyx/agy`), the only app shim. Each launch searches PATH for native agy, skipping agyx shims, then falls back to `~/.local/bin/agy` for GUI apps with a minimal PATH; `AGYX_REAL_AGY=/absolute/path/to/agy` overrides both. No binary path is cached, and invocation links are resolved before execution. The entry and shell bridge use Homebrew's stable `opt` path across upgrades; plain agy on PATH is not shadowed.
+
+The first invocation on an existing install removes the old `<data>/real-agy` cache link and moves agyx's old `<data>/bin/agy` link (plus `bin/` if then empty) to the Trash without another prompt. Unrelated files, links and nonempty directories are preserved. Update apps still using the old entry path.
 
 Profile directories and their `antigravity-cli/` directories are created with mode 0700. Layout:
 
@@ -97,9 +99,9 @@ List then reports the old profiles as not logged in. Run `agyx profile login NAM
 
 ## Doctor and uninstall
 
-`doctor` reports agyx/agy versions, the real binary, shim entry, profile storage mode, default profile, token existence and mode (expected 0600), group/world-accessible profile directories (expected 0700), healthy/missing/broken links, drift, and newest log. A login keychain item `gemini/antigravity` is informational: plain agy may use it. Only item existence is checked, never its secret (`security` is never given `-w` or `-g`). Except for a consented legacy migration, doctor does not repair or write state.
+`doctor` reports agyx/agy versions, the real binary, shim entry, profile storage mode, default profile, token existence and mode (expected 0600), group/world-accessible profile directories (expected 0700), healthy/missing/broken links, drift, and newest log. A login keychain item `gemini/antigravity` is informational: plain agy may use it. Only item existence is checked, never its secret (`security` is never given `-w` or `-g`). Doctor does not repair profile data; it may maintain the app entry and clean its obsolete layout.
 
-`uninstall` asks for confirmation (default No), refusing without a terminal unless `AGYX_ASSUME_YES=1`. It refuses if a matching agy process is running. It moves the data directory, including profile token files and logs, to `~/.Trash/agyx-uninstall-<timestamp>-*/`. Tokens remain in the Trash until you empty it. It also handles remaining legacy keychains, whitelist and exact agyx blocker. Shared conversations/history, plain agy and unrelated config files stay untouched. Homebrew installations then run `brew uninstall agyx`; a checkout stays on disk (only an owned `~/.local/bin/agyx` link is removed). Apps using `<data>/bin/agy` will stop working.
+`uninstall` asks for confirmation (default No), refusing without a terminal unless `AGYX_ASSUME_YES=1`. It refuses if a matching agy process is running. It moves the data directory, including profile token files and logs, to `~/.Trash/agyx-uninstall-<timestamp>-*/`. Tokens remain in the Trash until you empty it. It also handles remaining legacy keychains, whitelist and exact agyx blocker. Shared conversations/history, plain agy and unrelated config files stay untouched. Homebrew installations then run `brew uninstall agyx`; a checkout stays on disk (only an owned `~/.local/bin/agyx` link is removed). Apps using `<data>/agy` will stop working.
 
 ## Security
 

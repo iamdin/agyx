@@ -25,7 +25,7 @@ class Agyx < Formula
     refute_path_exists bin/"agy"
 
     # no setup step: the real agy comes from AGYX_REAL_AGY (no real agy is run), the
-    # <data>/bin/agy entry is created by the first run; no home whitelist is needed
+    # <data>/agy entry is created by the first run; no home whitelist is needed
     ENV["AGYX_DATA_DIR"] = testpath/"data"
     ENV["HOME"] = testpath
     ENV["AGYX_REAL_AGY"] = "/usr/bin/true"
@@ -34,7 +34,7 @@ class Agyx < Formula
     # anything that is not an agyx subcommand launches agy via the shim
     system bin/"agyx", "--profile", "work"
     # the entry link goes through opt_prefix, so it survives upgrades
-    assert_equal opt_libexec/"bin/agy", Pathname(File.readlink(testpath/"data/bin/agy"))
+    assert_equal opt_libexec/"bin/agy", Pathname(File.readlink(testpath/"data/agy"))
     refute_path_exists testpath/".config/agyx/symlinks"
   end
 end

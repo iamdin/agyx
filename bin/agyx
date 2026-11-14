@@ -25,6 +25,9 @@ R=$rh AGYX_SHIM=$shim
 agyx_stable "$shim"
 # shellcheck disable=SC2034 # used by the functions in sync.sh
 AGYX_SHIM=$AGYX_STABLE # the entry link must survive a Homebrew upgrade
+if [ -d "$data" ] && [ "${1-}" != uninstall ]; then
+  agyx_ensure_entry || die "cannot prepare app entry"
+fi
 usage="usage: agyx [--profile NAME] [agy args...]   launch agy as a profile
        agyx profile login NAME      create profile NAME and sign in with agy's own login
        agyx profile default [NAME]  show or set the default profile
@@ -32,17 +35,15 @@ usage="usage: agyx [--profile NAME] [agy args...]   launch agy as a profile
        agyx doctor                  check the installation
        agyx uninstall               remove agyx's data and configuration
        any other arguments go to agy; agy's own help: agyx --profile NAME --help"
-# help: agyx's own usage (read-only; never asks, never writes, works before setup)
+# Help/version never set up a fresh install; existing entry maintenance ran above.
 if [ $# -eq 1 ]; then
   case $1 in --help|-h|help) echo "$usage"; exit 0 ;; esac
 fi
-# --version: agyx's own version, then the real agy's when it can be found (writes nothing)
+# --version: agyx's own version, then the discovered native agy's version.
 if [ "${1-}" = --version ]; then
   echo "agyx $AGYX_VERSION"
-  # shellcheck disable=SC2154 # real and _found are set by agyx_find_real / agyx_scan_path
-  if [ -d "$data" ]; then agyx_find_real readonly && _r=$real || _r=
-  elif [ -n "${AGYX_REAL_AGY-}" ]; then _r=$AGYX_REAL_AGY
-  else agyx_scan_path && _r=$_found || _r=; fi
+  # shellcheck disable=SC2154 # real is set by agyx_find_real
+  agyx_find_real && _r=$real || _r=
   [ -n "$_r" ] && [ -x "$_r" ] && echo "agy $(AGY_CLI_DISABLE_AUTO_UPDATE=true "$_r" --version 2>&1 | head -n 1)"
   exit 0
 fi
@@ -54,7 +55,7 @@ tok=antigravity-cli/antigravity-oauth-token
 sec=${AGYX_SECURITY:-/usr/bin/security}  # AGYX_SECURITY is only for tests
 # Nothing is written before the user agreed once (agyx_gate, for the commands that write); read-only
 # commands report "not set up yet". Once set up, missing pieces are repaired silently.
-repair() { agyx_ensure_entry; }
+repair() { agyx_ensure_entry || die "cannot prepare app entry"; }
 [ "${1-}" = uninstall ] || agyx_migrate
 notyet() { echo "agyx is not set up yet; run agyx once in a terminal to set it up (or set AGYX_ASSUME_YES=1)"; exit 0; }
 
@@ -142,10 +143,11 @@ case $cmd in
     if [ "${AGYX_ASSUME_YES-}" != 1 ] && [ -z "${AGYX_TTY-}" ] && { [ ! -t 0 ] || [ ! -t 2 ]; }; then
       die "uninstall needs a terminal to ask (or set AGYX_ASSUME_YES=1); nothing was removed."
     fi
-    # agy processes: matched on the command line only (never on process environments)
-    rt=; [ -L "$data/real-agy" ] && rt=$(readlink "$data/real-agy")
-    pids=$(ps -axo pid=,command= 2>/dev/null | awk -v a="$data/real-agy" -v b="$rt" -v c="${AGYX_REAL_AGY-}" '
-      { for (i = 2; i <= 3; i++) if ($i != "" && ($i == a || (b != "" && $i == b) || (c != "" && $i == c))) { print $1; break } }' | tr '\n' ' ')
+    # Match open executable/DB files, not token contents or process environments.
+    set -- "$data/agy" "$data/bin/agy" "$data/real-agy"
+    if agyx_find_real; then set -- "$@" "$real"; fi
+    for d in "$data"/profiles/*/antigravity-cli; do set -- "$@" "$d/conversation_summaries.db"; done
+    pids=$(/usr/sbin/lsof -nP -t "$@" 2>/dev/null | sort -u | tr '\n' ' ')
     if [ -n "$pids" ]; then
       die "agy is still running (PIDs: ${pids% }). Close it first, then run agyx uninstall again; nothing was removed."
     fi
@@ -166,7 +168,7 @@ case $cmd in
         *) echo "  agyx itself   (delete $(agyx_tilde "$me") yourself)" ;;
       esac
       echo "Kept: ~/.gemini (shared settings, history and conversations) and plain agy."
-      [ -d "$data" ] && echo "Apps set up with $(agyx_tilde "$data")/bin/agy (for example T3 Code) will stop working."
+      [ -d "$data" ] && echo "Apps set up with $(agyx_tilde "$data")/agy (for example T3 Code) will stop working."
     } >&2
     if [ "${AGYX_ASSUME_YES-}" != 1 ]; then
       printf 'Remove? [y/N] ' >&2
@@ -197,8 +199,8 @@ case $cmd in
     echo "agyx version: $AGYX_VERSION"
     [ -d "$data" ] || notyet
     # shellcheck disable=SC2154 # real is set by agyx_find_real
-    if agyx_find_real readonly; then
-      echo "real agy: $(readlink "$real" 2>/dev/null || echo "$real")${AGYX_REAL_AGY:+ (from AGYX_REAL_AGY)}"
+    if agyx_find_real; then
+      echo "real agy: $real${AGYX_REAL_AGY:+ (from AGYX_REAL_AGY)}"
       echo "version: $(AGY_CLI_DISABLE_AUTO_UPDATE=true "$real" --version 2>&1 | head -n 1)"
     else
       echo "real agy: NOT FOUND. Install agy, or point agyx at it with AGYX_REAL_AGY=/path/to/agy"
@@ -206,10 +208,10 @@ case $cmd in
     first=$(command -v agyx)
     if [ -n "$first" ] && [ "$first" -ef "$me" ]; then echo "PATH: agyx resolves to this script ($first)"
     else echo "PATH: agyx does NOT resolve to this script (found: ${first:-none}); put it on PATH (Homebrew does; or link $me)"; fi
-    if [ -e "$data/bin/agy" ] && [ "$data/bin/agy" -ef "$shim" ]; then
-      echo "agy entry: $data/bin/agy (in place; the path to give apps that need a binary named agy)"
+    if [ -e "$data/agy" ] && [ "$data/agy" -ef "$shim" ]; then
+      echo "agy entry: $data/agy (in place; the path to give apps that need a binary named agy)"
     else
-      echo "agy entry: $data/bin/agy is MISSING or not agyx's (it is the path to give apps that need a binary named agy)"
+      echo "agy entry: $data/agy is MISSING or not agyx's (it is the path to give apps that need a binary named agy)"
     fi
     echo "profile mode: real HOME; WSL_DISTRO_NAME=${WSL_DISTRO_NAME:-agyx}; --app_data_dir=<profile>/antigravity-cli (relative to ~/.gemini)"
     if HOME=$rh "$sec" find-generic-password -s gemini -a antigravity >/dev/null 2>&1; then

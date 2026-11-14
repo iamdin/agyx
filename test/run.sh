@@ -3,6 +3,7 @@
 umask 022
 here=$(cd "$(dirname "$0")/.." && pwd -P)
 T=$(mktemp -d) || exit 1
+T=$(cd "$T" && pwd -P)
 trap 'rm -rf "$T"' EXIT
 export HOME=$T/home AGYX_DATA_DIR=$T/data AGYX_TRASH_DIR=$T/trash
 export SECLOG=$T/security.log AGYX_SECURITY=$T/security AGYX_REAL_AGY=$T/fake-agy
@@ -37,6 +38,7 @@ if [ "${FAKE_LOGIN-}" = 1 ]; then
   exit 0
 fi
 if [ -n "${FAKE_RUN-}" ]; then exec /bin/sh -c "$FAKE_RUN"; fi
+printf 'EXE=%s\n' "$0"
 printf 'HOME=%s\nPROFILE=%s\nWSL=%s\nSSH_CLIENT=%s\nSSH_CONNECTION=%s\nSSH_TTY=%s\n' "$HOME" "$AGYX_PROFILE" "${WSL_DISTRO_NAME-unset}" "${SSH_CLIENT-unset}" "${SSH_CONNECTION-unset}" "${SSH_TTY-unset}"
 for a in "$@"; do printf 'ARG=%s\n' "$a"; done
 exit "${FAKE_STATUS:-0}"
@@ -83,6 +85,87 @@ err env-invalid env AGYX_PROFILE=BAD "$here/bin/agy"
 mv "$DD/default" "$T/default"
 err no-default launch
 mv "$T/default" "$DD/default"
+# A single entry, uncached PATH discovery and the official GUI fallback.
+eq single-entry "$here/bin/agy" "$(readlink "$DD/agy")"
+eq no-real-cache no "$([ -e "$DD/real-agy" ] || [ -L "$DD/real-agy" ] && echo yes || echo no)"
+mkdir -p "$T/native one" "$T/native-two" "$RH/.local/bin" "$T/old/bin" "$T/old/runtime" "$T/alias"
+cp "$T/fake-agy" "$T/native one/agy"
+cp "$T/fake-agy" "$T/native-two/agy"
+cp "$T/fake-agy" "$RH/.local/bin/agy"
+cp "$here/bin/agy" "$here/bin/agyx" "$T/old/bin/"
+cp "$here/runtime/sync.sh" "$T/old/runtime/"
+ln -s '../native one/agy' "$T/alias/agy"
+eq path-native-first "$T/native one/agy" "$(AGYX_REAL_AGY='' PATH="$DD:$T/old/bin:$T/native one:$PATH" FIELD=EXE field)"
+eq path-reread-next-launch "$T/native-two/agy" "$(AGYX_REAL_AGY='' PATH="$T/native-two:$PATH" FIELD=EXE field)"
+eq native-alias-resolved "$T/native one/agy" "$(AGYX_REAL_AGY='' PATH="$T/alias:$PATH" FIELD=EXE field)"
+mkdir "$T/literal[one]" "$T/literaln"
+cp "$T/fake-agy" "$T/literal[one]/agy"
+cp "$T/fake-agy" "$T/literaln/agy"
+eq path-literal-no-globbing "$T/literal[one]/agy" "$(AGYX_REAL_AGY='' PATH="$T/literal[one]:$PATH" FIELD=EXE field)"
+eq native-override-resolved "$T/native one/agy" "$(AGYX_REAL_AGY="$T/alias/agy" FIELD=EXE field)"
+eq native-override-wins "$T/fake-agy" "$(PATH="$T/native-two:$PATH" FIELD=EXE field)"
+eq minimal-path-fallback "$RH/.local/bin/agy" "$(AGYX_REAL_AGY='' FIELD=EXE field)"
+eq skip-only-shims-to-fallback "$RH/.local/bin/agy" "$(AGYX_REAL_AGY='' PATH="$DD:$T/old/bin:$PATH" FIELD=EXE field)"
+# A real binary beside an agyx runtime is still native, not an agyx shell shim.
+mkdir -p "$T/collocated/bin" "$T/collocated/runtime"
+cp /usr/bin/true "$T/collocated/bin/agy"
+cp "$here/runtime/sync.sh" "$T/collocated/runtime/"
+( . "$here/runtime/sync.sh"; AGYX_SHIM=$here/bin/agy; agyx_real_candidate "$T/collocated/bin/agy" ); rc=$?
+eq native-not-rejected-by-runtime-neighbor 0 "$rc"
+err override-current-shim env AGYX_REAL_AGY="$DD/agy" "$here/bin/agy" --profile work
+err override-other-shim env AGYX_REAL_AGY="$T/old/bin/agy" "$here/bin/agy" --profile work
+ln -s "$here/bin/agyx" "$T/alias/management"
+err override-management-shim env AGYX_REAL_AGY="$T/alias/management" "$here/bin/agy" --profile work
+err override-missing-no-fallback env AGYX_REAL_AGY="$T/missing-agy" "$here/bin/agy" --profile work
+eq doctor-new-entry 1 "$(ax doctor 2>/dev/null | grep -c "agy entry: $DD/agy (in place")"
+eq doctor-native-fallback 1 "$(AGYX_REAL_AGY='' ax doctor 2>/dev/null | grep -c "^real agy: $RH/.local/bin/agy$")"
+eq beta-version 1 "$(ax --version | grep -c '^agyx 0.2.0-beta.2$')"
+# Only doctor above queried item existence; launches still must make no security calls.
+eq doctor-item-queries-only 2 "$(wc -l < "$SECLOG" | tr -d ' ')"
+: > "$SECLOG"
+# Cleanup is idempotent, authorized without another question, and never follows bin links.
+mkdir "$DD/bin"
+ln -s "$T/native one/agy" "$DD/real-agy"
+ln -s "$here/bin/agy" "$DD/bin/agy"
+ax --version >/dev/null
+layout_trash=$(find "$AGYX_TRASH_DIR" -type d -name 'agyx-entry-layout-*')
+eq old-cache-removed no "$([ -L "$DD/real-agy" ] && echo yes || echo no)"
+eq old-entry-trashed "$here/bin/agy" "$(readlink "$layout_trash/agy")"
+eq old-empty-bin-trashed yes "$([ -d "$layout_trash/bin" ] && [ ! -e "$DD/bin" ] && echo yes)"
+ax --version >/dev/null
+eq layout-cleanup-once 1 "$(find "$AGYX_TRASH_DIR" -type d -name 'agyx-entry-layout-*' | wc -l | tr -d ' ')"
+mkdir "$DD/bin"
+printf custom > "$DD/bin/keep"
+ln -s "$T/gone/opt/agyx-beta/libexec/bin/agy" "$DD/bin/agy"
+launch >/dev/null
+eq old-nonempty-bin-kept custom "$(cat "$DD/bin/keep")"
+eq old-stale-brew-entry-removed no "$([ -L "$DD/bin/agy" ] && echo yes || echo no)"
+printf unrelated-cache > "$DD/real-agy"
+ln -s "$T/fake-agy" "$DD/bin/agy"
+launch >/dev/null
+eq unrelated-cache-file-kept unrelated-cache "$(cat "$DD/real-agy")"
+eq unrelated-old-entry-kept "$T/fake-agy" "$(readlink "$DD/bin/agy")"
+rm "$DD/bin/agy" "$DD/bin/keep" "$DD/real-agy"; rmdir "$DD/bin"
+ln -s /usr/bin/true "$DD/real-agy"
+launch >/dev/null
+eq unrelated-cache-link-kept /usr/bin/true "$(readlink "$DD/real-agy")"
+rm "$DD/real-agy"
+mkdir "$T/external-bin"; ln -s "$here/bin/agy" "$T/external-bin/agy"
+ln -s "$T/external-bin" "$DD/bin"
+launch >/dev/null
+eq bin-symlink-not-followed "$here/bin/agy" "$(readlink "$T/external-bin/agy")"
+rm "$DD/bin"
+rm "$DD/agy"; printf custom-entry > "$DD/agy"
+launch >/dev/null
+eq unrelated-new-entry-kept custom-entry "$(cat "$DD/agy")"
+rm "$DD/agy"; ln -s "$DD/agy" "$DD/agy"
+launch >/dev/null
+eq cyclic-entry-not-overwritten "$DD/agy" "$(readlink "$DD/agy")"
+rm "$DD/agy"; ln -s "$here/bin/agy" "$DD/agy"
+err official-missing env HOME="$T/no-native-home" AGYX_DATA_DIR="$T/no-native-data" AGYX_REAL_AGY='' "$here/bin/agyx" profile login p
+eq missing-native-no-setup no "$([ -e "$T/no-native-data" ] && echo yes || echo no)"
+(env AGYX_DATA_DIR="$T/gui-data" AGYX_REAL_AGY='' AGYX_ASSUME_YES=1 FAKE_LOGIN=1 "$here/bin/agyx" profile login p >/dev/null)
+eq gui-first-setup-entry "$here/bin/agy" "$(readlink "$T/gui-data/agy")"
 # The app flag precedes all subcommands, even those that skip --log-file.
 for cmd in interactive -p acp mcp login logout models agent agents plugins plugin remote-control mic-serve install help changelog update --help -h --version; do
   if [ "$cmd" = interactive ]; then out=$(launch); else out=$(launch "$cmd"); fi
@@ -508,6 +591,13 @@ printf unknown > "$shared/antigravity-oauth-token/README"
 eq unknown-blocker-kept unknown "$(cat "$shared/antigravity-oauth-token/README")"
 rm "$shared/antigravity-oauth-token/README"; rmdir "$shared/antigravity-oauth-token"
 printf plain-agy > "$shared/antigravity-oauth-token"
+# Uninstall refuses an open profile DB even if its old executable cache is gone.
+"$fr/writer with spaces" "$fr/uninstall-ready" "$app/conversation_summaries.db" & writer=$!
+i=0; while [ ! -f "$fr/uninstall-ready" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+err uninstall-live-profile env AGYX_ASSUME_YES=1 "$here/bin/agyx" uninstall
+eq uninstall-live-profile-diagnostic 1 "$(grep -c 'agy is still running' "$T/err")"
+eq uninstall-live-profile-preserved yes "$([ -d "$DD/profiles/work" ] && echo yes)"
+kill "$writer"; wait "$writer" 2>/dev/null
 # Uninstall refusal, then Trash; shared state and plain agy are retained.
 err uninstall-no env AGYX_DATA_DIR="$legacy" AGYX_TTY="$T/no" "$here/bin/agyx" uninstall
 (AGYX_DATA_DIR=$legacy AGYX_ASSUME_YES=1 ax uninstall >/dev/null 2>"$T/err")
@@ -516,9 +606,9 @@ eq uninstall-data-trash 1 "$(find "$AGYX_TRASH_DIR" -path '*/data/profiles/old/a
 eq uninstall-plain-token-kept plain-agy "$(cat "$shared/antigravity-oauth-token")"
 eq uninstall-shared-history-kept history "$(cat "$shared/history.jsonl")"
 # Existing helpers: stable Homebrew path, stale shim entry repair, non-agyx entry left alone.
-rm "$DD/bin/agy"; ln -s /missing/agy "$DD/bin/agy"
+rm "$DD/agy"; ln -s "$T/gone/opt/agyx/libexec/bin/agy" "$DD/agy"
 launch >/dev/null
-eq repaired-entry "$here/bin/agy" "$(readlink "$DD/bin/agy")"
+eq repaired-entry "$here/bin/agy" "$(readlink "$DD/agy")"
 mkdir -p "$T/prefix/Cellar/agyx/0.1.3/bin" "$T/prefix/opt"
 printf x > "$T/prefix/Cellar/agyx/0.1.3/bin/agy"
 ln -s ../Cellar/agyx/0.1.3 "$T/prefix/opt/agyx"
@@ -542,6 +632,6 @@ brewtest() { # $1 = Cellar dir (formula/version), $2 = opt name, $3 = formula br
 }
 : > "$BREWLOG"
 brewtest agyx/0.1.3 agyx agyx
-brewtest agyx-beta/0.2.0-beta.1 agyx-beta agyx-beta
+brewtest agyx-beta/0.2.0-beta.2 agyx-beta agyx-beta
 printf 'passed: %s, failed: %s\n' "$pass" "$fail"
 [ "$fail" = 0 ]

@@ -1,7 +1,7 @@
 # shellcheck shell=sh
 # shellcheck disable=SC2154,SC2034 # R, P, data and AGYX_SHIM are set by callers
 # R = real HOME; P = profile app directory. Never read or copy a token.
-AGYX_VERSION=0.2.0-beta.1 # the one place the version lives (the formula's url tag must match)
+AGYX_VERSION=0.2.0-beta.2 # the one place the version lives (the formula's url tag must match)
 
 agyx_private() {
   case $1 in antigravity-oauth-token|settings.json|jetski_state.pbtxt|jetbox_summaries_proto.pb) return 0 ;; esac
@@ -326,55 +326,75 @@ agyx_new_log() {
   return 0
 }
 
-# Sets _found to the first executable `agy` on PATH that is not agyx's own entry point (absolute).
-agyx_scan_path() {
-  _found=
-  _ifs=$IFS; IFS=:
-  for _p in $PATH; do
-    if [ -n "$_p" ] && [ -f "$_p/agy" ] && [ -x "$_p/agy" ] && [ ! "$_p/agy" -ef "$AGYX_SHIM" ]; then
-      _found=$_p/agy; break
-    fi
+# Resolve invocation links, including relative links; native agy must not see a cache alias.
+agyx_resolve_path() {
+  _resolved=$1 _hops=0
+  while [ -L "$_resolved" ]; do
+    _hops=$((_hops + 1)); [ "$_hops" -le 40 ] || return 1
+    _link=$(readlink "$_resolved") || return 1
+    case $_link in /*) _resolved=$_link ;; *) _resolved=$(dirname "$_resolved")/$_link ;; esac
   done
-  IFS=$_ifs
-  [ -n "$_found" ] || return 1
-  case $_found in /*) ;; *) _found=$PWD/$_found ;; esac
+  _parent=$(cd "$(dirname "$_resolved")" && pwd -P) || return 1
+  _resolved=$_parent/$(basename "$_resolved")
 }
 
-# Sets $real to the real agy. AGYX_REAL_AGY (absolute path) overrides everything and is not stored.
-# Otherwise <data>/real-agy is used; when it is missing, not executable or points at the shim, the
-# first executable `agy` on PATH that is not agyx's own entry point is found and stored there.
-# Returns 1 when nothing usable exists. Steady state: builtins only, no forks.
+# Current and other installed/copied agyx shims must never be selected as native agy.
+agyx_is_shim() {
+  [ "$1" -ef "$AGYX_SHIM" ] && return 0
+  case $1 in */bin/agy|*/bin/agyx)
+    [ -f "${1%/*}/../runtime/sync.sh" ] &&
+      head -c 128 "$1" | grep -q '^# agyx' &&
+      grep -q '^AGYX_VERSION=' "${1%/*}/../runtime/sync.sh" && return 0 ;;
+  esac
+  return 1
+}
+
+agyx_real_candidate() {
+  [ -f "$1" ] && [ -x "$1" ] || return 1
+  agyx_resolve_path "$1" || return 1
+  agyx_is_shim "$_resolved" && return 1
+  real=$_resolved
+}
+
+# Search every launch, then try the official install location for GUI apps' minimal PATH.
 agyx_find_real() {
-  if [ -n "${AGYX_REAL_AGY-}" ]; then
-    real=$AGYX_REAL_AGY
-    [ -f "$real" ] && [ -x "$real" ] && [ ! "$real" -ef "$AGYX_SHIM" ]
-    return
-  fi
-  real=$data/real-agy
-  if [ -x "$real" ] && [ ! "$real" -ef "$AGYX_SHIM" ]; then return 0; fi
-  agyx_scan_path || return 1
-  real=$_found
-  [ "${1-}" != readonly ] || return 0
-  (umask 077; mkdir -p "$data") && ln -sfn "$real" "$data/real-agy" ||
-    echo "agyx: warning: could not store $data/real-agy; the search will repeat on the next run" >&2
-  return 0
+  if [ -n "${AGYX_REAL_AGY-}" ]; then agyx_real_candidate "$AGYX_REAL_AGY"; return; fi
+  _search=${PATH-}
+  while :; do
+    _p=${_search%%:*}
+    if [ -n "$_p" ] && agyx_real_candidate "$_p/agy"; then return 0; fi
+    case $_search in *:*) _search=${_search#*:} ;; *) break ;; esac
+  done
+  agyx_real_candidate "$R/.local/bin/agy"
 }
 
-# <data>/bin/agy: the path to give apps that need a binary named agy (it is the shim).
-agyx_ensure_entry() {
-  [ "$data/bin/agy" -ef "$AGYX_SHIM" ] && return 0
-  if [ -L "$data/bin/agy" ]; then
-    if [ -e "$data/bin/agy" ]; then
-      _t=$(readlink "$data/bin/agy")
-      case $_t in /*) ;; *) _t=$data/bin/$_t ;; esac
-      [ "${_t##*/}" = agy ] && [ -f "${_t%/*}/../runtime/sync.sh" ] || return 0
-    fi
-  elif [ -e "$data/bin/agy" ]; then
-    return 0
+# Only links to agyx code (including removed Homebrew versions) belong to us.
+agyx_own_link() {
+  [ -L "$1" ] || return 1
+  _link=$(readlink "$1") || return 1
+  case $_link in
+    */Cellar/agyx/*/libexec/bin/agy|*/Cellar/agyx-beta/*/libexec/bin/agy|*/opt/agyx/libexec/bin/agy|*/opt/agyx-beta/libexec/bin/agy) return 0 ;;
+  esac
+  agyx_resolve_path "$1" 2>/dev/null && agyx_is_shim "$_resolved"
+}
+
+agyx_clean_old_entry() {
+  if [ -L "$data/real-agy" ]; then
+    case $(readlink "$data/real-agy") in /*/agy) rm "$data/real-agy" || return 1 ;; esac
   fi
-  (umask 077; mkdir -p "$data/bin") && ln -sfn "$AGYX_SHIM" "$data/bin/agy" 2>/dev/null ||
-    echo "agyx: warning: could not create $data/bin/agy" >&2
-  return 0
+  [ -d "$data/bin" ] && [ ! -L "$data/bin" ] && agyx_own_link "$data/bin/agy" || return 0
+  (umask 077; mkdir -p "${AGYX_TRASH_DIR:-$R/.Trash}") || return 1
+  _entry_trash=$(mktemp -d "${AGYX_TRASH_DIR:-$R/.Trash}/agyx-entry-layout-XXXXXX") || return 1
+  mv "$data/bin/agy" "$_entry_trash/agy" || return 1
+  [ -z "$(find "$data/bin" -prune -empty -print)" ] || mv "$data/bin" "$_entry_trash/bin" || return 1
+}
+
+# <data>/agy is the only app entry. Preserve unrelated files/links at that path.
+agyx_ensure_entry() {
+  agyx_clean_old_entry || return 1
+  [ "$data/agy" -ef "$AGYX_SHIM" ] && return 0
+  if [ -e "$data/agy" ] || [ -L "$data/agy" ]; then agyx_own_link "$data/agy" || return 0; fi
+  (umask 077; mkdir -p "$data") && ln -sfn "$AGYX_SHIM" "$data/agy"
 }
 
 # Sets AGYX_STABLE to the path agyx stores or passes on for itself. Homebrew keeps each version in
@@ -423,20 +443,15 @@ agyx_missing_agy() {
 agyx_gate() {
   [ -d "$data" ] && return 0
   # agy first: without it there is nothing to set up (no prompt, nothing written)
-  if [ -n "${AGYX_REAL_AGY-}" ]; then
-    _found=$AGYX_REAL_AGY
-    { [ -f "$_found" ] && [ -x "$_found" ] && [ ! "$_found" -ef "$AGYX_SHIM" ]; } || agyx_missing_agy
-  else
-    agyx_scan_path || agyx_missing_agy
-  fi
+  agyx_find_real || agyx_missing_agy
   if [ "${AGYX_ASSUME_YES-}" != 1 ]; then
     if [ -z "${AGYX_TTY-}" ] && { [ ! -t 0 ] || [ ! -t 2 ]; }; then
       die "agyx is not set up yet. Run agyx once in a terminal to set it up (or set AGYX_ASSUME_YES=1)."
     fi
     {
       echo "agyx will set up:"
-      echo "  $(agyx_tilde "$data")/  profiles (private app settings and file login per account), a link to agy at $(agyx_tilde "$_found")"
-      echo "  $(agyx_tilde "$data")/bin/agy  entry for apps that need a binary named agy"
+      echo "  $(agyx_tilde "$data")/  profiles (private app settings and file login per account)"
+      echo "  $(agyx_tilde "$data")/agy  entry for apps that need a binary named agy"
       echo "Profiles use your real HOME and share conversations and history; your login keychain is not touched."
       printf 'Continue? [Y/n] '
     } >&2
