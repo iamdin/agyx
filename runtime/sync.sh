@@ -143,8 +143,16 @@ agyx_subcommand() {
   return 1
 }
 
-# Per-profile agy log: <profile dir>/log/cli-YYYYMMDD_HHMMSS.log, a new file per launch. agyx only
-# says where agy writes (--log-file); it never reads, links or prunes these files.
+# A future agy may ignore WSL and fall back to keychain-first, mixing accounts.
+agyx_check_storage() {
+  case $1 in /*) _storage_log=$1 ;; *) _storage_log=$PWD/$1 ;; esac
+  if ! grep -Fq 'Using file-based token storage' "$_storage_log" 2>/dev/null; then
+    echo "agyx: WARNING: file-based token storage NOT confirmed in $1. Stop using profiles until agy compatibility is checked: keychain fallback can mix accounts and delete the profile token file." >&2
+  fi
+}
+
+# Per-profile agy log: <profile dir>/log/cli-YYYYMMDD_HHMMSS.log, a new file per launch.
+# agyx checks storage mode after exit; it never links or prunes logs.
 # agy takes --log-file only BEFORE its subcommand (`agy --log-file F models` works, `agy models
 # --log-file F` is rejected). The commands below never write a log, so no file is made for them; a
 # log file the caller chose is left alone.

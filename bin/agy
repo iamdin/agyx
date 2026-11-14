@@ -100,12 +100,34 @@ HOME=$rh AGY_PROFILE=$name AGYX_REAL_HOME=$rh AGY_CLI_DISABLE_AUTO_UPDATE=true
 ZDOTDIR=$bz BASH_ENV=$bb
 export HOME WSL_DISTRO_NAME AGYX_ORIG_WSL_SET AGYX_ORIG_WSL AGY_PROFILE AGYX_REAL_HOME AGY_CLI_DISABLE_AUTO_UPDATE ZDOTDIR BASH_ENV \
   AGYX_ORIG_ZDOTDIR_SET AGYX_ORIG_ZDOTDIR AGYX_ORIG_BASH_ENV_SET AGYX_ORIG_BASH_ENV
-# 5. this launch's own log file, passed before the user's arguments (see agyx_wants_log)
+# 5. Check this launch's storage evidence, including an explicit caller/login log.
+launch_log='' prev=''
+for a in "$@"; do
+  [ "$prev" != --log-file ] || launch_log=$a
+  case $a in --log-file=*) launch_log=${a#*=} ;; esac
+  prev=$a
+done
 if agyx_wants_log "$@"; then
   if agyx_new_log "$data/profiles/$name"; then
-    # shellcheck disable=SC2154 # real is set by agyx_find_real
-    exec "$real" "--app_data_dir=$AGYX_APP_ARG" --log-file "$AGYX_LOGFILE" "$@"
+    launch_log=$AGYX_LOGFILE
+    set -- --log-file "$launch_log" "$@"
+  else
+    echo "agyx: warning: could not create a log file in $data/profiles/$name/log; agy writes its default log" >&2
   fi
-  echo "agyx: warning: could not create a log file in $data/profiles/$name/log; agy writes its default log" >&2
 fi
-exec "$real" "--app_data_dir=$AGYX_APP_ARG" "$@"
+# shellcheck disable=SC2154 # real is set by agyx_find_real
+[ -n "$launch_log" ] || exec "$real" "--app_data_dir=$AGYX_APP_ARG" "$@"
+# Keep stdin/stdio intact and forward signals now that the shim waits for agy.
+"$real" "--app_data_dir=$AGYX_APP_ARG" "$@" <&0 &
+agy_pid=$!
+trap 'interrupted=1; kill -INT "$agy_pid" 2>/dev/null || :' INT
+trap 'interrupted=1; kill -TERM "$agy_pid" 2>/dev/null || :' TERM
+trap 'interrupted=1; kill -HUP "$agy_pid" 2>/dev/null || :' HUP
+while :; do
+  interrupted=0
+  wait "$agy_pid"; rc=$?
+  [ "$interrupted" = 1 ] || break
+done
+trap - INT TERM HUP
+agyx_check_storage "$launch_log"
+exit "$rc"

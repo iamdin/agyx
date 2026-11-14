@@ -76,7 +76,7 @@ For agy only, the shim supplies `WSL_DISTRO_NAME=agyx` when the existing value i
 
 Bash and Zsh startup bridges restore the original WSL variable (including unset versus empty) and the original `BASH_ENV`/`ZDOTDIR`, then source the user's startup file. HOME is never redirected. Commands started inside these shells therefore see the normal environment. **Directly executed programs (including MCP servers), shells started without startup files, and POSIX sh can still inherit the fake WSL variable.** There is no general child-process environment hook in agy; the bridge cannot clean those processes. Their HOME is nevertheless the real HOME.
 
-Each launch gets a unique private log; same-second launches get `_02`, `_03`, etc. The existing no-log list (`help`, `changelog`, `mcp`, `update`, `--help`, `-h`, `--version`) skips only the log flag, not the app-dir flag. An explicit user `--log-file` is kept. Logs are not pruned automatically.
+Each launch gets a unique private log; same-second launches get `_02`, `_03`, etc. The existing no-log list (`help`, `changelog`, `mcp`, `update`, `--help`, `-h`, `--version`) skips only the log flag, not the app-dir flag. An explicit user `--log-file` is kept. After a launch with a log file exits, agyx checks that this launch's log contains `Using file-based token storage` (WSL or SSH reason). If missing, it warns on stderr that keychain fallback can mix accounts and delete the profile token file. `doctor` applies the same check to each profile's newest log. This is an after-exit diagnostic, not prevention: stop using profiles if warned and check agy compatibility. Commands that produce no log cannot be checked. Logs are not pruned automatically.
 
 ## Migration from 0.1.3
 

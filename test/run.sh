@@ -17,17 +17,25 @@ cat > "$T/fake-agy" <<'EOF'
 app= log=
 for a in "$@"; do case $a in --app_data_dir=*) app=${a#*=} ;; esac; done
 prev=
-for a in "$@"; do [ "$prev" != --log-file ] || log=$a; prev=$a; done
+for a in "$@"; do
+  [ "$prev" != --log-file ] || log=$a
+  case $a in --log-file=*) log=${a#*=} ;; esac
+  prev=$a
+done
+if [ -n "$log" ] && [ "${FAKE_STORAGE-}" != missing ]; then
+  printf 'Using file-based token storage because %s environment detected\n' "${FAKE_STORAGE:-WSL}" >> "$log"
+fi
 [ -z "$app" ] || app=$HOME/.gemini/$app
 export FAKE_APP=$app
 if [ "${FAKE_LOGIN-}" = 1 ]; then
   (umask 077; printf 'not-a-real-token\n' > "$app/antigravity-oauth-token")
-  printf 'applyAuthResult ok email=%s\n' "${FAKE_EMAIL-own@example.com}" > "$log"
+  printf 'applyAuthResult ok email=%s\n' "${FAKE_EMAIL-own@example.com}" >> "$log"
   exit 0
 fi
 if [ -n "${FAKE_RUN-}" ]; then exec /bin/sh -c "$FAKE_RUN"; fi
 printf 'HOME=%s\nPROFILE=%s\nWSL=%s\nSSH_CLIENT=%s\nSSH_CONNECTION=%s\nSSH_TTY=%s\n' "$HOME" "$AGY_PROFILE" "${WSL_DISTRO_NAME-unset}" "${SSH_CLIENT-unset}" "${SSH_CONNECTION-unset}" "${SSH_TTY-unset}"
 for a in "$@"; do printf 'ARG=%s\n' "$a"; done
+exit "${FAKE_STATUS:-0}"
 EOF
 cat > "$T/security" <<'EOF'
 #!/bin/sh
@@ -156,6 +164,51 @@ ln -s "$app" "$DD/profiles/alias"
 err profile-dir-symlink launch --profile alias
 err profile-login-symlink ax profile login alias
 rm "$DD/profiles/alias"
+# Storage guard uses only this launch's log and preserves stdout/exit status.
+(FAKE_STORAGE=missing FAKE_STATUS=7 launch -p hello >"$T/out" 2>"$T/err"); rc=$?
+eq storage-missing-status 7 "$rc"
+eq storage-missing-stdout 1 "$(grep -c '^PROFILE=work$' "$T/out")"
+eq storage-missing-warning 1 "$(grep -c 'WARNING: file-based token storage NOT confirmed' "$T/err")"
+eq storage-warning-risk 1 "$(grep -c 'keychain fallback can mix accounts and delete the profile token file' "$T/err")"
+(FAKE_STORAGE=SSH FAKE_STATUS=8 launch -p hello >/dev/null 2>"$T/err"); rc=$?
+eq storage-ssh-status 8 "$rc"
+eq storage-ssh-no-warning '' "$(cat "$T/err")"
+launch >/dev/null 2>"$T/err"
+eq storage-wsl-no-warning '' "$(cat "$T/err")"
+for option in split equals; do
+  if [ "$option" = split ]; then set -- --log-file "$T/caller-$option.log"
+  else set -- "--log-file=$T/caller-$option.log"; fi
+  (FAKE_STORAGE=missing launch "$@" >/dev/null 2>"$T/err")
+  eq "storage-caller-$option" 1 "$(grep -c "NOT confirmed in $T/caller-$option.log" "$T/err")"
+done
+(cd "$T" && FAKE_STORAGE=missing launch --log-file=- >/dev/null 2>"$T/err")
+eq storage-dash-log-is-file 1 "$(grep -c 'NOT confirmed in -' "$T/err")"
+eq storage-stdin 'stdin preserved' "$(printf 'stdin preserved\n' | FAKE_RUN='IFS= read -r line; printf "%s" "$line"' launch)"
+# TERM sent to the shim PID must reach agy; waiting must retain the child's status.
+export READY=$T/guard-ready
+for sig in TERM HUP; do
+  rm -f "$READY"
+  FAKE_RUN='trap "exit 23" TERM HUP; : > "$READY"; sleep 1; exit 24' "$here/bin/agy" >/dev/null 2>"$T/err" &
+  guard_pid=$!
+  i=0
+  while [ ! -f "$READY" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+  kill -"$sig" "$guard_pid"
+  wait "$guard_pid"; rc=$?
+  eq "storage-$sig-forward-status" 23 "$rc"
+  eq "storage-$sig-no-warning" '' "$(cat "$T/err")"
+done
+# A skipped/no-log invocation must not inspect an older bad log.
+(FAKE_STORAGE=missing launch mcp list >/dev/null 2>"$T/err")
+eq storage-no-log-no-warning '' "$(cat "$T/err")"
+# Newest log only: an older positive marker cannot hide a new keychain fallback.
+printf 'Using file-based token storage because WSL environment detected\n' > "$app/../log/guard-old.log"
+sleep 1
+printf 'Using keychain token storage\n' > "$app/../log/guard-new.log"
+ax doctor >/dev/null 2>"$T/err"
+eq doctor-storage-newest 1 "$(grep -c 'NOT confirmed in .*work/log/guard-new.log' "$T/err")"
+printf 'Using file-based token storage because SSH environment detected\n' >> "$app/../log/guard-new.log"
+ax doctor >/dev/null 2>"$T/err"
+eq doctor-storage-confirmed 0 "$(grep -c 'NOT confirmed in .*work/log/' "$T/err")"
 # Token existence only; no parser needed, email comes from own launch log.
 (FAKE_LOGIN=1 ax profile login new >/dev/null)
 eq login-default-unchanged work "$(cat "$DD/default")"

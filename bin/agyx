@@ -227,7 +227,9 @@ case $cmd in
       # shellcheck disable=SC2034 # P is used by sync.sh
       P=$p/app
       agyx_report
-      nl=$(ls -t "$p"/log/*.log 2>/dev/null | head -n 1); nl=${nl##*/}
+      nl=$(ls -t "$p"/log/*.log 2>/dev/null | head -n 1)
+      [ -z "$nl" ] || agyx_check_storage "$nl"
+      nl=${nl##*/}
       echo "  logs: $(agyx_tilde "$p/log")/, newest: ${nl:-none yet}"
     done
     dup_warning
