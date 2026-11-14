@@ -30,7 +30,9 @@ EOF
 chmod +x "$T/stubs/shellcheck" "$T/stubs/gh" "$T/stubs/brew" "$T/stubs/curl"
 export STUBLOG=$T/stublog
 PATH=$T/stubs:$PATH
-SHA=$(printf 'tarball' | shasum -a 256 | cut -d' ' -f1)
+if command -v shasum >/dev/null 2>&1; then SHA=$(printf 'tarball' | shasum -a 256 | cut -d' ' -f1)
+else SHA=$(printf 'tarball' | sha256sum | cut -d' ' -f1)
+fi
 
 pass=0 fail=0
 eq() { if [ "$2" = "$3" ]; then pass=$((pass + 1)); else fail=$((fail + 1)); printf 'FAIL %s\n  want: %s\n  got:  %s\n' "$1" "$2" "$3"; fi; }

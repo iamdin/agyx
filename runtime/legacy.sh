@@ -26,7 +26,9 @@ agyx_delete_old_keychain() {
   _kc=$_home/Library/Keychains/login.keychain-db
   [ -e "$_kc" ] || return 0
   [ ! -L "$_home" ] && [ ! -L "$_home/Library" ] && [ ! -L "$_home/Library/Keychains" ] && [ ! -L "$_kc" ] || die "unsafe legacy keychain path: $_kc"
-  HOME=$_home "${AGYX_SECURITY:-/usr/bin/security}" delete-keychain "$_kc" >/dev/null 2>&1 || die "cannot delete old profile keychain: $_kc; migration stopped"
+  _sec=${AGYX_SECURITY:-/usr/bin/security}
+  [ -x "$_sec" ] || die "cannot delete old profile keychain without $_sec: $_kc; migration stopped"
+  HOME=$_home "$_sec" delete-keychain "$_kc" >/dev/null 2>&1 || die "cannot delete old profile keychain: $_kc; migration stopped"
 }
 
 agyx_run_migrate() {
@@ -48,10 +50,11 @@ agyx_run_migrate() {
     [ -d "$_d/home" ] || continue
     set -- "$@" "$_d/home/Library/Keychains/login.keychain-db"
   done
-  _pids=$(/usr/sbin/lsof -nP -t "$@" 2>/dev/null | sort -u | tr '\n' ' ')
+  _pids=$(agyx_open_pids "$@")
   [ -z "$_pids" ] || die "close agy before migration (PIDs: ${_pids% }); nothing changed"
-  (umask 077; mkdir -p "${AGYX_TRASH_DIR:-$R/.Trash}") || die "cannot create Trash directory"
-  _trash=$(mktemp -d "${AGYX_TRASH_DIR:-$R/.Trash}/agyx-migrate-$(date +%Y%m%d%H%M%S)-XXXXXX") || die "cannot create migration Trash directory"
+  _tbase=$(agyx_trash_base)
+  (umask 077; mkdir -p "$_tbase") || die "cannot create Trash directory"
+  _trash=$(mktemp -d "$_tbase/agyx-migrate-$(date +%Y%m%d%H%M%S)-XXXXXX") || die "cannot create migration Trash directory"
   # Delete keychains before moving homes, using each old HOME and explicit keychain path only.
   for _d in "$data"/profiles/*; do
     [ -d "$_d/home" ] || continue
@@ -72,18 +75,18 @@ agyx_clean_old_entry() {
   if [ -L "$data/real-agy" ]; then
     case $(readlink "$data/real-agy") in /*/agy) rm "$data/real-agy" || return 1 ;; esac
   fi
-  _entry_trash=''
+  _entry_trash='' _tbase=$(agyx_trash_base)
   if [ -d "$data/bin" ] && [ ! -L "$data/bin" ] && agyx_own_link "$data/bin/agy"; then
-    (umask 077; mkdir -p "${AGYX_TRASH_DIR:-$R/.Trash}") || return 1
-    _entry_trash=$(mktemp -d "${AGYX_TRASH_DIR:-$R/.Trash}/agyx-entry-layout-XXXXXX") || return 1
+    (umask 077; mkdir -p "$_tbase") || return 1
+    _entry_trash=$(mktemp -d "$_tbase/agyx-entry-layout-XXXXXX") || return 1
     mv "$data/bin/agy" "$_entry_trash/agy" || return 1
     [ -z "$(find "$data/bin" -prune -empty -print)" ] || mv "$data/bin" "$_entry_trash/bin" || return 1
   fi
   for _d in "$data"/profiles/*; do
     [ -d "$_d/log" ] && [ ! -L "$_d/log" ] && [ ! -L "$_d" ] || continue
     if [ -z "$_entry_trash" ]; then
-      (umask 077; mkdir -p "${AGYX_TRASH_DIR:-$R/.Trash}") || return 1
-      _entry_trash=$(mktemp -d "${AGYX_TRASH_DIR:-$R/.Trash}/agyx-entry-layout-XXXXXX") || return 1
+      (umask 077; mkdir -p "$_tbase") || return 1
+      _entry_trash=$(mktemp -d "$_tbase/agyx-entry-layout-XXXXXX") || return 1
     fi
     mkdir -p "$_entry_trash/logs" || return 1
     mv "$_d/log" "$_entry_trash/logs/${_d##*/}" || return 1

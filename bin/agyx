@@ -157,7 +157,7 @@ case $cmd in
       set -- "$@" "$d" "$d/conversation_summaries.db"
       for lg in "$d"/log/*.log; do [ -f "$lg" ] && set -- "$@" "$lg"; done
     done
-    pids=$(/usr/sbin/lsof -nP -t "$@" 2>/dev/null | sort -u | tr '\n' ' ')
+    pids=$(agyx_open_pids "$@")
     if [ -n "$pids" ]; then
       die "agy is still running (PIDs: ${pids% }). Close it first, then run agyx uninstall again; nothing was removed."
     fi
@@ -181,8 +181,9 @@ case $cmd in
       [ -d "$data" ] && echo "Apps set up with $(agyx_tilde "$data")/agy (for example T3 Code) will stop working."
     } >&2
     agyx_ask n 'Remove? [y/N] ' || { echo >&2; die "nothing was removed."; }
-    (umask 077; mkdir -p "${AGYX_TRASH_DIR:-$rh/.Trash}") || die "cannot create Trash directory"
-    trash=$(mktemp -d "${AGYX_TRASH_DIR:-$rh/.Trash}/agyx-uninstall-$(date +%Y%m%d%H%M%S)-XXXXXX") || die "cannot create uninstall Trash directory"
+    tbase=$(agyx_trash_base)
+    (umask 077; mkdir -p "$tbase") || die "cannot create Trash directory"
+    trash=$(mktemp -d "$tbase/agyx-uninstall-$(date +%Y%m%d%H%M%S)-XXXXXX") || die "cannot create uninstall Trash directory"
     # Legacy profiles can also be uninstalled without a separate migration prompt.
     for n in $(names); do agyx_delete_old_keychain "$data/profiles/$n"; done
     [ ! -d "$data" ] || mv "$data" "$trash/data" || die "could not move $data to the Trash"
@@ -220,7 +221,7 @@ case $cmd in
       echo "agy entry: $data/agy is MISSING or not agyx's (it is the path to give apps that need a binary named agy)"
     fi
     echo "profile mode: real HOME; WSL_DISTRO_NAME=${WSL_DISTRO_NAME:-agyx}; --app_data_dir=<profile>/antigravity-cli (relative to ~/.gemini)"
-    if HOME=$rh "$sec" find-generic-password -s gemini -a antigravity >/dev/null 2>&1; then
+    if [ -x "$sec" ] && HOME=$rh "$sec" find-generic-password -s gemini -a antigravity >/dev/null 2>&1; then
       echo "keychain: INFO plain agy has a login (gemini/antigravity); agyx does not use it"
     fi
     d=$(dflt); echo "default: ${d:-none}"
@@ -230,13 +231,13 @@ case $cmd in
       echo "profile $n: $(status "$n")"
       for dir in "$p" "$p/antigravity-cli"; do
         if [ -d "$dir" ]; then
-          mode=$(stat -f %Lp "$dir")
+          mode=$(agyx_mode "$dir")
           [ $((0$mode & 077)) -eq 0 ] || echo "  permissions: WARNING $dir mode $mode is group/world accessible (expected 0700)"
         else echo "  permissions: WARNING directory missing: $dir"; fi
       done
       if [ -L "$t" ]; then echo "  token: WARNING symlink (profile will not start)"
       elif [ -f "$t" ]; then
-        mode=$(stat -f %Lp "$t")
+        mode=$(agyx_mode "$t")
         if [ "$mode" = 600 ]; then echo "  token: present, mode 0600"
         else echo "  token: WARNING mode $mode (expected 0600)"; fi
       else echo "  token: missing (sign in again)"; fi

@@ -91,7 +91,9 @@ if [ "$dry" = 1 ]; then
 else
   printf '  + curl -fsSL -o %s/src.tar.gz %s\n' "$tmp" "$turl"
   curl -fsSL -o "$tmp/src.tar.gz" "$turl"
-  sha=$(shasum -a 256 "$tmp/src.tar.gz" | cut -d' ' -f1)
+  if command -v shasum >/dev/null 2>&1; then sha=$(shasum -a 256 "$tmp/src.tar.gz" | cut -d' ' -f1)
+  else sha=$(sha256sum "$tmp/src.tar.gz" | cut -d' ' -f1)
+  fi
   case $sha in [0-9a-f]*) [ ${#sha} = 64 ] || { echo "bad sha256: $sha" >&2; exit 1; } ;; *) echo "bad sha256: $sha" >&2; exit 1 ;; esac
 fi
 echo "  sha256 $sha"

@@ -1,6 +1,6 @@
 # agyx
 
-Run the official Google Antigravity CLI (`agy`, macOS) with several Google accounts under one macOS user. Each profile has its own file login and app settings. All profiles use your **real HOME** and share conversations, brain, history and MCP configuration. Plain `agy` keeps its normal login keychain and default app directory.
+Run the official Google Antigravity CLI (`agy`, macOS & Linux) with several Google accounts under one OS user. Each profile has its own file login and app settings. All profiles use your **real HOME** and share conversations, brain, history and MCP configuration. Plain `agy` keeps its normal system keyring and default app directory.
 
 POSIX `sh`, no runtime dependencies. Previously called agyctl.
 
@@ -96,7 +96,7 @@ After consent, agyx creates a single `~/.Trash/agyx-migrate-<timestamp>-*/` dire
 3. Removes the old shared token blocker **only** when it contains exactly agyx's original README and nothing else. Plain agy's token files and unknown directories are untouched.
 4. Moves the old `${XDG_CONFIG_HOME:-~/.config}/agyx/symlinks` whitelist file to `<migration-trash>/symlinks`, keeping its surrounding config directory.
 
-List then reports the old profiles as not logged in. Run `agyx profile login NAME` for each one. Old leftovers live in the macOS Trash, never a backup directory under agyx. Test overrides `AGYX_SECURITY`, `AGYX_TRASH_DIR` and `AGYX_TTY` are for isolated tests, not normal use.
+List then reports the old profiles as not logged in. Run `agyx profile login NAME` for each one. Displaced leftovers go to the OS Trash (`~/.Trash` on macOS, `${XDG_DATA_HOME:-~/.local/share}/Trash/files` on Linux), never a backup directory under agyx. Test overrides `AGYX_SECURITY`, `AGYX_TRASH_DIR` and `AGYX_TTY` are for isolated tests, not normal use.
 
 ## Doctor and uninstall
 

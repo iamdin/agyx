@@ -1,7 +1,7 @@
 # shellcheck shell=sh
 # shellcheck disable=SC2154,SC2034 # R, P, data, AGYX_SHIM and AGYX_RUNTIME are set by callers
 # R = real HOME; P = profile app directory. Never read or copy a token.
-AGYX_VERSION=0.2.0-beta.7 # the one place the version lives (the formula's url tag must match)
+AGYX_VERSION=0.2.0-beta.8 # the one place the version lives (the formula's url tag must match)
 AGYX_SHARED_DIRS='annotations bin brain builtin conversations implicit presence sidecar_data'
 AGYX_SHARED_FILES='conversation_summaries.db history.jsonl installation_id'
 
@@ -26,6 +26,48 @@ agyx_ask() {
   read -r _ans < "${AGYX_TTY:-/dev/tty}" || [ -n "$_ans" ] || _ans=n
   case $1:$_ans in y:|y:[Yy]*|n:[Yy]*) return 0 ;; esac
   return 1
+}
+
+# Portable across macOS and Linux:Trash dir, octal mode, UUID, and open-file PID lookup.
+agyx_trash_base() {
+  if [ -n "${AGYX_TRASH_DIR-}" ]; then printf '%s' "$AGYX_TRASH_DIR"
+  elif [ -d "$R/.Trash" ] || [ "$(uname -s 2>/dev/null)" = Darwin ]; then printf '%s' "$R/.Trash"
+  else
+    case ${XDG_DATA_HOME-} in /*) printf '%s/Trash/files' "$XDG_DATA_HOME" ;; *) printf '%s/.local/share/Trash/files' "$R" ;; esac
+  fi
+}
+
+agyx_mode() {
+  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then stat -f %Lp "$1" 2>/dev/null
+  else stat -c %a "$1" 2>/dev/null
+  fi
+}
+
+agyx_uuid() {
+  if [ -r /proc/sys/kernel/random/uuid ]; then IFS= read -r _u < /proc/sys/kernel/random/uuid && printf '%s' "$_u"
+  elif command -v uuidgen >/dev/null 2>&1; then uuidgen | tr '[:upper:]' '[:lower:]'
+  else awk 'BEGIN{srand(); printf "%04x%04x-%04x-4%03x-a%03x-%04x%04x%04x", rand()*65536, rand()*65536, rand()*65536, rand()*4096, rand()*4096, rand()*65536, rand()*65536, rand()*65536}'
+  fi
+}
+
+agyx_open_pids() {
+  _lsof=''
+  if [ -x /usr/sbin/lsof ]; then _lsof=/usr/sbin/lsof
+  elif command -v lsof >/dev/null 2>&1; then _lsof=$(command -v lsof)
+  fi
+  if [ -n "$_lsof" ]; then
+    "$_lsof" -nP -t "$@" 2>/dev/null | sort -u | tr '\n' ' '
+  elif command -v fuser >/dev/null 2>&1; then
+    fuser "$@" 2>/dev/null | tr -s '[:space:]' '\n' | grep -E '^[0-9]+$' | sort -u | tr '\n' ' '
+  elif [ -d /proc ]; then
+    for _fd in /proc/[0-9]*/fd/* /proc/[0-9]*/exe; do
+      [ -L "$_fd" ] || continue
+      for _tgt in "$@"; do
+        [ -e "$_tgt" ] && [ "$_fd" -ef "$_tgt" ] || continue
+        _p=${_fd#/proc/}; printf '%s\n' "${_p%%/*}"
+      done
+    done | sort -u | tr '\n' ' '
+  fi
 }
 
 agyx_legacy() {
@@ -183,10 +225,11 @@ agyx_confirm_repair() {
 agyx_do_repair() (
   set -- "$_shared/conversation_summaries.db"
   for _dir in "$data"/profiles/*; do set -- "$@" "$_dir/antigravity-cli/conversation_summaries.db"; done
-  _pids=$(/usr/sbin/lsof -nP -t "$@" 2>/dev/null | tr '\n' ' ')
-  [ -z "$_pids" ] || { echo "agyx: close agy before shared repair (PIDs: $_pids); nothing repaired" >&2; return 1; }
-  mkdir -p "${AGYX_TRASH_DIR:-$R/.Trash}" || return 1
-  _trash=$(mktemp -d "${AGYX_TRASH_DIR:-$R/.Trash}/agyx-shared-repair-XXXXXX") || return 1
+  _pids=$(agyx_open_pids "$@")
+  [ -z "$_pids" ] || { echo "agyx: close agy before shared repair (PIDs: ${_pids% }); nothing repaired" >&2; return 1; }
+  _tbase=$(agyx_trash_base)
+  mkdir -p "$_tbase" || return 1
+  _trash=$(mktemp -d "$_tbase/agyx-shared-repair-XXXXXX") || return 1
   for _dir in "$data"/profiles/*; do
     [ -d "$_dir/antigravity-cli" ] && [ ! -L "$_dir" ] && [ ! -L "$_dir/antigravity-cli" ] || continue
     for _entry in "$_dir/antigravity-cli"/* "$_dir/antigravity-cli"/.[!.]* "$_dir/antigravity-cli"/..?*; do
@@ -263,8 +306,8 @@ agyx_sync_app() (
     case $_n in *.db) agyx_no_orphan_sidecars "$_shared/$_n" || return 1 ;; esac
     # SQLite initializes a zero-byte DB; an empty JSONL stream has no records.
     if [ "$_n" = installation_id ]; then
-      _id=$(uuidgen) || return 1
-      printf %s "$_id" | tr '[:upper:]' '[:lower:]' > "$_shared/$_n" || return 1
+      _id=$(agyx_uuid) && [ -n "$_id" ] || return 1
+      printf '%s' "$_id" > "$_shared/$_n" || return 1
     else : > "$_shared/$_n" || return 1; fi
   done
   for _s in "$_shared"/* "$_shared"/.[!.]* "$_shared"/..?*; do
@@ -380,7 +423,6 @@ agyx_check_recent_log() {
 }
 
 # Resolve invocation links, including relative links; native agy must not see a cache alias.
-# Uses shell parameter expansion instead of dirname/basename forks.
 agyx_resolve_path() {
   _resolved=$1 _hops=0
   while [ -L "$_resolved" ]; do
@@ -455,7 +497,7 @@ agyx_ensure_entry() {
   (umask 077; mkdir -p "$data") && ln -sfn "$AGYX_SHIM" "$data/agy"
 }
 
-# Map Homebrew's versioned Cellar path to <prefix>/opt/<formula>/... when it exists.
+# Map Homebrew's versioned Cellar path to <prefix>/opt/<formula>/... when it exists (macOS & Linuxbrew).
 agyx_stable() {
   case $1 in
     */Cellar/*/*)
@@ -500,7 +542,7 @@ agyx_gate() {
       echo "agyx will set up:"
       echo "  $(agyx_tilde "$data")/  profiles (private app settings and file login per account)"
       echo "  $(agyx_tilde "$data")/agy  entry for apps that need a binary named agy"
-      echo "Profiles use your real HOME and share conversations and history; your login keychain is not touched."
+      echo "Profiles use your real HOME and share conversations and history; your system keyring is not touched."
     } >&2
     agyx_ask y 'Continue? [Y/n] ' || { echo >&2; die "not set up; nothing was written."; }
   fi

@@ -69,6 +69,8 @@ printf 'work\n' > "$DD/default"
 ax() { "$here/bin/agyx" "$@"; }
 launch() { "$here/bin/agy" "$@"; }
 pass=0 fail=0
+mode_of() { if [ "$(uname -s)" = Darwin ]; then stat -f %Lp "$1"; else stat -c %a "$1"; fi; }
+stamp_of() { if [ "$(uname -s)" = Darwin ]; then stat -f '%i:%p:%m:%z' "$@"; else stat -c '%i:%f:%Y:%s' "$@"; fi; }
 eq() {
   if [ "$2" = "$3" ]; then pass=$((pass + 1)); else fail=$((fail + 1)); printf 'FAIL %s\n  want: %s\n  got:  %s\n' "$1" "$2" "$3"; fi
 }
@@ -130,7 +132,7 @@ err override-management-shim env AGYX_REAL_AGY="$T/alias/management" "$here/bin/
 err override-missing-no-fallback env AGYX_REAL_AGY="$T/missing-agy" "$here/bin/agy" --profile work
 eq doctor-new-entry 1 "$(ax doctor 2>/dev/null | grep -c "agy entry: $DD/agy (in place")"
 eq doctor-native-fallback 1 "$(AGYX_REAL_AGY='' ax doctor 2>/dev/null | grep -c "^real agy: $RH/.local/bin/agy$")"
-eq beta-version 1 "$(ax --version | grep -c '^agyx 0.2.0-beta.7$')"
+eq beta-version 1 "$(ax --version | grep -c '^agyx 0.2.0-beta.8$')"
 # Only doctor above queried item existence; launches still must make no security calls.
 eq doctor-item-queries-only 2 "$(wc -l < "$SECLOG" | tr -d ' ')"
 : > "$SECLOG"
@@ -234,9 +236,11 @@ mkdir -p "$T/zd"
 printf '[ ! "${AGYX_ORIG_WSL+x}" ] || printf leak >> "$COUNT"\nprintf x >> "$COUNT"\n' > "$T/zd/.zshenv"
 printf '[ ! "${AGYX_ORIG_WSL+x}" ] || printf leak >> "$COUNT"\nprintf x >> "$COUNT"\n' > "$T/benv"
 export COUNT=$T/count
-: > "$COUNT"
-(ZDOTDIR=$T/zd FAKE_RUN='zsh -c true' launch >/dev/null)
-eq zshenv-once x "$(cat "$COUNT")"
+if command -v zsh >/dev/null 2>&1; then
+  : > "$COUNT"
+  (ZDOTDIR=$T/zd FAKE_RUN='zsh -c true' launch >/dev/null)
+  eq zshenv-once x "$(cat "$COUNT")"
+fi
 : > "$COUNT"
 (BASH_ENV=$T/benv FAKE_RUN='bash -c true' launch >/dev/null)
 eq bashenv-once x "$(cat "$COUNT")"
@@ -268,31 +272,35 @@ for suffix in wal shm journal; do
   ln -s "$shared/missing.db-$suffix" "$app/doctor.db-$suffix"
 done
 eq doctor-ignores-sidecars 0 "$(ax doctor 2>/dev/null | grep -Ec 'antigravity-cli .*(-wal|-shm|-journal):')"
-# macOS SQLite resolves the DB link before deriving WAL/SHM names and taking locks.
-mkdir -p "$T/sqlite/shared" "$T/sqlite/one" "$T/sqlite/two"
-sqldb=$T/sqlite/shared/test.db
-sqlite3 "$sqldb" 'PRAGMA journal_mode=WAL; CREATE TABLE t(n);' >/dev/null
-ln -s "$sqldb" "$T/sqlite/one/test.db"
-ln -s "$sqldb" "$T/sqlite/two/test.db"
-sqlite3 "$T/sqlite/one/test.db" <<EOF &
+# SQLite resolves the DB link before deriving WAL/SHM names and taking locks.
+if command -v sqlite3 >/dev/null 2>&1; then
+  mkdir -p "$T/sqlite/shared" "$T/sqlite/one" "$T/sqlite/two"
+  sqldb=$T/sqlite/shared/test.db
+  sqlite3 "$sqldb" 'PRAGMA journal_mode=WAL; CREATE TABLE t(n);' >/dev/null
+  ln -s "$sqldb" "$T/sqlite/one/test.db"
+  ln -s "$sqldb" "$T/sqlite/two/test.db"
+  sqlite3 "$T/sqlite/one/test.db" <<EOF &
 BEGIN IMMEDIATE;
 INSERT INTO t VALUES(1);
 .shell touch "$T/sqlite/ready"
 .shell sleep 1
 COMMIT;
 EOF
-sqlite_pid=$!
-i=0
-while [ ! -f "$T/sqlite/ready" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
-eq sqlite-shared-wal-shm yes "$([ -f "$sqldb-wal" ] && [ -f "$sqldb-shm" ] && echo yes)"
-eq sqlite-no-profile-sidecars no "$(find "$T/sqlite/one" "$T/sqlite/two" -type f | grep -q . && echo yes || echo no)"
-sqlite3 "$T/sqlite/two/test.db" 'BEGIN IMMEDIATE;' 2>"$T/sqlite/error"; rc=$?
-eq sqlite-shared-writer-lock 1 "$([ "$rc" -ne 0 ] && grep -q 'database is locked' "$T/sqlite/error" && echo 1)"
-wait "$sqlite_pid"; rc=$?
-eq sqlite-first-commit 0 "$rc"
-sqlite3 "$T/sqlite/two/test.db" 'BEGIN IMMEDIATE; INSERT INTO t VALUES(2); COMMIT;'
-eq sqlite-both-writes-visible 2 "$(sqlite3 "$sqldb" 'SELECT count(*) FROM t;')"
-eq sqlite-integrity ok "$(sqlite3 "$sqldb" 'PRAGMA integrity_check;')"
+  sqlite_pid=$!
+  i=0
+  while [ ! -f "$T/sqlite/ready" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+  eq sqlite-shared-wal-shm yes "$([ -f "$sqldb-wal" ] && [ -f "$sqldb-shm" ] && echo yes)"
+  eq sqlite-no-profile-sidecars no "$(find "$T/sqlite/one" "$T/sqlite/two" -type f | grep -q . && echo yes || echo no)"
+  sqlite3 "$T/sqlite/two/test.db" 'BEGIN IMMEDIATE;' 2>"$T/sqlite/error"; rc=$?
+  eq sqlite-shared-writer-lock 1 "$([ "$rc" -ne 0 ] && grep -q 'database is locked' "$T/sqlite/error" && echo 1)"
+  wait "$sqlite_pid"; rc=$?
+  eq sqlite-first-commit 0 "$rc"
+  sqlite3 "$T/sqlite/two/test.db" 'BEGIN IMMEDIATE; INSERT INTO t VALUES(2); COMMIT;'
+  eq sqlite-both-writes-visible 2 "$(sqlite3 "$sqldb" 'SELECT count(*) FROM t;')"
+  eq sqlite-integrity ok "$(sqlite3 "$sqldb" 'PRAGMA integrity_check;')"
+else
+  echo "SKIP sqlite3"
+fi
 for private in antigravity-oauth-token settings.json jetski_state.pbtxt jetbox_summaries_proto.pb; do
   eq "not-shared-$private" no "$([ -e "$app/$private" ] && echo yes || echo no)"
 done
@@ -366,16 +374,20 @@ spawned_pid=$!
 wait "$spawned_pid"
 eq exec-direct-pid "$spawned_pid" "$(cat "$T/child-pid")"
 export READY=$T/guard-ready
+sig_shell=/bin/sh
+command -v bash >/dev/null 2>&1 && sig_shell=bash
 for sig in INT TERM HUP; do
   rm -f "$READY"
   rc=$(
-    set -m
-    FAKE_RUN='trap "exit 23" INT TERM HUP; : > "$READY"; sleep 2; exit 24' "$here/bin/agy" >/dev/null 2>"$T/err" &
-    guard_pid=$!
-    i=0
-    while [ ! -f "$READY" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
-    kill -"$sig" "$guard_pid"
-    wait "$guard_pid" 2>/dev/null; printf %s "$?"
+    "$sig_shell" -c '
+      set -m
+      FAKE_RUN="trap \"exit 23\" INT TERM HUP; : > \"\$READY\"; sleep 2; exit 24" "$1/bin/agy" >/dev/null 2>"$2/err" &
+      guard_pid=$!
+      i=0
+      while [ ! -f "$READY" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+      kill -"$3" "$guard_pid"
+      wait "$guard_pid" 2>/dev/null; printf %s "$?"
+    ' _ "$here" "$T" "$sig"
   )
   eq "exec-$sig-status" 23 "$rc"
   eq "exec-$sig-no-warning" '' "$(cat "$T/err")"
@@ -394,9 +406,9 @@ eq doctor-storage-confirmed 0 "$(grep -c 'NOT confirmed in .*work/antigravity-cl
 (FAKE_LOGIN=1 ax profile login new >/dev/null)
 eq login-default-unchanged work "$(cat "$DD/default")"
 eq login-email own@example.com "$(cat "$DD/profiles/new/email")"
-eq token-mode 600 "$(stat -f %Lp "$DD/profiles/new/antigravity-cli/antigravity-oauth-token")"
-eq profile-mode 700 "$(stat -f %Lp "$DD/profiles/new")"
-eq profile-app-mode 700 "$(stat -f %Lp "$DD/profiles/new/antigravity-cli")"
+eq token-mode 600 "$(mode_of "$DD/profiles/new/antigravity-cli/antigravity-oauth-token")"
+eq profile-mode 700 "$(mode_of "$DD/profiles/new")"
+eq profile-app-mode 700 "$(mode_of "$DD/profiles/new/antigravity-cli")"
 chmod 750 "$DD/profiles/new"
 chmod 705 "$DD/profiles/new/antigravity-cli"
 out=$(ax doctor 2>/dev/null)
@@ -443,7 +455,7 @@ eq fresh-id-valid 1 "$(grep -Ec '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4
 for e in antigravity-oauth-token settings.json jetski_state.pbtxt jetbox_summaries_proto.pb; do
   (umask 077; printf dummy-private > "$one/$e")
 done
-private_stat=$(stat -f '%i:%p:%m:%z' "$one/antigravity-oauth-token" "$one/settings.json" "$one/jetski_state.pbtxt" "$one/jetbox_summaries_proto.pb")
+private_stat=$(stamp_of "$one/antigravity-oauth-token" "$one/settings.json" "$one/jetski_state.pbtxt" "$one/jetbox_summaries_proto.pb")
 # Build real drift with recursive, hidden, spaced and differently-typed conflicts.
 rm "$one/conversations" "$one/brain" "$one/history.jsonl" "$one/conversation_summaries.db" "$one/installation_id"
 mkdir -p "$one/conversations/nested" "$fs/conversations/nested" "$one/brain" "$one/conversations/type-clash"
@@ -515,7 +527,7 @@ eq repair-db-trashed profile-db "$(cat "$trash/one/conversation_summaries.db")"
 eq repair-db-wal-trashed profile-wal "$(cat "$trash/one/conversation_summaries.db-wal")"
 eq repair-id-shared-kept shared-id "$(cat "$fs/installation_id")"
 eq repair-id-trashed profile-id "$(cat "$trash/one/installation_id")"
-eq repair-private-stat-unchanged "$private_stat" "$(stat -f '%i:%p:%m:%z' "$one/antigravity-oauth-token" "$one/settings.json" "$one/jetski_state.pbtxt" "$one/jetbox_summaries_proto.pb")"
+eq repair-private-stat-unchanged "$private_stat" "$(stamp_of "$one/antigravity-oauth-token" "$one/settings.json" "$one/jetski_state.pbtxt" "$one/jetbox_summaries_proto.pb")"
 for e in conversations brain history.jsonl conversation_summaries.db installation_id; do
   eq "repair-link-$e" "$fs/$e" "$(readlink "$one/$e")"
 done
@@ -636,7 +648,7 @@ eq migration-explicit-home 2 "$(grep -c "^HOME=$legacy/profiles/.*home delete-ke
 eq migration-home-gone absent "$([ -d "$legacy/profiles/old/home" ] && echo present || echo absent)"
 eq migration-email-kept old@example.com "$(cat "$legacy/profiles/old/email")"
 eq migration-outer-log-trashed absent "$([ -e "$legacy/profiles/old/log" ] && echo present || echo absent)"
-eq migration-app-mode 700 "$(stat -f %Lp "$legacy/profiles/old/antigravity-cli")"
+eq migration-app-mode 700 "$(mode_of "$legacy/profiles/old/antigravity-cli")"
 eq migration-single-trash-root 1 "$(find "$AGYX_TRASH_DIR" -maxdepth 1 -type d -name 'agyx-migrate-*' | wc -l | tr -d ' ')"
 eq migration-trash 2 "$(find "$AGYX_TRASH_DIR" -name home -type d | wc -l | tr -d ' ')"
 eq migration-then-entry-updated "$here/bin/agy" "$(readlink "$legacy/agy")"
@@ -705,6 +717,8 @@ brewtest() { # $1 = Cellar dir (formula/version), $2 = opt name, $3 = formula br
 }
 : > "$BREWLOG"
 brewtest agyx/0.1.3 agyx agyx
-brewtest agyx-beta/0.2.0-beta.7 agyx-beta agyx-beta
+brewtest agyx-beta/0.2.0-beta.8 agyx-beta agyx-beta
+# Linux/XDG trash base fallback when AGYX_TRASH_DIR is unset and ~/.Trash does not exist.
+eq xdg-trash-fallback "$T/xdg-data/Trash/files" "$(unset AGYX_TRASH_DIR; XDG_DATA_HOME=$T/xdg-data R=$T/linux-home; . "$here/runtime/sync.sh"; [ -d "$R/.Trash" ] || uname() { echo Linux; }; agyx_trash_base)"
 printf 'passed: %s, failed: %s\n' "$pass" "$fail"
 [ "$fail" = 0 ]
