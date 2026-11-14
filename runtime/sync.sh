@@ -1,7 +1,9 @@
 # shellcheck shell=sh
 # shellcheck disable=SC2154,SC2034 # R, P, data, AGYX_SHIM and AGYX_RUNTIME are set by callers
 # R = real HOME; P = profile app directory. Never read or copy a token.
-AGYX_VERSION=0.2.0-beta.6 # the one place the version lives (the formula's url tag must match)
+AGYX_VERSION=0.2.0-beta.7 # the one place the version lives (the formula's url tag must match)
+AGYX_SHARED_DIRS='annotations bin brain builtin conversations implicit presence sidecar_data'
+AGYX_SHARED_FILES='conversation_summaries.db history.jsonl installation_id'
 
 agyx_valid_name() {
   case ${1-} in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789_-]*|[!abcdefghijklmnopqrstuvwxyz]*) return 1 ;; esac
@@ -59,11 +61,16 @@ agyx_sidecar() {
   return 1
 }
 
+agyx_is_known_shared() {
+  case $1 in annotations|bin|brain|builtin|conversations|implicit|presence|sidecar_data|conversation_summaries.db|history.jsonl|installation_id) return 0 ;; esac
+  return 1
+}
+
 # The known shared layout; seed before the first native launch, not the next one.
 agyx_shared_entries() {
   case $1 in
-    dirs) printf '%s\n' annotations bin brain builtin conversations implicit presence sidecar_data ;;
-    files) printf '%s\n' conversation_summaries.db history.jsonl installation_id ;;
+    dirs) printf '%s\n' $AGYX_SHARED_DIRS ;;
+    files) printf '%s\n' $AGYX_SHARED_FILES ;;
   esac
 }
 
@@ -84,16 +91,16 @@ agyx_merge_tree() (
   fi
 )
 
-# Moving existing known entries also needs consent and a stopped native writer.
+# Moving existing known entries also needs consent and a stopped native writer. Zero forks when clean.
 agyx_needs_repair() (
   for _dir in "$data"/profiles/*; do
     [ -d "$_dir/antigravity-cli" ] && [ ! -L "$_dir" ] && [ ! -L "$_dir/antigravity-cli" ] || continue
     for _entry in "$_dir/antigravity-cli"/* "$_dir/antigravity-cli"/.[!.]* "$_dir/antigravity-cli"/..?*; do
-      [ -e "$_entry" ] && [ ! -L "$_entry" ] || continue
+      [ ! -L "$_entry" ] && [ -e "$_entry" ] || continue
       _name=${_entry##*/}
       agyx_private "$_name" && continue
       agyx_sidecar "$_name" && continue
-      for _known in $(agyx_shared_entries dirs) $(agyx_shared_entries files); do [ "$_name" != "$_known" ] || return 0; done
+      agyx_is_known_shared "$_name" && return 0
       [ ! -e "$_shared/$_name" ] && [ ! -L "$_shared/$_name" ] || return 0
       for _other in "$data"/profiles/*; do
         [ "$_other" != "$_dir" ] && [ ! -L "$_other" ] && [ ! -L "$_other/antigravity-cli" ] || continue
@@ -103,6 +110,37 @@ agyx_needs_repair() (
   done
   return 1
 )
+
+# True when $P and $_shared already match in steady state (zero forks, lock-free fast path).
+agyx_is_synced() {
+  [ -d "$P" ] && [ -d "$_shared" ] || return 1
+  for _n in $AGYX_SHARED_DIRS $AGYX_SHARED_FILES; do
+    [ -e "$_shared/$_n" ] && [ -L "$P/$_n" ] || return 1
+  done
+  for _s in "$_shared"/* "$_shared"/.[!.]* "$_shared"/..?*; do
+    [ -e "$_s" ] || [ -L "$_s" ] || continue
+    _n=${_s##*/}
+    agyx_sidecar "$_n" && continue
+    agyx_private "$_n" && continue
+    [ -e "$P/$_n" ] || [ -L "$P/$_n" ] || return 1
+  done
+  for _p in "$P"/* "$P"/.[!.]* "$P"/..?*; do
+    [ -e "$_p" ] || [ -L "$_p" ] || continue
+    _n=${_p##*/}
+    if agyx_sidecar "$_n"; then
+      [ ! -L "$_p" ] || [ -e "$_p" ] || return 1
+      continue
+    fi
+    if agyx_private_file "$_n"; then
+      [ ! -L "$_p" ] && [ -f "$_p" ] || return 1
+    elif agyx_private "$_n"; then
+      [ ! -L "$_p" ] || [ ! "$_p" -ef "$_shared/$_n" ] || return 1
+    else
+      [ -L "$_p" ] || return 1
+    fi
+  done
+  return 0
+}
 
 # A missing DB with surviving sidecars needs manual recovery, not an empty replacement.
 agyx_no_orphan_sidecars() {
@@ -190,21 +228,23 @@ agyx_do_repair() (
   echo "agyx: shared entries repaired; displaced copies are in $_trash" >&2
 )
 
-# Serialize preparation/repair, not prompts or native agy sessions.
+# Steady-state launches pass through lock-free with zero forks; mutations serialize under $data/.lock.
 agyx_sync_app() (
   umask 077
   _shared=$R/.gemini/antigravity-cli _consented=0
   if agyx_needs_repair; then
     agyx_confirm_repair || return 1
     _consented=1
+  elif [ ! -e "$data/.lock" ] && agyx_is_synced; then
+    return 0
   fi
   mkdir -p "$P" "$_shared" || return 1
-  _lock=$data/.lock _tries=${AGYX_LOCK_TRIES:-100}
-  # ponytail: global spin-wait lock (up to ~5s); switch to flock/shlock only if launch concurrency outgrows this
+  _lock=$data/.lock _tries=${AGYX_LOCK_TRIES:-250}
+  # ponytail: global spin-wait lock (up to ~5s); steady state skips this via agyx_is_synced above
   while ! mkdir "$_lock" 2>/dev/null; do
     _tries=$((_tries - 1))
     [ "$_tries" -gt 0 ] || { echo "agyx: shared preparation is busy; if no agyx is preparing, remove stale lock with: rmdir $_lock" >&2; return 1; }
-    sleep 0.05
+    sleep 0.02
   done
   trap 'rmdir "$_lock"' EXIT
   trap 'exit 1' HUP INT TERM
@@ -215,8 +255,10 @@ agyx_sync_app() (
     }
     agyx_do_repair || return 1
   fi
-  for _n in $(agyx_shared_entries dirs); do mkdir -p "$_shared/$_n" || return 1; done
-  for _n in $(agyx_shared_entries files); do
+  # shellcheck disable=SC2086 # fixed space-separated names in AGYX_SHARED_*
+  for _n in $AGYX_SHARED_DIRS; do [ -d "$_shared/$_n" ] || mkdir -p "$_shared/$_n" || return 1; done
+  # shellcheck disable=SC2086
+  for _n in $AGYX_SHARED_FILES; do
     [ ! -e "$_shared/$_n" ] && [ ! -L "$_shared/$_n" ] || continue
     case $_n in *.db) agyx_no_orphan_sidecars "$_shared/$_n" || return 1 ;; esac
     # SQLite initializes a zero-byte DB; an empty JSONL stream has no records.
@@ -245,7 +287,6 @@ agyx_sync_app() (
         return 1
       }
     elif agyx_private "$_n"; then
-      # Detach former shared links (cache, crashes, log, cli.log, updater, last_check.timestamp).
       if [ -L "$_p" ]; then
         case $(readlink "$_p") in "$_shared/$_n") rm "$_p" || return 1 ;; esac
       fi
@@ -320,34 +361,49 @@ agyx_check_binary() {
   fi
 }
 
-# Check the newest non-empty native log in $1 (<profile>/antigravity-cli/log).
+# Check the newest non-empty native log in $1 (<profile>/antigravity-cli) without spawning ls/sort:
+# prefer native agy's own cli.log symlink when non-empty; otherwise pick newest in log/*.log via -nt.
 agyx_check_recent_log() {
-  ls -t "$1"/log/*.log 2>/dev/null | while IFS= read -r _nl; do
-    [ -s "$_nl" ] || continue
-    agyx_check_storage "$_nl"
-    break
+  _cl=$1/cli.log
+  if [ -L "$_cl" ] && [ -s "$_cl" ]; then
+    _target=$(readlink "$_cl") || _target=''
+    case $_target in /*) _cl=$_target ;; ?*) _cl=$1/$_target ;; esac
+    agyx_check_storage "$_cl"
+    return 0
+  fi
+  _best=''
+  for _f in "$1"/log/*.log; do
+    [ -s "$_f" ] || continue
+    [ -z "$_best" ] || [ "$_f" -nt "$_best" ] && _best=$_f
   done
+  [ -z "$_best" ] || agyx_check_storage "$_best"
 }
 
 # Resolve invocation links, including relative links; native agy must not see a cache alias.
+# Uses shell parameter expansion instead of dirname/basename forks.
 agyx_resolve_path() {
   _resolved=$1 _hops=0
   while [ -L "$_resolved" ]; do
     _hops=$((_hops + 1)); [ "$_hops" -le 40 ] || return 1
     _link=$(readlink "$_resolved") || return 1
-    case $_link in /*) _resolved=$_link ;; *) _resolved=$(dirname "$_resolved")/$_link ;; esac
+    case $_link in
+      /*) _resolved=$_link ;;
+      *) case $_resolved in */*) _resolved=${_resolved%/*}/$_link ;; *) _resolved=$_link ;; esac ;;
+    esac
   done
-  _parent=$(cd "$(dirname "$_resolved")" && pwd -P) || return 1
-  _resolved=$_parent/$(basename "$_resolved")
+  case $_resolved in */*) _rdir=${_resolved%/*}; _rbase=${_resolved##*/} ;; *) _rdir=.; _rbase=$_resolved ;; esac
+  _parent=$(cd "${_rdir:-/}" && pwd -P) || return 1
+  _resolved=${_parent%/}/$_rbase
 }
 
-# Current and other installed/copied agyx shims must never be selected as native agy.
+# Current and other installed/copied agyx shims must never be selected as native agy (zero forks).
 agyx_is_shim() {
   [ "$1" -ef "$AGYX_SHIM" ] && return 0
   case $1 in */bin/agy|*/bin/agyx)
-    [ -f "${1%/*}/../runtime/sync.sh" ] &&
-      head -c 128 "$1" | grep -q '^# agyx' &&
-      grep -q '^AGYX_VERSION=' "${1%/*}/../runtime/sync.sh" && return 0 ;;
+    [ -f "${1%/*}/../runtime/sync.sh" ] || return 1
+    _h1='' _h2=''
+    { IFS= read -r _h1 && IFS= read -r _h2; } < "$1" 2>/dev/null || :
+    case $_h1$_h2 in *'# agyx'*) return 0 ;; esac ;;
   esac
   return 1
 }

@@ -3,16 +3,21 @@
 # through the shim. There is no setup step: everything else is automatic. See README.md.
 die() { echo "agyx: $*" >&2; exit 1; }
 
-# find our own real location (follow symlinks, bounded) to locate the packaged shim and runtime
+# find our own real location (follow symlinks, bounded, zero dirname/basename forks)
 self=$0 _hops=0
 while [ -L "$self" ]; do
   _hops=$((_hops + 1)); [ "$_hops" -le 40 ] || die "symlink loop: $0"
   l=$(readlink "$self") || die "cannot read symlink: $self"
-  case $l in /*) self=$l ;; *) self=$(dirname "$self")/$l ;; esac
+  case $l in
+    /*) self=$l ;;
+    *) case $self in */*) self=${self%/*}/$l ;; *) self=$l ;; esac ;;
+  esac
 done
-me=$(cd "$(dirname "$self")" && pwd -P)/$(basename "$self")
+case $self in */*) _sdir=${self%/*}; _sbase=${self##*/} ;; *) _sdir=.; _sbase=$self ;; esac
+_pdir=$(cd "${_sdir:-/}" && pwd -P) || die "cannot resolve script directory"
+me=${_pdir%/}/$_sbase
 shim=${me%/*}/agy
-runtime=$(cd "${me%/*}/../runtime" && pwd -P)
+runtime=$(cd "${_pdir%/}/../runtime" && pwd -P) || die "cannot resolve runtime directory"
 rh=$HOME
 unset AGYX_REAL_HOME AGY_PROFILE
 data=${AGYX_DATA_DIR:-$rh/.local/share/agyx}

@@ -2,15 +2,20 @@
 # agyx shim: run agy with real HOME and a private file login.
 die() { echo "agyx: $*" >&2; exit 2; }
 
-# find our own real location (follow symlinks, bounded) so runtime/ is found wherever installed
+# find our own real location (follow symlinks, bounded, zero dirname/basename forks)
 self=$0 _hops=0
 while [ -L "$self" ]; do
   _hops=$((_hops + 1)); [ "$_hops" -le 40 ] || die "symlink loop: $0"
   l=$(readlink "$self") || die "cannot read symlink: $self"
-  case $l in /*) self=$l ;; *) self=$(dirname "$self")/$l ;; esac
+  case $l in
+    /*) self=$l ;;
+    *) case $self in */*) self=${self%/*}/$l ;; *) self=$l ;; esac ;;
+  esac
 done
-self=$(cd "$(dirname "$self")" && pwd -P)/$(basename "$self")
-runtime=$(cd "$(dirname "$self")/../runtime" && pwd -P)
+case $self in */*) _sdir=${self%/*}; _sbase=${self##*/} ;; *) _sdir=.; _sbase=$self ;; esac
+_pdir=$(cd "${_sdir:-/}" && pwd -P) || die "cannot resolve script directory"
+self=${_pdir%/}/$_sbase
+runtime=$(cd "${_pdir%/}/../runtime" && pwd -P) || die "cannot resolve runtime directory"
 rh=$HOME
 unset AGYX_REAL_HOME AGY_PROFILE
 data=${AGYX_DATA_DIR:-$rh/.local/share/agyx}

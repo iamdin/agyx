@@ -130,7 +130,7 @@ err override-management-shim env AGYX_REAL_AGY="$T/alias/management" "$here/bin/
 err override-missing-no-fallback env AGYX_REAL_AGY="$T/missing-agy" "$here/bin/agy" --profile work
 eq doctor-new-entry 1 "$(ax doctor 2>/dev/null | grep -c "agy entry: $DD/agy (in place")"
 eq doctor-native-fallback 1 "$(AGYX_REAL_AGY='' ax doctor 2>/dev/null | grep -c "^real agy: $RH/.local/bin/agy$")"
-eq beta-version 1 "$(ax --version | grep -c '^agyx 0.2.0-beta.6$')"
+eq beta-version 1 "$(ax --version | grep -c '^agyx 0.2.0-beta.7$')"
 # Only doctor above queried item existence; launches still must make no security calls.
 eq doctor-item-queries-only 2 "$(wc -l < "$SECLOG" | tr -d ' ')"
 : > "$SECLOG"
@@ -705,6 +705,6 @@ brewtest() { # $1 = Cellar dir (formula/version), $2 = opt name, $3 = formula br
 }
 : > "$BREWLOG"
 brewtest agyx/0.1.3 agyx agyx
-brewtest agyx-beta/0.2.0-beta.6 agyx-beta agyx-beta
+brewtest agyx-beta/0.2.0-beta.7 agyx-beta agyx-beta
 printf 'passed: %s, failed: %s\n' "$pass" "$fail"
 [ "$fail" = 0 ]
