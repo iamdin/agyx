@@ -8,6 +8,11 @@ agyx_private() {
   return 1
 }
 
+agyx_sidecar() {
+  case $1 in *-wal|*-shm|*-journal) return 0 ;; esac
+  return 1
+}
+
 # Link shared entries, then adopt new agy entries without overwriting either side.
 agyx_sync_app() {
   _shared=$R/.gemini/antigravity-cli
@@ -15,12 +20,17 @@ agyx_sync_app() {
   for _s in "$_shared"/* "$_shared"/.[!.]* "$_shared"/..?*; do
     [ -e "$_s" ] || [ -L "$_s" ] || continue
     _n=${_s##*/}
+    agyx_sidecar "$_n" && continue
     agyx_private "$_n" && continue
     [ -e "$P/$_n" ] || [ -L "$P/$_n" ] || ln -s "$_s" "$P/$_n" || return 1
   done
   for _p in "$P"/* "$P"/.[!.]* "$P"/..?*; do
     [ -e "$_p" ] || [ -L "$_p" ] || continue
     _n=${_p##*/}
+    if agyx_sidecar "$_n"; then
+      [ ! -L "$_p" ] || [ -e "$_p" ] || rm "$_p" || return 1
+      continue
+    fi
     if agyx_private "$_n"; then
       [ ! -L "$_p" ] && [ -f "$_p" ] || {
         echo "agyx: private entry $_p must be a regular file, not a link or directory" >&2
@@ -53,6 +63,7 @@ agyx_report() {
   for _p in "$P"/* "$P"/.[!.]* "$P"/..?*; do
     [ -e "$_p" ] || [ -L "$_p" ] || continue
     _n=${_p##*/}
+    agyx_sidecar "$_n" && continue
     if agyx_private "$_n"; then
       [ ! -L "$_p" ] && [ -f "$_p" ] || echo "  app $_n: WARNING private entry is not a regular file"
     elif [ -L "$_p" ] && [ "$(readlink "$_p")" = "$_shared/$_n" ] && [ -e "$_p" ]; then
@@ -63,7 +74,9 @@ agyx_report() {
   done
   for _s in "$_shared"/* "$_shared"/.[!.]* "$_shared"/..?*; do
     [ -e "$_s" ] || [ -L "$_s" ] || continue
-    _n=${_s##*/}; agyx_private "$_n" && continue
+    _n=${_s##*/}
+    agyx_sidecar "$_n" && continue
+    agyx_private "$_n" && continue
     [ -e "$P/$_n" ] || [ -L "$P/$_n" ] || echo "  app $_n: missing link (linked on next launch)"
   done
 }

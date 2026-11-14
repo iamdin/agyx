@@ -66,7 +66,9 @@ Layout:
 
 The four private files are never linked from the shared directory. agyx never reads, copies or parses a token, including for the account email. "Logged in" means a regular profile token file exists, not proof the token is still valid. Email comes only from the `applyAuthResult email=` line in the log of that `profile login`; if unknown, list says so. Duplicate saved emails on logged-in profiles produce a warning.
 
-At each launch agyx links missing shared app entries, including hidden entries. A new non-private file or directory created by agy is moved to the shared app directory and linked on the next launch if the shared name is absent. If both sides have an entry, neither is overwritten: `doctor` reports **DRIFT**. Unexpected/broken links are also reported, not silently replaced. Cross-account `--conversation` continuation uses the shared conversations. Avoid running concurrent first-time adoption of the same new entry; stop agy and resolve reported drift before continuing.
+At each launch agyx links missing shared app entries, including hidden entries, **except SQLite sidecars** (`*-wal`, `*-shm`, `*-journal`). Sidecars are never linked or adopted, doctor ignores them, and sync removes old broken sidecar links; real sidecar files are left to SQLite. A new non-private, non-sidecar file or directory created by agy is moved to the shared app directory and linked on the next launch if the shared name is absent. If both sides have an entry, neither is overwritten: `doctor` reports **DRIFT**. Unexpected/broken links are also reported, not silently replaced. Cross-account `--conversation` continuation uses the shared conversations. Avoid running concurrent first-time adoption of the same new entry; stop agy and resolve reported drift before continuing.
+
+SQLite must resolve the profile database link to its shared canonical pathname before creating WAL/SHM/journal files. Verified with agy 1.5.7/1.5.8: two concurrent agy processes opened the same shared DB, WAL and SHM inodes, with no sidecars next to the profile link. The macOS SQLite regression test checks shared writer locking and integrity through two profile links. If agy replaces a DB link after a schema/open error, doctor reports drift; resolve it before continuing. Recheck canonical sidecar placement after SQLite/agy upgrades.
 
 `~/.gemini/config/` remains shared. Settings saved by atomic rename belong to the profile: `settings.json`, `jetski_state.pbtxt` and `jetbox_summaries_proto.pb`. Other shared files must continue to be written in place by agy. There is no per-profile HOME, keychain or home whitelist in the new layout.
 
@@ -134,6 +136,10 @@ esac
 ```
 
 Keep the real checkout, global config, shared app directory and installed agyx untouched. Test tokens remain in the Trash until you empty that specific test folder.
+
+## ACP client lifetime
+
+Keep ACP stdin open until the requested responses arrive. Writing `initialize` and `session/new` and then immediately sending EOF (for example `communicate(input=...)` or a short pipe) cancels agy's request context: agy 1.5.7/1.5.8 can return `-32000 Authentication required`, log `context cancelled, skipping keyring auth`, and only then log a loaded token. This reproduces with both file storage and plain agy using a disposable keychain, not only with agyx. Back-to-back requests with stdin kept open worked in both modes; agyx does not add an arbitrary delay or an ACP proxy.
 
 ## Tests
 

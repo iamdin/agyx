@@ -132,7 +132,7 @@ eq zshenv-once x "$(cat "$COUNT")"
 : > "$COUNT"
 (BASH_ENV=$T/benv FAKE_RUN='bash -c true' launch >/dev/null)
 eq bashenv-once x "$(cat "$COUNT")"
-# Shared entries include hidden names, directories, SQLite sidecars and future agy entries.
+# Share database files, but never link/adopt SQLite sidecars (SQLite owns their lifecycle).
 shared=$RH/.gemini/antigravity-cli app=$DD/profiles/work/app
 mkdir -p "$shared/conversations" "$shared/brain"
 printf history > "$shared/history.jsonl"
@@ -143,9 +143,48 @@ for private in antigravity-oauth-token settings.json jetski_state.pbtxt jetbox_s
   (umask 077; printf private > "$shared/$private")
 done
 launch >/dev/null
-for entry in conversations brain history.jsonl conversation_summaries.db conversation_summaries.db-wal .hidden; do
+for entry in conversations brain history.jsonl conversation_summaries.db .hidden; do
   eq "link-$entry" "$shared/$entry" "$(readlink "$app/$entry")"
 done
+for suffix in wal shm journal; do
+  printf sidecar > "$shared/conversation_summaries.db-$suffix"
+  printf local > "$app/local.db-$suffix"
+  ln -s "$shared/deleted.db-$suffix" "$app/deleted.db-$suffix"
+done
+launch >/dev/null
+for suffix in wal shm journal; do
+  eq "sidecar-not-linked-$suffix" no "$([ -L "$app/conversation_summaries.db-$suffix" ] && echo yes || echo no)"
+  eq "sidecar-broken-link-cleaned-$suffix" no "$([ -L "$app/deleted.db-$suffix" ] && echo yes || echo no)"
+  eq "sidecar-not-adopted-$suffix" no "$([ -e "$shared/local.db-$suffix" ] && echo yes || echo no)"
+  eq "sidecar-local-preserved-$suffix" local "$(cat "$app/local.db-$suffix")"
+  ln -s "$shared/missing.db-$suffix" "$app/doctor.db-$suffix"
+done
+eq doctor-ignores-sidecars 0 "$(ax doctor 2>/dev/null | grep -Ec 'app .*(-wal|-shm|-journal):')"
+# macOS SQLite resolves the DB link before deriving WAL/SHM names and taking locks.
+mkdir -p "$T/sqlite/shared" "$T/sqlite/one" "$T/sqlite/two"
+sqldb=$T/sqlite/shared/test.db
+sqlite3 "$sqldb" 'PRAGMA journal_mode=WAL; CREATE TABLE t(n);' >/dev/null
+ln -s "$sqldb" "$T/sqlite/one/test.db"
+ln -s "$sqldb" "$T/sqlite/two/test.db"
+sqlite3 "$T/sqlite/one/test.db" <<EOF &
+BEGIN IMMEDIATE;
+INSERT INTO t VALUES(1);
+.shell touch "$T/sqlite/ready"
+.shell sleep 1
+COMMIT;
+EOF
+sqlite_pid=$!
+i=0
+while [ ! -f "$T/sqlite/ready" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+eq sqlite-shared-wal-shm yes "$([ -f "$sqldb-wal" ] && [ -f "$sqldb-shm" ] && echo yes)"
+eq sqlite-no-profile-sidecars no "$(find "$T/sqlite/one" "$T/sqlite/two" -type f | grep -q . && echo yes || echo no)"
+sqlite3 "$T/sqlite/two/test.db" 'BEGIN IMMEDIATE;' 2>"$T/sqlite/error"; rc=$?
+eq sqlite-shared-writer-lock 1 "$([ "$rc" -ne 0 ] && grep -q 'database is locked' "$T/sqlite/error" && echo 1)"
+wait "$sqlite_pid"; rc=$?
+eq sqlite-first-commit 0 "$rc"
+sqlite3 "$T/sqlite/two/test.db" 'BEGIN IMMEDIATE; INSERT INTO t VALUES(2); COMMIT;'
+eq sqlite-both-writes-visible 2 "$(sqlite3 "$sqldb" 'SELECT count(*) FROM t;')"
+eq sqlite-integrity ok "$(sqlite3 "$sqldb" 'PRAGMA integrity_check;')"
 for private in antigravity-oauth-token settings.json jetski_state.pbtxt jetbox_summaries_proto.pb; do
   eq "not-shared-$private" no "$([ -e "$app/$private" ] && echo yes || echo no)"
 done
