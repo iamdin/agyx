@@ -117,7 +117,7 @@ if agyx_wants_log "$@"; then
   fi
 fi
 # Setup/test controls are not routing state for agy or its commands.
-unset AGYX_ASSUME_YES AGYX_TTY AGYX_SECURITY AGYX_TRASH_DIR AGYX_LOG_STAMP
+unset AGYX_ASSUME_YES AGYX_TTY AGYX_SECURITY AGYX_TRASH_DIR AGYX_LOG_STAMP AGYX_LOCK_TRIES
 # shellcheck disable=SC2154 # real is set by agyx_find_real
 [ -n "$launch_log" ] || exec "$real" "--app_data_dir=$AGYX_APP_ARG" "$@"
 # Keep stdin/stdio intact and forward signals now that the shim waits for agy.

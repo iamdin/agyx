@@ -119,7 +119,7 @@ err override-management-shim env AGYX_REAL_AGY="$T/alias/management" "$here/bin/
 err override-missing-no-fallback env AGYX_REAL_AGY="$T/missing-agy" "$here/bin/agy" --profile work
 eq doctor-new-entry 1 "$(ax doctor 2>/dev/null | grep -c "agy entry: $DD/agy (in place")"
 eq doctor-native-fallback 1 "$(AGYX_REAL_AGY='' ax doctor 2>/dev/null | grep -c "^real agy: $RH/.local/bin/agy$")"
-eq beta-version 1 "$(ax --version | grep -c '^agyx 0.2.0-beta.2$')"
+eq beta-version 1 "$(ax --version | grep -c '^agyx 0.2.0-beta.3$')"
 # Only doctor above queried item existence; launches still must make no security calls.
 eq doctor-item-queries-only 2 "$(wc -l < "$SECLOG" | tr -d ' ')"
 : > "$SECLOG"
@@ -523,10 +523,21 @@ err seed-orphan-sidecar fresh_run "$here/bin/agy" --profile two
 eq seed-orphan-sidecar-preserved adopted-wal "$(cat "$fs/conversation_summaries.db-wal")"
 eq seed-orphan-no-fake-db no "$([ -e "$fs/conversation_summaries.db" ] && echo yes || echo no)"
 printf adopted-db > "$fs/conversation_summaries.db"
-# Concurrent preparers cannot mutate a repair in progress.
+# Concurrent preparers wait for an active preparation, and still fail if a stale lock remains.
 mkdir "$frhome/.gemini/.agyx-shared-prepare-lock"
-err prepare-lock-busy fresh_run "$here/bin/agy" --profile one
-rmdir "$frhome/.gemini/.agyx-shared-prepare-lock"
+err prepare-lock-busy fresh_run AGYX_LOCK_TRIES=2 "$here/bin/agy" --profile one
+(sleep 0.15; rmdir "$frhome/.gemini/.agyx-shared-prepare-lock") &
+wait_pid=$!
+fresh_run "$here/bin/agy" --profile one >/dev/null 2>"$fr/err"; rc=$?
+wait "$wait_pid"
+eq prepare-lock-waits 0 "$rc"
+p1='' p2='' p3=''
+fresh_run "$here/bin/agy" --profile one >/dev/null 2>"$fr/c1" & p1=$!
+fresh_run "$here/bin/agy" --profile two >/dev/null 2>"$fr/c2" & p2=$!
+fresh_run "$here/bin/agy" --profile one >/dev/null 2>"$fr/c3" & p3=$!
+rc1=0 rc2=0 rc3=0
+wait "$p1" || rc1=$?; wait "$p2" || rc2=$?; wait "$p3" || rc3=$?
+eq prepare-concurrent-burst "0:0:0" "$rc1:$rc2:$rc3"
 # First-run gate: read-only commands and refusal leave disk alone.
 fresh=$T/fresh
 for command in '--help' '--version' 'profile list' 'profile default' doctor; do
@@ -632,6 +643,6 @@ brewtest() { # $1 = Cellar dir (formula/version), $2 = opt name, $3 = formula br
 }
 : > "$BREWLOG"
 brewtest agyx/0.1.3 agyx agyx
-brewtest agyx-beta/0.2.0-beta.2 agyx-beta agyx-beta
+brewtest agyx-beta/0.2.0-beta.3 agyx-beta agyx-beta
 printf 'passed: %s, failed: %s\n' "$pass" "$fail"
 [ "$fail" = 0 ]

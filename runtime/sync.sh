@@ -1,7 +1,7 @@
 # shellcheck shell=sh
 # shellcheck disable=SC2154,SC2034 # R, P, data and AGYX_SHIM are set by callers
 # R = real HOME; P = profile app directory. Never read or copy a token.
-AGYX_VERSION=0.2.0-beta.2 # the one place the version lives (the formula's url tag must match)
+AGYX_VERSION=0.2.0-beta.3 # the one place the version lives (the formula's url tag must match)
 
 agyx_private() {
   case $1 in antigravity-oauth-token|settings.json|jetski_state.pbtxt|jetbox_summaries_proto.pb) return 0 ;; esac
@@ -139,8 +139,13 @@ agyx_sync_app() (
   umask 077
   _shared=$R/.gemini/antigravity-cli
   mkdir -p "$P" "$_shared" || return 1
-  _lock=$R/.gemini/.agyx-shared-prepare-lock
-  mkdir "$_lock" 2>/dev/null || { echo "agyx: shared preparation is busy; if no agyx is preparing, remove stale lock with: rmdir $_lock" >&2; return 1; }
+  _lock=$R/.gemini/.agyx-shared-prepare-lock _tries=${AGYX_LOCK_TRIES:-100}
+  # ponytail: global spin-wait lock (up to ~5s); switch to flock/shlock only if launch concurrency outgrows this
+  while ! mkdir "$_lock" 2>/dev/null; do
+    _tries=$((_tries - 1))
+    [ "$_tries" -gt 0 ] || { echo "agyx: shared preparation is busy; if no agyx is preparing, remove stale lock with: rmdir $_lock" >&2; return 1; }
+    sleep 0.05
+  done
   trap 'rmdir "$_lock"' EXIT
   trap 'exit 1' HUP INT TERM
   agyx_repair_shared || return 1
