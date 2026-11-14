@@ -1,9 +1,13 @@
 # shellcheck shell=sh
 # shellcheck disable=SC2154,SC2034 # R, P, data, AGYX_SHIM and AGYX_RUNTIME are set by callers
 # R = real HOME; P = profile app directory. Never read or copy a token.
-AGYX_VERSION=0.2.0-beta.8 # the one place the version lives (the formula's url tag must match)
+AGYX_VERSION=0.2.0-beta.9 # the one place the version lives (the formula's url tag must match)
 AGYX_SHARED_DIRS='annotations bin brain builtin conversations implicit presence sidecar_data'
 AGYX_SHARED_FILES='conversation_summaries.db history.jsonl installation_id'
+if [ -d /System/Library ]; then AGYX_OS=Darwin
+elif [ -d /proc ]; then AGYX_OS=Linux
+else AGYX_OS=$(uname -s 2>/dev/null)
+fi
 
 agyx_valid_name() {
   case ${1-} in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789_-]*|[!abcdefghijklmnopqrstuvwxyz]*) return 1 ;; esac
@@ -28,17 +32,32 @@ agyx_ask() {
   return 1
 }
 
-# Portable across macOS and Linux:Trash dir, octal mode, UUID, and open-file PID lookup.
+# True when agy natively selects file-based token storage without any synthetic environment variable:
+# any SSH session, container, existing WSL session, or headless Linux without a D-Bus session bus socket.
+agyx_native_file_storage() {
+  [ -n "${SSH_TTY-}${SSH_CLIENT-}${SSH_CONNECTION-}${WSL_DISTRO_NAME-}${WSL_INTEROP-}" ] && return 0
+  [ -e "${AGYX_DOCKERENV:-/.dockerenv}" ] && return 0
+  if [ "$AGYX_OS" = Linux ]; then
+    case ${DBUS_SESSION_BUS_ADDRESS-} in
+      ''|none:|disabled:)
+        _bus=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus
+        [ ! -S "$_bus" ] && return 0 ;;
+    esac
+  fi
+  return 1
+}
+
+# Portable across macOS and Linux: Trash dir, octal mode, UUID, and open-file PID lookup.
 agyx_trash_base() {
   if [ -n "${AGYX_TRASH_DIR-}" ]; then printf '%s' "$AGYX_TRASH_DIR"
-  elif [ -d "$R/.Trash" ] || [ "$(uname -s 2>/dev/null)" = Darwin ]; then printf '%s' "$R/.Trash"
+  elif [ -d "$R/.Trash" ] || [ "$AGYX_OS" = Darwin ]; then printf '%s' "$R/.Trash"
   else
     case ${XDG_DATA_HOME-} in /*) printf '%s/Trash/files' "$XDG_DATA_HOME" ;; *) printf '%s/.local/share/Trash/files' "$R" ;; esac
   fi
 }
 
 agyx_mode() {
-  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then stat -f %Lp "$1" 2>/dev/null
+  if [ "$AGYX_OS" = Darwin ]; then stat -f %Lp "$1" 2>/dev/null
   else stat -c %a "$1" 2>/dev/null
   fi
 }
@@ -397,7 +416,7 @@ agyx_check_storage() {
 
 # Doctor-only static check on native agy binary (no cache files written to disk).
 agyx_check_binary() {
-  if ! LC_ALL=C grep -Fq WSL_DISTRO_NAME "$1" 2>/dev/null ||
+  if ! LC_ALL=C grep -Fq WSL_INTEROP "$1" 2>/dev/null ||
      ! LC_ALL=C grep -Fq app_data_dir "$1" 2>/dev/null ||
      ! LC_ALL=C grep -Fq 'Using file-based token storage' "$1" 2>/dev/null; then
     echo "agyx: WARNING: file-based token storage markers NOT confirmed in $1. Stop using profiles until agy compatibility is checked: keychain fallback can mix accounts and delete the profile token file." >&2

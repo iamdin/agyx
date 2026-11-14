@@ -220,7 +220,11 @@ case $cmd in
     else
       echo "agy entry: $data/agy is MISSING or not agyx's (it is the path to give apps that need a binary named agy)"
     fi
-    echo "profile mode: real HOME; WSL_DISTRO_NAME=${WSL_DISTRO_NAME:-agyx}; --app_data_dir=<profile>/antigravity-cli (relative to ~/.gemini)"
+    if agyx_native_file_storage; then
+      echo "profile mode: real HOME; native file storage (no shell bridge needed); --app_data_dir=<profile>/antigravity-cli (relative to ~/.gemini)"
+    else
+      echo "profile mode: real HOME; WSL_INTEROP=${WSL_INTEROP:-agyx} (desktop keyring bypass + shell bridge); --app_data_dir=<profile>/antigravity-cli (relative to ~/.gemini)"
+    fi
     if [ -x "$sec" ] && HOME=$rh "$sec" find-generic-password -s gemini -a antigravity >/dev/null 2>&1; then
       echo "keychain: INFO plain agy has a login (gemini/antigravity); agyx does not use it"
     fi

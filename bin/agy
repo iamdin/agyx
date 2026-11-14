@@ -80,20 +80,25 @@ done
 agyx_sync_app || die "cannot prepare profile app directory"
 agyx_app_arg || die "cannot resolve profile app directory"
 
-# 3. environment (bijective :value encoding: empty = unset, :val = set to val; idempotent nested)
-bz=$runtime_stable/zsh bb=$runtime_stable/bash_env
-if [ "${ZDOTDIR-}" != "$bz" ] && [ "${BASH_ENV-}" != "$bb" ]; then
-  AGYX_ORIG_WSL=${WSL_DISTRO_NAME+:$WSL_DISTRO_NAME}
+# 3. per-platform keyring bypass:
+# - Headless Linux, containers, and SSH sessions already use file storage natively (zero env/shell hooks).
+# - Desktop sessions with an active OS keyring (local macOS, Linux Desktop with D-Bus) set WSL_INTEROP
+#   (ignored by brew/CLI tools unlike WSL_DISTRO_NAME) and clean it on first shell entry.
+AGYX_PROFILE=$name AGY_CLI_DISABLE_AUTO_UPDATE=true
+export AGYX_PROFILE AGY_CLI_DISABLE_AUTO_UPDATE
+if ! agyx_native_file_storage; then
+  bz=$runtime_stable/zsh bb=$runtime_stable/bash_env
+  if [ "${ZDOTDIR-}" != "$bz" ] && [ "${BASH_ENV-}" != "$bb" ]; then
+    AGYX_ORIG_WSL_INTEROP=${WSL_INTEROP+:$WSL_INTEROP}
+  fi
+  [ "${ZDOTDIR-}" = "$bz" ] || AGYX_ORIG_ZDOTDIR=${ZDOTDIR+:$ZDOTDIR}
+  [ "${BASH_ENV-}" = "$bb" ] || AGYX_ORIG_BASH_ENV=${BASH_ENV+:$BASH_ENV}
+  WSL_INTEROP=${WSL_INTEROP:-agyx} ZDOTDIR=$bz BASH_ENV=$bb
+  export WSL_INTEROP AGYX_ORIG_WSL_INTEROP AGYX_ORIG_ZDOTDIR AGYX_ORIG_BASH_ENV ZDOTDIR BASH_ENV
 fi
-[ "${ZDOTDIR-}" = "$bz" ] || AGYX_ORIG_ZDOTDIR=${ZDOTDIR+:$ZDOTDIR}
-[ "${BASH_ENV-}" = "$bb" ] || AGYX_ORIG_BASH_ENV=${BASH_ENV+:$BASH_ENV}
-WSL_DISTRO_NAME=${WSL_DISTRO_NAME:-agyx} AGYX_PROFILE=$name AGY_CLI_DISABLE_AUTO_UPDATE=true
-ZDOTDIR=$bz BASH_ENV=$bb
-export WSL_DISTRO_NAME AGYX_ORIG_WSL AGYX_ORIG_ZDOTDIR AGYX_ORIG_BASH_ENV \
-  AGYX_PROFILE AGY_CLI_DISABLE_AUTO_UPDATE ZDOTDIR BASH_ENV
 
-# 4. check newest native log in <profile>/antigravity-cli/log, then direct exec (native agy manages & prunes logs)
+# 4. check newest native log in <profile>/antigravity-cli/log, then direct exec
 agyx_check_recent_log "$P"
-unset AGYX_RUNTIME AGYX_ASSUME_YES AGYX_TTY AGYX_SECURITY AGYX_TRASH_DIR AGYX_LOCK_TRIES
+unset AGYX_RUNTIME AGYX_ASSUME_YES AGYX_TTY AGYX_SECURITY AGYX_TRASH_DIR AGYX_LOCK_TRIES AGYX_OS AGYX_DOCKERENV
 # shellcheck disable=SC2154 # real is set by agyx_find_real
 exec "$real" "--app_data_dir=$AGYX_APP_ARG" "$@"

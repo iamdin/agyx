@@ -6,16 +6,16 @@ T=$(mktemp -d) || exit 1
 T=$(cd "$T" && pwd -P)
 trap 'rm -rf "$T"' EXIT
 export HOME=$T/home AGYX_DATA_DIR=$T/data AGYX_TRASH_DIR=$T/trash
-export SECLOG=$T/security.log AGYX_SECURITY=$T/security AGYX_REAL_AGY=$T/fake-agy
+export SECLOG=$T/security.log AGYX_SECURITY=$T/security AGYX_REAL_AGY=$T/fake-agy AGYX_DOCKERENV=$T/no-docker DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/fake-bus
 unset AGYX_PROFILE AGY_PROFILE AGYX_REAL_HOME WSL_DISTRO_NAME WSL_INTEROP SSH_CLIENT SSH_CONNECTION SSH_TTY ZDOTDIR BASH_ENV
-unset AGYX_ASSUME_YES AGYX_TTY AGYX_ORIG_WSL AGYX_ORIG_ZDOTDIR AGYX_ORIG_BASH_ENV
+unset AGYX_ASSUME_YES AGYX_TTY AGYX_ORIG_WSL_INTEROP AGYX_ORIG_ZDOTDIR AGYX_ORIG_BASH_ENV
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
 mkdir -p "$HOME" "$AGYX_DATA_DIR/profiles/work/antigravity-cli" "$AGYX_DATA_DIR/profiles/personal/antigravity-cli" "$AGYX_TRASH_DIR"
 RH=$HOME DD=$AGYX_DATA_DIR
 cat > "$T/fake-agy" <<'EOF'
 #!/bin/sh
-# Markers checked by agyx doctor: WSL_DISTRO_NAME app_data_dir Using file-based token storage
+# Markers checked by agyx doctor: WSL_INTEROP app_data_dir Using file-based token storage
 app= log=
 for a in "$@"; do case $a in --app_data_dir=*) app=${a#*=} ;; esac; done
 prev=
@@ -50,7 +50,7 @@ if [ "${FAKE_LOGIN-}" = 1 ]; then
 fi
 if [ -n "${FAKE_RUN-}" ]; then exec /bin/sh -c "$FAKE_RUN"; fi
 printf 'EXE=%s\n' "$0"
-printf 'HOME=%s\nPROFILE=%s\nWSL=%s\nSSH_CLIENT=%s\nSSH_CONNECTION=%s\nSSH_TTY=%s\n' "$HOME" "$AGYX_PROFILE" "${WSL_DISTRO_NAME-unset}" "${SSH_CLIENT-unset}" "${SSH_CONNECTION-unset}" "${SSH_TTY-unset}"
+printf 'HOME=%s\nPROFILE=%s\nWSL_INTEROP=%s\nWSL_DISTRO=%s\nZDOTDIR=%s\nBASH_ENV=%s\nSSH_CLIENT=%s\nSSH_CONNECTION=%s\nSSH_TTY=%s\n' "$HOME" "$AGYX_PROFILE" "${WSL_INTEROP-unset}" "${WSL_DISTRO_NAME-unset}" "${ZDOTDIR-unset}" "${BASH_ENV-unset}" "${SSH_CLIENT-unset}" "${SSH_CONNECTION-unset}" "${SSH_TTY-unset}"
 for a in "$@"; do printf 'ARG=%s\n' "$a"; done
 exit "${FAKE_STATUS:-0}"
 EOF
@@ -87,9 +87,18 @@ eq env personal "$(AGYX_PROFILE=personal prof)"
 eq flag work "$(AGYX_PROFILE=personal prof --profile=work)"
 eq old-profile-env-ignored work "$(AGY_PROFILE=personal prof)"
 eq real-home "$RH" "$(FIELD=HOME field)"
-eq wsl-set agyx "$(FIELD=WSL field)"
-eq wsl-existing Ubuntu "$(WSL_DISTRO_NAME=Ubuntu FIELD=WSL field)"
-eq wsl-empty agyx "$(WSL_DISTRO_NAME='' FIELD=WSL field)"
+eq desktop-wsl-interop agyx "$(FIELD=WSL_INTEROP field)"
+eq desktop-no-wsl-distro unset "$(FIELD=WSL_DISTRO field)"
+eq wsl-interop-existing /run/WSL/1 "$(WSL_INTEROP=/run/WSL/1 FIELD=WSL_INTEROP field)"
+eq wsl-interop-empty agyx "$(WSL_INTEROP='' FIELD=WSL_INTEROP field)"
+# Per-platform native bypass: SSH, container, and headless Linux inject NEITHER WSL_* NOR ZDOTDIR/BASH_ENV.
+eq ssh-zero-bridge 'unset|unset|unset' "$(SSH_CLIENT='1.2.3.4 1 22' launch | awk -F= '/^(WSL_INTEROP|ZDOTDIR|BASH_ENV)=/{printf "%s|", $2}' | sed 's/|$//')"
+if [ "$(uname -s)" = Linux ]; then
+  eq linux-headless-zero-bridge 'unset|unset|unset' "$(DBUS_SESSION_BUS_ADDRESS='' XDG_RUNTIME_DIR="$T/no-bus" launch | awk -F= '/^(WSL_INTEROP|ZDOTDIR|BASH_ENV)=/{printf "%s|", $2}' | sed 's/|$//')"
+fi
+eq desktop-uses-bridge agyx "$(DBUS_SESSION_BUS_ADDRESS='unix:path=/tmp/bus' FIELD=WSL_INTEROP field)"
+touch "$T/fake-dockerenv"
+eq container-zero-bridge 'unset|unset|unset' "$(AGYX_DOCKERENV="$T/fake-dockerenv" launch | awk -F= '/^(WSL_INTEROP|ZDOTDIR|BASH_ENV)=/{printf "%s|", $2}' | sed 's/|$//')"
 for bad in Work 1a a/b doctor profile uninstall ''; do err "profile-$bad" launch --profile "$bad"; done
 err missing launch --profile
 err duplicate launch --profile work --profile personal
@@ -132,7 +141,7 @@ err override-management-shim env AGYX_REAL_AGY="$T/alias/management" "$here/bin/
 err override-missing-no-fallback env AGYX_REAL_AGY="$T/missing-agy" "$here/bin/agy" --profile work
 eq doctor-new-entry 1 "$(ax doctor 2>/dev/null | grep -c "agy entry: $DD/agy (in place")"
 eq doctor-native-fallback 1 "$(AGYX_REAL_AGY='' ax doctor 2>/dev/null | grep -c "^real agy: $RH/.local/bin/agy$")"
-eq beta-version 1 "$(ax --version | grep -c '^agyx 0.2.0-beta.8$')"
+eq beta-version 1 "$(ax --version | grep -c '^agyx 0.2.0-beta.9$')"
 # Only doctor above queried item existence; launches still must make no security calls.
 eq doctor-item-queries-only 2 "$(wc -l < "$SECLOG" | tr -d ' ')"
 : > "$SECLOG"
@@ -212,16 +221,16 @@ eq no-keychain-launches '' "$(cat "$SECLOG")"
 # SSH passthrough is byte-for-byte, including an empty variable.
 out=$(SSH_CLIENT='client value' SSH_CONNECTION='connection value' SSH_TTY='' launch)
 eq ssh 'SSH_CLIENT=client value|SSH_CONNECTION=connection value|SSH_TTY=|' "$(printf '%s\n' "$out" | grep '^SSH_' | tr '\n' '|')"
-# Bash/Zsh restore unset/empty/existing WSL and user's startup variables, even nested.
+# Desktop mode Bash/Zsh bridge restores unset/empty/existing WSL_INTEROP and user's startup variables, even nested.
 for shell in bash zsh; do
   command -v "$shell" >/dev/null || { echo "SKIP $shell"; continue; }
-  snippet="$shell -c 'printf \"%s|%s|%s|%s\" \"\$HOME\" \"\${WSL_DISTRO_NAME-unset}\" \"\${ZDOTDIR-unset}\" \"\${BASH_ENV-unset}\"'"
+  snippet="$shell -c 'printf \"%s|%s|%s|%s\" \"\$HOME\" \"\${WSL_INTEROP-unset}\" \"\${ZDOTDIR-unset}\" \"\${BASH_ENV-unset}\"'"
   eq "$shell-unset" "$RH|unset|unset|unset" "$(FAKE_RUN="$snippet" launch)"
-  eq "$shell-empty" "$RH|||" "$(WSL_DISTRO_NAME='' ZDOTDIR='' BASH_ENV='' FAKE_RUN="$snippet" launch)"
-  eq "$shell-existing" "$RH|Ubuntu|/zd|/be" "$(WSL_DISTRO_NAME=Ubuntu ZDOTDIR=/zd BASH_ENV=/be FAKE_RUN="$snippet" launch)"
-  nested="$shell -c 'FAKE_RUN= \"$here/bin/agy\" --profile personal'"
+  eq "$shell-empty" "$RH|||" "$(WSL_INTEROP='' ZDOTDIR='' BASH_ENV='' FAKE_RUN="$snippet" launch)"
+  eq "$shell-existing" "$RH|/run/WSL/9|/zd|/be" "$(WSL_INTEROP=/run/WSL/9 ZDOTDIR=/zd BASH_ENV=/be FAKE_RUN="$snippet" launch)"
+  nested="$shell -c 'FAKE_RUN= AGYX_DOCKERENV=\"$T/no-docker\" \"$here/bin/agy\" --profile personal'"
   eq "$shell-nested" personal "$(FAKE_RUN="$nested" launch | sed -n 's/^PROFILE=//p')"
-  nested="$shell -c 'FAKE_RUN= \"$here/bin/agy\"'"
+  nested="$shell -c 'FAKE_RUN= AGYX_DOCKERENV=\"$T/no-docker\" \"$here/bin/agy\"'"
   eq "$shell-nested-inherits-profile" personal "$(FAKE_RUN="$nested" launch --profile personal | sed -n 's/^PROFILE=//p')"
   if [ "$shell" = bash ]; then names='compgen -A variable AGYX_ORIG_ || :'
   else names='print -rl -- ${(k)parameters[(I)AGYX_ORIG_*]}'; fi
@@ -233,8 +242,8 @@ for shell in bash zsh; do
   eq "$shell-native-env-kept" '/native-api|kept' "$(ANTIGRAVITY_AGENTAPI_EXE=/native-api AGY_CLI_PROBE=kept FAKE_RUN="$shell -c 'printf \"%s|%s\" \"\$ANTIGRAVITY_AGENTAPI_EXE\" \"\$AGY_CLI_PROBE\"'" launch)"
 done
 mkdir -p "$T/zd"
-printf '[ ! "${AGYX_ORIG_WSL+x}" ] || printf leak >> "$COUNT"\nprintf x >> "$COUNT"\n' > "$T/zd/.zshenv"
-printf '[ ! "${AGYX_ORIG_WSL+x}" ] || printf leak >> "$COUNT"\nprintf x >> "$COUNT"\n' > "$T/benv"
+printf '[ ! "${AGYX_ORIG_WSL_INTEROP+x}" ] || printf leak >> "$COUNT"\nprintf x >> "$COUNT"\n' > "$T/zd/.zshenv"
+printf '[ ! "${AGYX_ORIG_WSL_INTEROP+x}" ] || printf leak >> "$COUNT"\nprintf x >> "$COUNT"\n' > "$T/benv"
 export COUNT=$T/count
 if command -v zsh >/dev/null 2>&1; then
   : > "$COUNT"
@@ -430,7 +439,7 @@ printf collision-profile > "$app/collision"
 (umask 022; printf invalid-json > "$app/antigravity-oauth-token")
 ln -s "$shared/missing" "$app/broken"
 out=$(FAKE_KEYCHAIN_ITEM=1 ax doctor)
-eq doctor-mode 1 "$(printf '%s\n' "$out" | grep -c '^profile mode: real HOME; WSL_DISTRO_NAME=agyx; --app_data_dir=')"
+eq doctor-mode 1 "$(printf '%s\n' "$out" | grep -c '^profile mode: real HOME; WSL_INTEROP=agyx')"
 eq doctor-permissions 1 "$(printf '%s\n' "$out" | grep -c 'token: WARNING mode 644')"
 eq doctor-drift 1 "$(printf '%s\n' "$out" | grep -c 'antigravity-cli collision: DRIFT')"
 eq doctor-link 1 "$(printf '%s\n' "$out" | grep -c 'antigravity-cli broken: WARNING')"
@@ -717,8 +726,8 @@ brewtest() { # $1 = Cellar dir (formula/version), $2 = opt name, $3 = formula br
 }
 : > "$BREWLOG"
 brewtest agyx/0.1.3 agyx agyx
-brewtest agyx-beta/0.2.0-beta.8 agyx-beta agyx-beta
+brewtest agyx-beta/0.2.0-beta.9 agyx-beta agyx-beta
 # Linux/XDG trash base fallback when AGYX_TRASH_DIR is unset and ~/.Trash does not exist.
-eq xdg-trash-fallback "$T/xdg-data/Trash/files" "$(unset AGYX_TRASH_DIR; XDG_DATA_HOME=$T/xdg-data R=$T/linux-home; . "$here/runtime/sync.sh"; [ -d "$R/.Trash" ] || uname() { echo Linux; }; agyx_trash_base)"
+eq xdg-trash-fallback "$T/xdg-data/Trash/files" "$(unset AGYX_TRASH_DIR; XDG_DATA_HOME=$T/xdg-data R=$T/linux-home; . "$here/runtime/sync.sh"; AGYX_OS=Linux; agyx_trash_base)"
 printf 'passed: %s, failed: %s\n' "$pass" "$fail"
 [ "$fail" = 0 ]
