@@ -63,7 +63,7 @@ if [ "$flag" = 0 ]; then
 fi
 valid "$name" || die "invalid profile name: $name"
 agyx_subcommand "$name" && die "profile name is reserved: $name"
-P=$data/profiles/$name/app
+P=$data/profiles/$name/antigravity-cli
 if [ ! -d "$P" ] || [ -L "$P" ] || [ -L "$data/profiles/$name" ]; then
   if [ "$src" = default ]; then
     die "the default profile '$name' (from $data/default) does not exist. Fix it with: agyx profile default NAME, or create it with: agyx profile login $name"

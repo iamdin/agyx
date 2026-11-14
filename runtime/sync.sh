@@ -65,19 +65,19 @@ agyx_report() {
     _n=${_p##*/}
     agyx_sidecar "$_n" && continue
     if agyx_private "$_n"; then
-      [ ! -L "$_p" ] && [ -f "$_p" ] || echo "  app $_n: WARNING private entry is not a regular file"
+      [ ! -L "$_p" ] && [ -f "$_p" ] || echo "  antigravity-cli $_n: WARNING private entry is not a regular file"
     elif [ -L "$_p" ] && [ "$(readlink "$_p")" = "$_shared/$_n" ] && [ -e "$_p" ]; then
-      echo "  app $_n: linked"
-    elif [ -L "$_p" ]; then echo "  app $_n: WARNING broken or unexpected link"
-    elif [ -e "$_shared/$_n" ] || [ -L "$_shared/$_n" ]; then echo "  app $_n: DRIFT (present on both sides; left untouched)"
-    else echo "  app $_n: local (adopted on next launch)"; fi
+      echo "  antigravity-cli $_n: linked"
+    elif [ -L "$_p" ]; then echo "  antigravity-cli $_n: WARNING broken or unexpected link"
+    elif [ -e "$_shared/$_n" ] || [ -L "$_shared/$_n" ]; then echo "  antigravity-cli $_n: DRIFT (present on both sides; left untouched)"
+    else echo "  antigravity-cli $_n: local (adopted on next launch)"; fi
   done
   for _s in "$_shared"/* "$_shared"/.[!.]* "$_shared"/..?*; do
     [ -e "$_s" ] || [ -L "$_s" ] || continue
     _n=${_s##*/}
     agyx_sidecar "$_n" && continue
     agyx_private "$_n" && continue
-    [ -e "$P/$_n" ] || [ -L "$P/$_n" ] || echo "  app $_n: missing link (linked on next launch)"
+    [ -e "$P/$_n" ] || [ -L "$P/$_n" ] || echo "  antigravity-cli $_n: missing link (linked on next launch)"
   done
 }
 
@@ -142,7 +142,7 @@ agyx_migrate() {
     agyx_delete_old_keychain "$_d"
     _trash=$(mktemp -d "${AGYX_TRASH_DIR:-$R/.Trash}/agyx-${_d##*/}-$(date +%Y%m%d%H%M%S)-XXXXXX") || die "cannot create migration Trash directory"
     mv "$_d/home" "$_trash/home" || die "cannot move old profile home to the Trash"
-    (umask 077; mkdir -p "$_d/app") || die "cannot create profile app directory"
+    (umask 077; mkdir -p "$_d/antigravity-cli") || die "cannot create profile app directory"
     echo "agyx: profile ${_d##*/}: old home moved to $_trash; sign in again with agyx profile login ${_d##*/}" >&2
   done
   agyx_remove_blocker || die "cannot remove old token blocker"

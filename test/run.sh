@@ -10,7 +10,7 @@ unset AGY_PROFILE WSL_DISTRO_NAME WSL_INTEROP SSH_CLIENT SSH_CONNECTION SSH_TTY 
 unset AGYX_ASSUME_YES AGYX_TTY AGYX_ORIG_WSL_SET AGYX_ORIG_WSL
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
-mkdir -p "$HOME" "$AGYX_DATA_DIR/profiles/work/app" "$AGYX_DATA_DIR/profiles/personal/app" "$AGYX_TRASH_DIR"
+mkdir -p "$HOME" "$AGYX_DATA_DIR/profiles/work/antigravity-cli" "$AGYX_DATA_DIR/profiles/personal/antigravity-cli" "$AGYX_TRASH_DIR"
 RH=$HOME DD=$AGYX_DATA_DIR
 cat > "$T/fake-agy" <<'EOF'
 #!/bin/sh
@@ -103,11 +103,11 @@ eq unique-log-names 2 "$(find "$DD/profiles/work/log" -name 'cli-20000101_000000
 # Resolve the relative argument, including spaces and data outside HOME.
 out=$(launch)
 rel=$(printf '%s\n' "$out" | sed -n 's/^ARG=--app_data_dir=//p')
-eq relative-target "$(cd "$DD/profiles/work/app" && pwd -P)" "$(cd "$RH/.gemini/$rel" && pwd -P)"
-mkdir -p "$T/space data/profiles/p/app"
+eq relative-target "$(cd "$DD/profiles/work/antigravity-cli" && pwd -P)" "$(cd "$RH/.gemini/$rel" && pwd -P)"
+mkdir -p "$T/space data/profiles/p/antigravity-cli"
 out=$(AGYX_DATA_DIR="$T/space data" launch --profile p)
 rel=$(printf '%s\n' "$out" | sed -n 's/^ARG=--app_data_dir=//p')
-eq space-target "$(cd "$T/space data/profiles/p/app" && pwd -P)" "$(cd "$RH/.gemini/$rel" && pwd -P)"
+eq space-target "$(cd "$T/space data/profiles/p/antigravity-cli" && pwd -P)" "$(cd "$RH/.gemini/$rel" && pwd -P)"
 eq no-keychain-launches '' "$(cat "$SECLOG")"
 # SSH passthrough is byte-for-byte, including an empty variable.
 out=$(SSH_CLIENT='client value' SSH_CONNECTION='connection value' SSH_TTY='' launch)
@@ -133,7 +133,7 @@ eq zshenv-once x "$(cat "$COUNT")"
 (BASH_ENV=$T/benv FAKE_RUN='bash -c true' launch >/dev/null)
 eq bashenv-once x "$(cat "$COUNT")"
 # Share database files, but never link/adopt SQLite sidecars (SQLite owns their lifecycle).
-shared=$RH/.gemini/antigravity-cli app=$DD/profiles/work/app
+shared=$RH/.gemini/antigravity-cli app=$DD/profiles/work/antigravity-cli
 mkdir -p "$shared/conversations" "$shared/brain"
 printf history > "$shared/history.jsonl"
 printf database > "$shared/conversation_summaries.db"
@@ -159,7 +159,7 @@ for suffix in wal shm journal; do
   eq "sidecar-local-preserved-$suffix" local "$(cat "$app/local.db-$suffix")"
   ln -s "$shared/missing.db-$suffix" "$app/doctor.db-$suffix"
 done
-eq doctor-ignores-sidecars 0 "$(ax doctor 2>/dev/null | grep -Ec 'app .*(-wal|-shm|-journal):')"
+eq doctor-ignores-sidecars 0 "$(ax doctor 2>/dev/null | grep -Ec 'antigravity-cli .*(-wal|-shm|-journal):')"
 # macOS SQLite resolves the DB link before deriving WAL/SHM names and taking locks.
 mkdir -p "$T/sqlite/shared" "$T/sqlite/one" "$T/sqlite/two"
 sqldb=$T/sqlite/shared/test.db
@@ -195,8 +195,14 @@ launch >/dev/null
 eq adopted newly-created "$(cat "$shared/future-entry")"
 eq adoption-link "$shared/future-entry" "$(readlink "$app/future-entry")"
 eq drift-kept collision-profile "$(cat "$app/collision")"
+rm "$app/conversation_summaries.db"
+printf replaced-db > "$app/conversation_summaries.db"
+eq doctor-replaced-db-drift 1 "$(ax doctor 2>/dev/null | grep -c 'antigravity-cli conversation_summaries.db: DRIFT')"
+eq doctor-keeps-replaced-db replaced-db "$(cat "$app/conversation_summaries.db")"
+rm "$app/conversation_summaries.db"
+ln -s "$shared/conversation_summaries.db" "$app/conversation_summaries.db"
 launch --profile personal >/dev/null
-eq cross-account-conversations yes "$([ "$app/conversations" -ef "$DD/profiles/personal/app/conversations" ] && echo yes)"
+eq cross-account-conversations yes "$([ "$app/conversations" -ef "$DD/profiles/personal/antigravity-cli/conversations" ] && echo yes)"
 ln -s "$shared/settings.json" "$app/settings.json"
 err private-link launch
 rm "$app/settings.json"
@@ -258,7 +264,16 @@ eq doctor-storage-confirmed 0 "$(grep -c 'NOT confirmed in .*work/log/' "$T/err"
 (FAKE_LOGIN=1 ax profile login new >/dev/null)
 eq login-default-unchanged work "$(cat "$DD/default")"
 eq login-email own@example.com "$(cat "$DD/profiles/new/email")"
-eq token-mode 600 "$(stat -f %Lp "$DD/profiles/new/app/antigravity-oauth-token")"
+eq token-mode 600 "$(stat -f %Lp "$DD/profiles/new/antigravity-cli/antigravity-oauth-token")"
+eq profile-mode 700 "$(stat -f %Lp "$DD/profiles/new")"
+eq profile-app-mode 700 "$(stat -f %Lp "$DD/profiles/new/antigravity-cli")"
+chmod 750 "$DD/profiles/new"
+chmod 705 "$DD/profiles/new/antigravity-cli"
+out=$(ax doctor 2>/dev/null)
+eq doctor-profile-permissions 1 "$(printf '%s\n' "$out" | grep -c "permissions: WARNING $DD/profiles/new mode 750")"
+eq doctor-app-permissions 1 "$(printf '%s\n' "$out" | grep -c "permissions: WARNING $DD/profiles/new/antigravity-cli mode 705")"
+chmod 700 "$DD/profiles/new" "$DD/profiles/new/antigravity-cli"
+eq doctor-private-dirs-clean 0 "$(ax doctor 2>/dev/null | grep -c "permissions: WARNING $DD/profiles/new")"
 eq list-login 1 "$(ax profile list | grep -c '^new .*own@example.com')"
 rm "$DD/default"
 (FAKE_LOGIN=1 ax profile login next >/dev/null)
@@ -273,8 +288,8 @@ ln -s "$shared/missing" "$app/broken"
 out=$(FAKE_KEYCHAIN_ITEM=1 ax doctor)
 eq doctor-mode 1 "$(printf '%s\n' "$out" | grep -c '^profile mode: real HOME; WSL_DISTRO_NAME=agyx; --app_data_dir=')"
 eq doctor-permissions 1 "$(printf '%s\n' "$out" | grep -c 'token: WARNING mode 644')"
-eq doctor-drift 1 "$(printf '%s\n' "$out" | grep -c 'app collision: DRIFT')"
-eq doctor-link 1 "$(printf '%s\n' "$out" | grep -c 'app broken: WARNING')"
+eq doctor-drift 1 "$(printf '%s\n' "$out" | grep -c 'antigravity-cli collision: DRIFT')"
+eq doctor-link 1 "$(printf '%s\n' "$out" | grep -c 'antigravity-cli broken: WARNING')"
 eq doctor-keychain-info 1 "$(printf '%s\n' "$out" | grep -c '^keychain: INFO plain agy')"
 eq doctor-no-secret 0 "$(grep -Ec ' -[wg]( |$)' "$SECLOG")"
 eq doctor-no-token-content 0 "$(printf '%s\n' "$out" | grep -c invalid-json)"
@@ -290,7 +305,7 @@ printf 'n\n' > "$T/no"
 err first-no env AGYX_DATA_DIR="$fresh" AGYX_TTY="$T/no" "$here/bin/agyx" profile login p
 printf 'y\n' > "$T/yes"
 (AGYX_DATA_DIR=$fresh AGYX_TTY=$T/yes ax profile login p >/dev/null 2>"$T/err")
-eq first-yes present "$([ -d "$fresh/profiles/p/app" ] && echo present)"
+eq first-yes present "$([ -d "$fresh/profiles/p/antigravity-cli" ] && echo present)"
 eq no-whitelist absent "$([ -e "$RH/.config/agyx/symlinks" ] && echo present || echo absent)"
 # Legacy migration: refusal changes nothing, then one consent covers all profiles.
 legacy=$T/legacy
@@ -322,6 +337,7 @@ eq migration-explicit-home 2 "$(grep -c "^HOME=$legacy/profiles/.*home delete-ke
 eq migration-home-gone absent "$([ -d "$legacy/profiles/old/home" ] && echo present || echo absent)"
 eq migration-email-kept old@example.com "$(cat "$legacy/profiles/old/email")"
 eq migration-log-kept kept "$(cat "$legacy/profiles/old/log/old.log")"
+eq migration-app-mode 700 "$(stat -f %Lp "$legacy/profiles/old/antigravity-cli")"
 eq migration-trash 2 "$(find "$AGYX_TRASH_DIR" -name home -type d | wc -l | tr -d ' ')"
 eq migration-blocker-removed absent "$([ -e "$shared/antigravity-oauth-token" ] && echo present || echo absent)"
 eq migration-whitelist-removed absent "$([ -e "$RH/.config/agyx/symlinks" ] && echo present || echo absent)"
@@ -345,7 +361,7 @@ printf plain-agy > "$shared/antigravity-oauth-token"
 err uninstall-no env AGYX_DATA_DIR="$legacy" AGYX_TTY="$T/no" "$here/bin/agyx" uninstall
 (AGYX_DATA_DIR=$legacy AGYX_ASSUME_YES=1 ax uninstall >/dev/null 2>"$T/err")
 eq uninstall-data-gone absent "$([ -e "$legacy" ] && echo present || echo absent)"
-eq uninstall-data-trash 1 "$(find "$AGYX_TRASH_DIR" -path '*/data/profiles/old/app' | wc -l | tr -d ' ')"
+eq uninstall-data-trash 1 "$(find "$AGYX_TRASH_DIR" -path '*/data/profiles/old/antigravity-cli' | wc -l | tr -d ' ')"
 eq uninstall-plain-token-kept plain-agy "$(cat "$shared/antigravity-oauth-token")"
 eq uninstall-shared-history-kept history "$(cat "$shared/history.jsonl")"
 # Existing helpers: stable Homebrew path, stale shim entry repair, non-agyx entry left alone.

@@ -47,11 +47,11 @@ On first use, commands that write ask once before creating the data directory. N
 
 Data directory: `${AGYX_DATA_DIR:-~/.local/share/agyx}`. `AGYX_REAL_AGY=/absolute/path/to/agy` overrides binary discovery; otherwise the first real agy on PATH is cached as `<data>/real-agy`. `<data>/bin/agy` is a shim for apps requiring a binary named agy (for example T3 Code). It uses the selected profile, just like agyx; agyx does not shadow plain agy on PATH. Its entry and shell bridge use the stable Homebrew `opt/agyx` path so they survive upgrades.
 
-Layout:
+Profile directories and their `antigravity-cli/` directories are created with mode 0700. Layout:
 
 ```text
 <data>/profiles/<name>/
-  app/
+  antigravity-cli/
     antigravity-oauth-token         private regular file, mode 0600
     settings.json                  private regular file
     jetski_state.pbtxt              private regular file
@@ -74,7 +74,7 @@ SQLite must resolve the profile database link to its shared canonical pathname b
 
 ## How profile isolation works
 
-For agy only, the shim supplies `WSL_DISTRO_NAME=agyx` when the existing value is empty/unset, and the hidden global flag `--app_data_dir=<relative path from ~/.gemini to profile/app>` **before all user arguments**. agy's WSL detector selects file token storage, so it does not load, save or remove the login keychain item. Existing nonempty WSL values and all SSH variables pass through unchanged. User `--app_data_dir` and `--gemini_dir` overrides are rejected because they could defeat isolation.
+For agy only, the shim supplies `WSL_DISTRO_NAME=agyx` when the existing value is empty/unset, and the hidden global flag `--app_data_dir=<relative path from ~/.gemini to profile/antigravity-cli>` **before all user arguments**. agy's WSL detector selects file token storage, so it does not load, save or remove the login keychain item. Existing nonempty WSL values and all SSH variables pass through unchanged. User `--app_data_dir` and `--gemini_dir` overrides are rejected because they could defeat isolation.
 
 Bash and Zsh startup bridges restore the original WSL variable (including unset versus empty) and the original `BASH_ENV`/`ZDOTDIR`, then source the user's startup file. HOME is never redirected. Commands started inside these shells therefore see the normal environment. **Directly executed programs (including MCP servers), shells started without startup files, and POSIX sh can still inherit the fake WSL variable.** There is no general child-process environment hook in agy; the bridge cannot clean those processes. Their HOME is nevertheless the real HOME.
 
@@ -87,7 +87,7 @@ Old profile keychain logins cannot be carried over. On the first invocation with
 After consent, agyx:
 
 1. Deletes each old profile keychain with `security delete-keychain`, its explicit path, and HOME set only to that old profile home. Failure stops migration; the real keychain is never deleted.
-2. Moves each old `home/` to a unique `~/.Trash/agyx-<profile>-<timestamp>-*/home/` directory and creates `app/`. Saved email and logs stay.
+2. Moves each old `home/` to a unique `~/.Trash/agyx-<profile>-<timestamp>-*/home/` directory and creates `antigravity-cli/`. Saved email and logs stay.
 3. Removes the old shared token blocker **only** when it contains exactly agyx's original README and nothing else. Plain agy's token files and unknown directories are untouched.
 4. Moves the old `${XDG_CONFIG_HOME:-~/.config}/agyx/symlinks` whitelist file into the last profile's migration Trash folder, keeping its surrounding config directory.
 
@@ -95,14 +95,17 @@ List then reports the old profiles as not logged in. Run `agyx profile login NAM
 
 ## Doctor and uninstall
 
-`doctor` reports agyx/agy versions, the real binary, shim entry, profile storage mode, default profile, token existence and mode (expected 0600), healthy/missing/broken links, drift, and newest log. A login keychain item `gemini/antigravity` is informational: plain agy may use it. Only item existence is checked, never its secret (`security` is never given `-w` or `-g`). Except for a consented legacy migration, doctor does not repair or write state.
+`doctor` reports agyx/agy versions, the real binary, shim entry, profile storage mode, default profile, token existence and mode (expected 0600), group/world-accessible profile directories (expected 0700), healthy/missing/broken links, drift, and newest log. A login keychain item `gemini/antigravity` is informational: plain agy may use it. Only item existence is checked, never its secret (`security` is never given `-w` or `-g`). Except for a consented legacy migration, doctor does not repair or write state.
 
 `uninstall` asks for confirmation (default No), refusing without a terminal unless `AGYX_ASSUME_YES=1`. It refuses if a matching agy process is running. It moves the data directory, including profile token files and logs, to `~/.Trash/agyx-uninstall-<timestamp>-*/`. Tokens remain in the Trash until you empty it. It also handles remaining legacy keychains, whitelist and exact agyx blocker. Shared conversations/history, plain agy and unrelated config files stay untouched. Homebrew installations then run `brew uninstall agyx`; a checkout stays on disk (only an owned `~/.local/bin/agyx` link is removed). Apps using `<data>/bin/agy` will stop working.
+
+## Security
+
+Each profile login is a plaintext token file (`<data>/profiles/NAME/antigravity-cli/antigravity-oauth-token`, mode 0600) instead of a keychain item; do not sync or share the agyx data dir.
 
 ## Risks and manual verification
 
 - **Undocumented agy behavior:** both the WSL file-storage detector and hidden app-dir flag were checked on agy 1.5.7/1.5.8, not a stable public API. Recheck storage logs before using an agy upgrade. If Google changes either behavior, profile isolation could fail.
-- Tokens are mode-0600 files, not a keychain secret. Same-user processes can read them. agyx is not a security boundary, account rotator or limit bypass.
 - Real sign-in, refresh and logout require user testing. agyx never copies credentials or forces refresh by editing tokens. Concurrent writers to the same profile/private settings are not coordinated.
 - Settings and summary protobuf files are now per-profile, unlike 0.1.3. Existing shared files are not copied into them.
 
@@ -136,10 +139,6 @@ esac
 ```
 
 Keep the real checkout, global config, shared app directory and installed agyx untouched. Test tokens remain in the Trash until you empty that specific test folder.
-
-## ACP client lifetime
-
-Keep ACP stdin open until the requested responses arrive. Writing `initialize` and `session/new` and then immediately sending EOF (for example `communicate(input=...)` or a short pipe) cancels agy's request context: agy 1.5.7/1.5.8 can return `-32000 Authentication required`, log `context cancelled, skipping keyring auth`, and only then log a loaded token. This reproduces with both file storage and plain agy using a disposable keychain, not only with agyx. Back-to-back requests with stdin kept open worked in both modes; agyx does not add an arbitrary delay or an ACP proxy.
 
 ## Tests
 
