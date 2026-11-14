@@ -150,7 +150,8 @@ case $cmd in
     fi
     pl=; for n in $(names); do pl="$pl${pl:+, }$n"; done
     kind=other
-    case $me in */Cellar/agyx/*) kind=brew ;; *) [ -e "${me%/*/*}/.git" ] && kind=checkout ;; esac
+    case $me in */Cellar/*/*) formula=${me#*/Cellar/}; formula=${formula%%/*}; kind=brew ;;
+      *) [ -e "${me%/*/*}/.git" ] && kind=checkout ;; esac
     plink=$rh/.local/bin/agyx
     if [ "$kind" = checkout ] && { [ ! -L "$plink" ] || [ ! "$plink" -ef "$me" ]; }; then plink=; fi
     {
@@ -159,7 +160,7 @@ case $cmd in
       [ ! -f "$AGYX_LINKS_FILE" ] || echo "  $(agyx_tilde "$AGYX_LINKS_FILE")   old whitelist (moved to Trash)"
       echo "  Any old profile keychains are deleted; only agyx's exact token blocker is removed."
       case $kind in
-        brew) echo "  agyx itself   (brew uninstall agyx)" ;;
+        brew) echo "  agyx itself   (brew uninstall $formula)" ;;
         checkout) if [ -n "$plink" ]; then echo "  agyx itself   (the link $(agyx_tilde "$plink"))"; else echo "  agyx itself   (nothing: it runs from a checkout, which is left alone)"; fi ;;
         *) echo "  agyx itself   (delete $(agyx_tilde "$me") yourself)" ;;
       esac
@@ -183,7 +184,7 @@ case $cmd in
     case $kind in
       brew)
         echo "agyx: removing the program now (optionally afterwards: brew untap iamdin/tap)"
-        exec brew uninstall agyx ;;
+        exec brew uninstall "$formula" ;;
       checkout)
         if [ -n "$plink" ]; then rm -f "$plink" && echo "agyx: removed the link $(agyx_tilde "$plink") (the checkout is left alone)"
         else echo "agyx: nothing else to remove (agyx runs from a checkout, which is left alone)"; fi ;;

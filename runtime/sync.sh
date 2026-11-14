@@ -1,7 +1,7 @@
 # shellcheck shell=sh
 # shellcheck disable=SC2154,SC2034 # R, P, data and AGYX_SHIM are set by callers
 # R = real HOME; P = profile app directory. Never read or copy a token.
-AGYX_VERSION=0.1.3 # the one place the version lives (the formula's url tag must match)
+AGYX_VERSION=0.2.0-beta.1 # the one place the version lives (the formula's url tag must match)
 
 agyx_private() {
   case $1 in antigravity-oauth-token|settings.json|jetski_state.pbtxt|jetbox_summaries_proto.pb) return 0 ;; esac
@@ -241,14 +241,16 @@ agyx_ensure_entry() {
 }
 
 # Sets AGYX_STABLE to the path agyx stores or passes on for itself. Homebrew keeps each version in
-# its own Cellar directory and deletes old ones, while <prefix>/opt/agyx is a stable link to the
-# current version: <prefix>/Cellar/agyx/<version>/<rest> maps to <prefix>/opt/agyx/<rest> when that
-# exists. Any other (resolved) path is kept as it is, e.g. a git checkout.
+# its own Cellar directory and deletes old ones, while <prefix>/opt/<formula> is a stable link to
+# the current version: <prefix>/Cellar/<formula>/<version>/<rest> maps to <prefix>/opt/<formula>/<rest>
+# when that exists (the formula is agyx or the beta agyx-beta). Any other (resolved) path is kept
+# as it is, e.g. a git checkout.
 agyx_stable() {
   case $1 in
-    */Cellar/agyx/*/*)
-      _pre=${1%%/Cellar/agyx/*}; _rest=${1#*/Cellar/agyx/}; _rest=${_rest#*/}
-      if [ -e "$_pre/opt/agyx/$_rest" ]; then AGYX_STABLE=$_pre/opt/agyx/$_rest; return 0; fi ;;
+    */Cellar/*/*)
+      _name=${1#*/Cellar/}; _name=${_name%%/*}
+      _pre=${1%%/Cellar/$_name/*}; _rest=${1#*/Cellar/$_name/}; _rest=${_rest#*/}
+      if [ -e "$_pre/opt/$_name/$_rest" ]; then AGYX_STABLE=$_pre/opt/$_name/$_rest; return 0; fi ;;
   esac
   AGYX_STABLE=$1
 }

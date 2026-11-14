@@ -372,5 +372,25 @@ mkdir -p "$T/prefix/Cellar/agyx/0.1.3/bin" "$T/prefix/opt"
 printf x > "$T/prefix/Cellar/agyx/0.1.3/bin/agy"
 ln -s ../Cellar/agyx/0.1.3 "$T/prefix/opt/agyx"
 eq stable-path "$T/prefix/opt/agyx/bin/agy" "$(. "$here/runtime/sync.sh"; agyx_stable "$T/prefix/Cellar/agyx/0.1.3/bin/agy"; echo "$AGYX_STABLE")"
+# A Homebrew install of the beta formula agyx-beta behaves like agyx: Cellar paths map to its own
+# opt path, and agyx uninstall removes the formula it was installed as.
+mkdir -p "$T/binstub"
+printf '#!/bin/sh\necho "brew $*" >> "$BREWLOG"\n' > "$T/binstub/brew"
+chmod +x "$T/binstub/brew"
+export BREWLOG=$T/brew.log
+brewtest() { # $1 = Cellar dir (formula/version), $2 = opt name, $3 = formula brew must uninstall
+  d=$T/prefix/Cellar/$1
+  mkdir -p "$d/libexec/bin" "$d/libexec/runtime" "$T/prefix/opt" "$T/bdata"
+  cp "$here/bin/agyx" "$here/bin/agy" "$d/libexec/bin/"
+  cp "$here/runtime/sync.sh" "$d/libexec/runtime/"
+  ln -sfn "../Cellar/$1" "$T/prefix/opt/$2"
+  eq "stable-$2-path" "$T/prefix/opt/$2/libexec/bin/agy" "$(. "$here/runtime/sync.sh"; agyx_stable "$d/libexec/bin/agy"; echo "$AGYX_STABLE")"
+  (AGYX_DATA_DIR=$T/bdata AGYX_ASSUME_YES=1 PATH="$T/binstub:$PATH" "$d/libexec/bin/agyx" uninstall >/dev/null 2>"$T/err-$2")
+  eq "uninstall-$2-formula" "brew uninstall $3" "$(tail -n 1 "$BREWLOG")"
+  eq "uninstall-$2-hint" "1" "$(grep -c "(brew uninstall $3)" "$T/err-$2")"
+}
+: > "$BREWLOG"
+brewtest agyx/0.1.3 agyx agyx
+brewtest agyx-beta/0.2.0-beta.1 agyx-beta agyx-beta
 printf 'passed: %s, failed: %s\n' "$pass" "$fail"
 [ "$fail" = 0 ]
