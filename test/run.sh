@@ -4,9 +4,9 @@ umask 022
 here=$(cd "$(dirname "$0")/.." && pwd -P)
 T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
-export HOME=$T/home AGYX_REAL_HOME=$T/home AGYX_DATA_DIR=$T/data AGYX_TRASH_DIR=$T/trash
+export HOME=$T/home AGYX_DATA_DIR=$T/data AGYX_TRASH_DIR=$T/trash
 export SECLOG=$T/security.log AGYX_SECURITY=$T/security AGYX_REAL_AGY=$T/fake-agy
-unset AGY_PROFILE WSL_DISTRO_NAME WSL_INTEROP SSH_CLIENT SSH_CONNECTION SSH_TTY ZDOTDIR BASH_ENV
+unset AGYX_PROFILE AGY_PROFILE AGYX_REAL_HOME WSL_DISTRO_NAME WSL_INTEROP SSH_CLIENT SSH_CONNECTION SSH_TTY ZDOTDIR BASH_ENV
 unset AGYX_ASSUME_YES AGYX_TTY AGYX_ORIG_WSL_SET AGYX_ORIG_WSL
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
@@ -37,7 +37,7 @@ if [ "${FAKE_LOGIN-}" = 1 ]; then
   exit 0
 fi
 if [ -n "${FAKE_RUN-}" ]; then exec /bin/sh -c "$FAKE_RUN"; fi
-printf 'HOME=%s\nPROFILE=%s\nWSL=%s\nSSH_CLIENT=%s\nSSH_CONNECTION=%s\nSSH_TTY=%s\n' "$HOME" "$AGY_PROFILE" "${WSL_DISTRO_NAME-unset}" "${SSH_CLIENT-unset}" "${SSH_CONNECTION-unset}" "${SSH_TTY-unset}"
+printf 'HOME=%s\nPROFILE=%s\nWSL=%s\nSSH_CLIENT=%s\nSSH_CONNECTION=%s\nSSH_TTY=%s\n' "$HOME" "$AGYX_PROFILE" "${WSL_DISTRO_NAME-unset}" "${SSH_CLIENT-unset}" "${SSH_CONNECTION-unset}" "${SSH_TTY-unset}"
 for a in "$@"; do printf 'ARG=%s\n' "$a"; done
 exit "${FAKE_STATUS:-0}"
 EOF
@@ -68,8 +68,9 @@ err() {
 }
 # Profile selection, validation, untouched user arguments.
 eq default work "$(prof)"
-eq env personal "$(AGY_PROFILE=personal prof)"
-eq flag work "$(AGY_PROFILE=personal prof --profile=work)"
+eq env personal "$(AGYX_PROFILE=personal prof)"
+eq flag work "$(AGYX_PROFILE=personal prof --profile=work)"
+eq old-profile-env-ignored work "$(AGY_PROFILE=personal prof)"
 eq real-home "$RH" "$(FIELD=HOME field)"
 eq wsl-set agyx "$(FIELD=WSL field)"
 eq wsl-existing Ubuntu "$(WSL_DISTRO_NAME=Ubuntu FIELD=WSL field)"
@@ -78,7 +79,7 @@ for bad in Work 1a a/b doctor profile uninstall ''; do err "profile-$bad" launch
 err missing launch --profile
 err duplicate launch --profile work --profile personal
 err missing-dir launch --profile absent
-err env-invalid env AGY_PROFILE=BAD "$here/bin/agy"
+err env-invalid env AGYX_PROFILE=BAD "$here/bin/agy"
 mv "$DD/default" "$T/default"
 err no-default launch
 mv "$T/default" "$DD/default"
@@ -121,10 +122,20 @@ for shell in bash zsh; do
   eq "$shell-existing" "$RH|Ubuntu|/zd|/be" "$(WSL_DISTRO_NAME=Ubuntu ZDOTDIR=/zd BASH_ENV=/be FAKE_RUN="$snippet" launch)"
   nested="$shell -c 'FAKE_RUN= \"$here/bin/agy\" --profile personal'"
   eq "$shell-nested" personal "$(FAKE_RUN="$nested" launch | sed -n 's/^PROFILE=//p')"
+  nested="$shell -c 'FAKE_RUN= \"$here/bin/agy\"'"
+  eq "$shell-nested-inherits-profile" personal "$(FAKE_RUN="$nested" launch --profile personal | sed -n 's/^PROFILE=//p')"
+  if [ "$shell" = bash ]; then names='compgen -A variable AGYX_ORIG_ || :'
+  else names='print -rl -- ${(k)parameters[(I)AGYX_ORIG_*]}'; fi
+  eq "$shell-originals-cleaned" '' "$(AGYX_ORIG_EXTRA=probe FAKE_RUN="$shell -c '$names'" launch)"
+  eq "$shell-home-helper-cleaned" unset "$(AGYX_REAL_HOME=/unused FAKE_RUN="$shell -c 'printf %s \${AGYX_REAL_HOME-unset}'" launch)"
+  if [ "$shell" = bash ]; then routing='compgen -e AGYX_'
+  else routing='print -rl -- ${(k)parameters[(I)AGYX_*]}'; fi
+  eq "$shell-routing-vars-only" 'AGYX_DATA_DIR AGYX_PROFILE AGYX_REAL_AGY ' "$(FAKE_RUN="$shell -c '$routing'" launch | sort | tr '\n' ' ')"
+  eq "$shell-native-env-kept" '/native-api|kept' "$(ANTIGRAVITY_AGENTAPI_EXE=/native-api AGY_CLI_PROBE=kept FAKE_RUN="$shell -c 'printf \"%s|%s\" \"\$ANTIGRAVITY_AGENTAPI_EXE\" \"\$AGY_CLI_PROBE\"'" launch)"
 done
 mkdir -p "$T/zd"
-printf 'printf x >> "$COUNT"\n' > "$T/zd/.zshenv"
-printf 'printf x >> "$COUNT"\n' > "$T/benv"
+printf '[ ! "${AGYX_ORIG_WSL_SET+x}" ] || printf leak >> "$COUNT"\nprintf x >> "$COUNT"\n' > "$T/zd/.zshenv"
+printf '[ ! "${AGYX_ORIG_WSL_SET+x}" ] || printf leak >> "$COUNT"\nprintf x >> "$COUNT"\n' > "$T/benv"
 export COUNT=$T/count
 : > "$COUNT"
 (ZDOTDIR=$T/zd FAKE_RUN='zsh -c true' launch >/dev/null)

@@ -27,7 +27,7 @@ class Agyx < Formula
     # no setup step: the real agy comes from AGYX_REAL_AGY (no real agy is run), the
     # <data>/bin/agy entry is created by the first run; no home whitelist is needed
     ENV["AGYX_DATA_DIR"] = testpath/"data"
-    ENV["AGYX_REAL_HOME"] = testpath
+    ENV["HOME"] = testpath
     ENV["AGYX_REAL_AGY"] = "/usr/bin/true"
     ENV["AGYX_ASSUME_YES"] = "1" # skip the first-run question
     (testpath/"data/profiles/work/antigravity-cli").mkpath

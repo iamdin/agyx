@@ -15,7 +15,8 @@ while [ -L "$self" ]; do
 done
 self=$(cd "$(dirname "$self")" && pwd -P)/$(basename "$self")
 runtime=$(cd "$(dirname "$self")/../runtime" && pwd -P)
-rh=${AGYX_REAL_HOME:-$(eval "printf %s ~$(id -un)")}
+rh=$HOME
+unset AGYX_REAL_HOME AGY_PROFILE
 data=${AGYX_DATA_DIR:-$rh/.local/share/agyx}
 # shellcheck disable=SC2034 # R, AGYX_SHIM and data are used by the functions in sync.sh
 R=$rh AGYX_SHIM=$self
@@ -45,7 +46,7 @@ while [ $# -gt 0 ]; do
   flag=1 name=$v
 done
 if [ "$flag" = 0 ]; then
-  name=${AGY_PROFILE:-}
+  name=${AGYX_PROFILE:-}
   [ -z "$name" ] || src='env'
   if [ -z "$name" ] && [ -f "$data/default" ]; then
     read -r name < "$data/default" || :
@@ -96,9 +97,9 @@ if [ "${BASH_ENV-}" != "$bb" ]; then
   if [ "${BASH_ENV+x}" ]; then AGYX_ORIG_BASH_ENV_SET=1 AGYX_ORIG_BASH_ENV=$BASH_ENV
   else AGYX_ORIG_BASH_ENV_SET=0 AGYX_ORIG_BASH_ENV=; fi
 fi
-HOME=$rh AGY_PROFILE=$name AGYX_REAL_HOME=$rh AGY_CLI_DISABLE_AUTO_UPDATE=true
+AGYX_PROFILE=$name AGY_CLI_DISABLE_AUTO_UPDATE=true
 ZDOTDIR=$bz BASH_ENV=$bb
-export HOME WSL_DISTRO_NAME AGYX_ORIG_WSL_SET AGYX_ORIG_WSL AGY_PROFILE AGYX_REAL_HOME AGY_CLI_DISABLE_AUTO_UPDATE ZDOTDIR BASH_ENV \
+export WSL_DISTRO_NAME AGYX_ORIG_WSL_SET AGYX_ORIG_WSL AGYX_PROFILE AGY_CLI_DISABLE_AUTO_UPDATE ZDOTDIR BASH_ENV \
   AGYX_ORIG_ZDOTDIR_SET AGYX_ORIG_ZDOTDIR AGYX_ORIG_BASH_ENV_SET AGYX_ORIG_BASH_ENV
 # 5. Check this launch's storage evidence, including an explicit caller/login log.
 launch_log='' prev=''
@@ -115,6 +116,8 @@ if agyx_wants_log "$@"; then
     echo "agyx: warning: could not create a log file in $data/profiles/$name/log; agy writes its default log" >&2
   fi
 fi
+# Setup/test controls are not routing state for agy or its commands.
+unset AGYX_ASSUME_YES AGYX_TTY AGYX_SECURITY AGYX_TRASH_DIR AGYX_LOG_STAMP
 # shellcheck disable=SC2154 # real is set by agyx_find_real
 [ -n "$launch_log" ] || exec "$real" "--app_data_dir=$AGYX_APP_ARG" "$@"
 # Keep stdin/stdio intact and forward signals now that the shim waits for agy.

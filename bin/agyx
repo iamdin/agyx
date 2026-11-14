@@ -15,7 +15,8 @@ while [ -L "$self" ]; do
 done
 me=$(cd "$(dirname "$self")" && pwd -P)/$(basename "$self")
 shim=${me%/*}/agy
-rh=${AGYX_REAL_HOME:-$(eval "printf %s ~$(id -un)")}
+rh=$HOME
+unset AGYX_REAL_HOME AGY_PROFILE
 data=${AGYX_DATA_DIR:-$rh/.local/share/agyx}
 # shellcheck disable=SC2034 # R and AGYX_SHIM are used by the functions in sync.sh
 R=$rh AGYX_SHIM=$shim

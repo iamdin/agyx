@@ -23,7 +23,7 @@ This branch is an unreleased redesign; the published Homebrew version still uses
 ```sh
 agyx                              # default profile
 agyx --profile personal -p "hello"
-AGY_PROFILE=work agyx --model x
+AGYX_PROFILE=work agyx --model x
 agyx --profile work acp
 agyx --profile work mcp list
 agyx --profile work --help         # agy's help
@@ -39,7 +39,7 @@ Commands:
 - `agyx uninstall`
 - `agyx --help`, `agyx --version`
 
-Profile selection: leading `--profile NAME` (or `--profile=NAME`) > `AGY_PROFILE` > saved default. `--` ends profile parsing; remaining arguments are passed through. Names must match `[a-z][a-z0-9_-]{0,31}`; `profile`, `doctor` and `uninstall` are reserved. A missing or invalid profile is an error, not a fallback to another account. A logged-out profile starts agy's native sign-in. The first successful `profile login` becomes the default if none is set.
+Profile selection: leading `--profile NAME` (or `--profile=NAME`) > `AGYX_PROFILE` > saved default. `--` ends profile parsing; remaining arguments are passed through. Names must match `[a-z][a-z0-9_-]{0,31}`; `profile`, `doctor` and `uninstall` are reserved. A missing or invalid profile is an error, not a fallback to another account. Use `AGYX_PROFILE` instead of the former `AGY_PROFILE`. A logged-out profile starts agy's native sign-in. The first successful `profile login` becomes the default if none is set.
 
 ## Consent and paths
 
@@ -76,7 +76,7 @@ SQLite must resolve the profile database link to its shared canonical pathname b
 
 For agy only, the shim supplies `WSL_DISTRO_NAME=agyx` when the existing value is empty/unset, and the hidden global flag `--app_data_dir=<relative path from ~/.gemini to profile/antigravity-cli>` **before all user arguments**. agy's WSL detector selects file token storage, so it does not load, save or remove the login keychain item. Existing nonempty WSL values and all SSH variables pass through unchanged. User `--app_data_dir` and `--gemini_dir` overrides are rejected because they could defeat isolation.
 
-Bash and Zsh startup bridges restore the original WSL variable (including unset versus empty) and the original `BASH_ENV`/`ZDOTDIR`, then source the user's startup file. HOME is never redirected. Commands started inside these shells therefore see the normal environment. **Directly executed programs (including MCP servers), shells started without startup files, and POSIX sh can still inherit the fake WSL variable.** There is no general child-process environment hook in agy; the bridge cannot clean those processes. Their HOME is nevertheless the real HOME.
+Bash and Zsh startup bridges restore WSL and `BASH_ENV`/`ZDOTDIR`, remove all `AGYX_ORIG_*` context, then source the user's startup file. HOME is already real; no HOME helper is exported. `AGYX_PROFILE` remains for nested `agyx`; caller-supplied `AGYX_DATA_DIR`/`AGYX_REAL_AGY` remain for custom locations. **Directly executed programs (including MCP servers), POSIX sh and shells that skip startup files can still inherit fake WSL and the bridge context:** agy has no general child-environment hook. Native `ANTIGRAVITY_*` and `AGY_CLI_*` variables are not cleaned by the bridge.
 
 Each launch gets a unique private log; same-second launches get `_02`, `_03`, etc. The existing no-log list (`help`, `changelog`, `mcp`, `update`, `--help`, `-h`, `--version`) skips only the log flag, not the app-dir flag. An explicit user `--log-file` is kept. After a launch with a log file exits, agyx checks that this launch's log contains `Using file-based token storage` (WSL or SSH reason). If missing, it warns on stderr that keychain fallback can mix accounts and delete the profile token file. `doctor` applies the same check to each profile's newest log. This is an after-exit diagnostic, not prevention: stop using profiles if warned and check agy compatibility. Commands that produce no log cannot be checked. Logs are not pruned automatically.
 
@@ -91,7 +91,7 @@ After consent, agyx:
 3. Removes the old shared token blocker **only** when it contains exactly agyx's original README and nothing else. Plain agy's token files and unknown directories are untouched.
 4. Moves the old `${XDG_CONFIG_HOME:-~/.config}/agyx/symlinks` whitelist file into the last profile's migration Trash folder, keeping its surrounding config directory.
 
-List then reports the old profiles as not logged in. Run `agyx profile login NAME` for each one. Old leftovers live in the macOS Trash, never a backup directory under agyx. Test overrides `AGYX_REAL_HOME`, `AGYX_SECURITY`, `AGYX_TRASH_DIR` and `AGYX_TTY` are for isolated tests, not normal use.
+List then reports the old profiles as not logged in. Run `agyx profile login NAME` for each one. Old leftovers live in the macOS Trash, never a backup directory under agyx. Test overrides `AGYX_SECURITY`, `AGYX_TRASH_DIR` and `AGYX_TTY` are for isolated tests, not normal use.
 
 ## Doctor and uninstall
 

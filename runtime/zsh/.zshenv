@@ -2,4 +2,7 @@
 if [ "${AGYX_ORIG_WSL_SET-}" = 1 ]; then WSL_DISTRO_NAME=$AGYX_ORIG_WSL; export WSL_DISTRO_NAME; else unset WSL_DISTRO_NAME; fi
 if [ "${AGYX_ORIG_ZDOTDIR_SET-}" = 1 ]; then ZDOTDIR=$AGYX_ORIG_ZDOTDIR; export ZDOTDIR; else unset ZDOTDIR; fi
 if [ "${AGYX_ORIG_BASH_ENV_SET-}" = 1 ]; then BASH_ENV=$AGYX_ORIG_BASH_ENV; export BASH_ENV; else unset BASH_ENV; fi
+# shellcheck disable=SC3045 # Zsh pattern unset; no variable values are evaluated.
+unset -m 'AGYX_ORIG_*'
+unset AGYX_REAL_HOME AGY_PROFILE
 if [ -r "${ZDOTDIR:-$HOME}/.zshenv" ]; then . "${ZDOTDIR:-$HOME}/.zshenv"; fi
