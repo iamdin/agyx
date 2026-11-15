@@ -38,22 +38,30 @@ agyx --profile personal -p "hi"    # launch a specific profile
 agyx --profile personal -c         # continue the latest conversation under another account
 AGYX_PROFILE=work agyx models      # select profile via environment variable
 
+agyx setup t3code                  # interactive: sync profiles into T3 Code
+agyx setup t3code -y               # non-interactive sync (for scripts)
 agyx doctor                        # check installation, permissions, and links
 agyx uninstall                     # move agyx data to Trash and uninstall
 ```
 
-Profile precedence: leading `--profile NAME` > `AGYX_PROFILE` > default. Profile names match `[a-z][a-z0-9_-]{0,31}` (`profile`, `doctor`, and `uninstall` are reserved). Any other arguments pass straight through to `agy`.
+Profile precedence: leading `--profile NAME` > `AGYX_PROFILE` > default. Profile names match `[a-z][a-z0-9_-]{0,31}` (`profile`, `doctor`, `setup`, and `uninstall` are reserved). Any other arguments pass straight through to `agy`.
 
 ### Apps and IDEs (e.g. T3 Code)
 
-Point apps that expect a binary named `agy` to **`~/.local/share/agyx/agy`**, and set `AGYX_PROFILE=<name>` per instance (or omit it to use the default profile).
+```sh
+agyx setup t3code       # interactive confirm
+agyx setup t3code -y    # non-interactive (or AGYX_ASSUME_YES=1)
+```
+
+Requires an existing `~/.t3/userdata/settings.json` (open T3 Code once first). Validates that file, then upserts one Antigravity provider instance per profile: `binaryPath` is the absolute path of **`~/.local/share/agyx/agy`**, with `AGYX_PROFILE=<name>`. Restart T3 Code afterwards.
+
+To configure manually, point the app at that same entry (absolute path; do not use `~`) and set `AGYX_PROFILE=<name>` per instance (or omit it to use the default profile).
 
 ## How it works & paths
 
 - **Data directory (`${AGYX_DATA_DIR:-~/.local/share/agyx}`):** asked once on first write (`AGYX_ASSUME_YES=1` skips prompts). Holds the `agy` app entry, `default`, and `profiles/<name>/`.
 - **Shared vs. private:** conversations, `history.jsonl`, `conversation_summaries.db`, `brain`, `skills`, and `mcp` link to `~/.gemini/antigravity-cli/`. Tokens, `settings.json`, `cache/`, and native `log/` stay private per profile. If a shared entry drifts, the next launch asks once before merging and moving displaced copies to the OS Trash.
 - **Per-platform isolation:** `agy` is `exec`d directly with `--app_data_dir` pointing at the profile directory. Headless Linux, containers, and SSH sessions use native file storage with zero extra env vars; desktop keyring sessions (local macOS, Linux Desktop) set `WSL_INTEROP=agyx` and clean it on first Bash/Zsh entry.
-- **Upgrading from 0.1.x:** the first command asks once to delete legacy profile keychains, move old `home/` and whitelist files to the Trash, and switch to real-`HOME` file logins (each profile signs in once again).
 
 No shell startup files, `PATH`, or system keychains are modified. Native `agy` is discovered from `PATH` or `~/.local/bin/agy` (`AGYX_REAL_AGY=/path/to/agy` overrides).
 
@@ -66,7 +74,7 @@ Logins are stored as `0600` token files inside `0700` profile directories — th
 ```sh
 sh test/run.sh
 sh test/release.sh
-shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh runtime/legacy.sh runtime/bash_env runtime/zsh/.zshenv test/run.sh test/release.sh scripts/release.sh scripts/install.sh
+shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh runtime/bash_env runtime/zsh/.zshenv test/run.sh test/release.sh scripts/release.sh scripts/install.sh
 ```
 
 ## License

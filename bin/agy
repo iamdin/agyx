@@ -28,7 +28,6 @@ agyx_stable "$self"; AGYX_SHIM=$AGYX_STABLE
 runtime_stable=${AGYX_SHIM%/*/*}/runtime
 # ask once before the first write; then automatic repairs (stderr only, never stdout)
 agyx_gate
-agyx_migrate
 agyx_ensure_entry || die "cannot prepare app entry"
 
 # 1. profile choice: leading --profile flags only

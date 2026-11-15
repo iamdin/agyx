@@ -134,7 +134,6 @@ for f in agy agyx; do
 done
 # runtime/: scripts + zsh/ bridge tree
 cp "$FROM/runtime/sync.sh" "$FROM/runtime/bash_env" "$stage/runtime/" || die "missing runtime files"
-[ ! -f "$FROM/runtime/legacy.sh" ] || cp "$FROM/runtime/legacy.sh" "$stage/runtime/"
 if [ -d "$FROM/runtime/zsh" ]; then
   mkdir -p "$stage/runtime/zsh"
   cp -R "$FROM/runtime/zsh/." "$stage/runtime/zsh/" || die "cannot copy runtime/zsh"

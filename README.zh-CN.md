@@ -37,22 +37,30 @@ agyx --profile personal -p "hi"    # 指定 profile 运行
 agyx --profile personal -c         # 换另一个账号无缝续接最近一次对话
 AGYX_PROFILE=work agyx models      # 通过环境变量指定 profile
 
+agyx setup t3code                  # 交互：把各 profile 写入 T3 Code
+agyx setup t3code -y               # 非交互：直接写入（脚本用）
 agyx doctor                        # 检查安装状态、目录权限与软链
 agyx uninstall                     # 将数据移入废纸篓并卸载 agyx
 ```
 
-选择优先级：前置 `--profile NAME` > `AGYX_PROFILE` > 默认 profile。名称需匹配 `[a-z][a-z0-9_-]{0,31}`（`profile`、`doctor`、`uninstall` 为保留字），其余参数原样透传给 `agy`。
+选择优先级：前置 `--profile NAME` > `AGYX_PROFILE` > 默认 profile。名称需匹配 `[a-z][a-z0-9_-]{0,31}`（`profile`、`doctor`、`setup`、`uninstall` 为保留字），其余参数原样透传给 `agy`。
 
 ### 接入客户端与 IDE（如 T3 Code）
 
-将需要 `agy` 可执行文件路径的应用指向 **`~/.local/share/agyx/agy`**，并为每个实例配置环境变量 `AGYX_PROFILE=<name>`（不配则走默认 profile）。
+```sh
+agyx setup t3code       # 终端里交互确认
+agyx setup t3code -y    # 非交互（或 AGYX_ASSUME_YES=1）
+```
+
+要求已有 `~/.t3/userdata/settings.json`（先打开过一次 T3 Code）。校验通过后，把每个 profile 写成 Antigravity instance：`binaryPath` 指向 **`~/.local/share/agyx/agy`**（绝对路径），并设置 `AGYX_PROFILE=<name>`。改完后重启 T3 Code。
+
+手动配置时同样指向该入口（须用绝对路径；不要写 `~`），并为每个实例设置环境变量 `AGYX_PROFILE=<name>`（不配则走默认 profile）。
 
 ## 工作原理与路径
 
 - **数据目录（`${AGYX_DATA_DIR:-~/.local/share/agyx}`）**：首次写入前询问一次确认（脚本可设 `AGYX_ASSUME_YES=1` 跳过），仅存放 `agy` 入口链接、`default` 和 `profiles/<name>/`。
 - **共享与私有边界**：对话、`history.jsonl`、`conversation_summaries.db`、`brain`、`skills`、`mcp` 等软链至 `~/.gemini/antigravity-cli/` 跨账号共享；Token、`settings.json`、`cache/` 及原生 `log/` 按账号私有隔离。若共享项发生冲突（`DRIFT`），下次启动会询问确认后自动合并，被替换副本移入系统废纸篓。
 - **分平台零侵入隔离**：直接通过 `exec` 加 `--app_data_dir` 启动原生 `agy`。无头 Linux、容器及所有 SSH 会话直接使用原生文件存储（零额外环境变量）；带系统钥匙串的桌面会话（本地 macOS、Linux 桌面）注入 `WSL_INTEROP=agyx` 并在首层 Bash/Zsh 启动时自动清除还原。
-- **从 0.1.x 升级**：首次运行时经确认后自动删除旧独立钥匙串，将旧 `home/` 与白名单移入废纸篓并切换至新目录（各账号重新登录一次即可）。
 
 全程不修改任何 Shell 配置文件、`PATH` 或系统登录钥匙串。原生 `agy` 每次从 `PATH` 或 `~/.local/bin/agy` 动态查找（可用 `AGYX_REAL_AGY=/path/to/agy` 覆盖）。
 
@@ -65,7 +73,7 @@ agyx uninstall                     # 将数据移入废纸篓并卸载 agyx
 ```sh
 sh test/run.sh
 sh test/release.sh
-shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh runtime/legacy.sh runtime/bash_env runtime/zsh/.zshenv test/run.sh test/release.sh scripts/release.sh scripts/install.sh
+shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh runtime/bash_env runtime/zsh/.zshenv test/run.sh test/release.sh scripts/release.sh scripts/install.sh
 ```
 
 ## 许可证

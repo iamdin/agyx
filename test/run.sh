@@ -59,7 +59,6 @@ cat > "$T/security" <<'EOF'
 #!/bin/sh
 printf 'HOME=%s %s\n' "$HOME" "$*" >> "$SECLOG"
 case $1 in
-  delete-keychain) [ "${FAKE_SEC_FAIL-}" != 1 ] || exit 1; rm "$2" ;;
   find-generic-password) [ "${FAKE_KEYCHAIN_ITEM-}" = 1 ] ;;
   *) exit 99 ;;
 esac
@@ -100,7 +99,7 @@ fi
 eq desktop-uses-bridge agyx "$(DBUS_SESSION_BUS_ADDRESS='unix:path=/tmp/bus' FIELD=WSL_INTEROP field)"
 touch "$T/fake-dockerenv"
 eq container-zero-bridge 'unset|unset|unset' "$(AGYX_DOCKERENV="$T/fake-dockerenv" launch | awk -F= '/^(WSL_INTEROP|ZDOTDIR|BASH_ENV)=/{printf "%s|", $2}' | sed 's/|$//')"
-for bad in Work 1a a/b doctor profile uninstall ''; do err "profile-$bad" launch --profile "$bad"; done
+for bad in Work 1a a/b doctor profile setup uninstall ''; do err "profile-$bad" launch --profile "$bad"; done
 err missing launch --profile
 err duplicate launch --profile work --profile personal
 err missing-dir launch --profile absent
@@ -146,7 +145,7 @@ eq version-string 1 "$(ax --version | grep -c '^agyx 0.2.0$')"
 # Only doctor above queried item existence; launches still must make no security calls.
 eq doctor-item-queries-only 2 "$(wc -l < "$SECLOG" | tr -d ' ')"
 : > "$SECLOG"
-# Help/version are strictly read-only; doctor/launches clean old layout, old .verified and outer profile logs.
+# Help/version are strictly read-only (no disk cleanup / migration).
 mkdir -p "$DD/bin" "$DD/profiles/work/log"
 printf oldlog > "$DD/profiles/work/log/cli-old.log"
 printf stamp > "$DD/.verified"
@@ -155,37 +154,13 @@ ln -s "$here/bin/agy" "$DD/bin/agy"
 ax --version >/dev/null
 ax --help >/dev/null
 eq help-version-readonly yes "$([ -L "$DD/real-agy" ] && [ -L "$DD/bin/agy" ] && [ -f "$DD/.verified" ] && [ -d "$DD/profiles/work/log" ] && echo yes)"
-ax doctor >/dev/null
-layout_trash=$(find "$AGYX_TRASH_DIR" -type d -name 'agyx-entry-layout-*')
-eq old-cache-removed no "$([ -L "$DD/real-agy" ] || [ -e "$DD/.verified" ] && echo yes || echo no)"
-eq old-entry-trashed "$here/bin/agy" "$(readlink "$layout_trash/agy")"
-eq old-empty-bin-trashed yes "$([ -d "$layout_trash/bin" ] && [ ! -e "$DD/bin" ] && echo yes)"
-eq old-outer-logs-trashed oldlog "$(cat "$layout_trash/logs/work/cli-old.log")"
-eq no-outer-logs-left no "$([ -e "$DD/profiles/work/log" ] && echo yes || echo no)"
-ax doctor >/dev/null
-eq layout-cleanup-once 1 "$(find "$AGYX_TRASH_DIR" -type d -name 'agyx-entry-layout-*' | wc -l | tr -d ' ')"
-: > "$SECLOG"
-mkdir "$DD/bin"
-printf custom > "$DD/bin/keep"
-ln -s "$T/gone/opt/agyx-beta/libexec/bin/agy" "$DD/bin/agy"
-launch >/dev/null
-eq old-nonempty-bin-kept custom "$(cat "$DD/bin/keep")"
-eq old-stale-brew-entry-removed no "$([ -L "$DD/bin/agy" ] && echo yes || echo no)"
+# Unrelated leftover files under the data dir are left alone; only <data>/agy is managed.
 printf unrelated-cache > "$DD/real-agy"
-ln -s "$T/fake-agy" "$DD/bin/agy"
 launch >/dev/null
 eq unrelated-cache-file-kept unrelated-cache "$(cat "$DD/real-agy")"
-eq unrelated-old-entry-kept "$T/fake-agy" "$(readlink "$DD/bin/agy")"
-rm "$DD/bin/agy" "$DD/bin/keep" "$DD/real-agy"; rmdir "$DD/bin"
-ln -s /usr/bin/true "$DD/real-agy"
-launch >/dev/null
-eq unrelated-cache-link-kept /usr/bin/true "$(readlink "$DD/real-agy")"
-rm "$DD/real-agy"
-mkdir "$T/external-bin"; ln -s "$here/bin/agy" "$T/external-bin/agy"
-ln -s "$T/external-bin" "$DD/bin"
-launch >/dev/null
-eq bin-symlink-not-followed "$here/bin/agy" "$(readlink "$T/external-bin/agy")"
-rm "$DD/bin"
+rm -f "$DD/real-agy" "$DD/.verified" "${DD:?}/bin/agy"
+rmdir "${DD:?}/bin" 2>/dev/null || true
+rm -rf "${DD:?}/profiles/work/log"
 rm "$DD/agy"; printf custom-entry > "$DD/agy"
 launch >/dev/null
 eq unrelated-new-entry-kept custom-entry "$(cat "$DD/agy")"
@@ -434,6 +409,31 @@ eq duplicate-warning 1 "$(ax profile list | grep -c '^WARNING: profiles')"
 (FAKE_LOGIN=1 FAKE_EMAIL='' ax profile login next >/dev/null 2>&1)
 eq no-stale-login-email 1 "$(ax profile list | grep -c '^next .*logged in, email unknown')"
 eq stale-email 1 "$(ax profile list | grep -c '^personal .*not logged in')"
+# agyx setup t3code requires an existing valid settings.json, then upserts providers.
+t3=$RH/.t3/userdata/settings.json
+mkdir -p "$RH/.t3/userdata"
+entry=$(cd "$DD" && pwd -P)/agy
+err t3code-missing-settings env HOME="$RH" AGYX_DATA_DIR="$DD" AGYX_ASSUME_YES=1 "$here/bin/agyx" setup t3code -y
+printf 'not-json\n' > "$t3"
+err t3code-invalid-json env HOME="$RH" AGYX_DATA_DIR="$DD" AGYX_ASSUME_YES=1 "$here/bin/agyx" setup t3code -y
+printf '%s\n' "{\"keep\":true,\"providerInstances\":{\"codex_x\":{\"driver\":\"codex\"},\"agy_stale\":{\"driver\":\"antigravity\",\"environment\":[{\"name\":\"AGYX_PROFILE\",\"value\":\"gone\"}],\"config\":{\"binaryPath\":\"$entry\"}}}}" > "$t3"
+(AGYX_ASSUME_YES=1 ax setup t3code -y >/dev/null)
+eq t3code-kept-foreign 1 "$(python3 -c "import json; d=json.load(open('$t3')); print(1 if d.get('keep') and 'codex_x' in d['providerInstances'] else 0)")"
+eq t3code-removed-stale 1 "$(python3 -c "import json; d=json.load(open('$t3')); print(0 if 'agy_stale' in d['providerInstances'] else 1)")"
+eq t3code-upsert-work 1 "$(python3 -c "import json; i=json.load(open('$t3'))['providerInstances']['agy_work']; print(1 if i['config']['binaryPath']=='$entry' and i['environment'][0]['value']=='work' else 0)")"
+eq t3code-upsert-next 1 "$(python3 -c "import json; print(1 if 'agy_next' in json.load(open('$t3'))['providerInstances'] else 0)")"
+err t3code-no-tty env HOME="$RH" AGYX_DATA_DIR="$DD" "$here/bin/agyx" setup t3code
+printf 'y\n' > "$T/t3-yes"
+(AGYX_TTY=$T/t3-yes ax setup t3code >/dev/null)
+eq t3code-interactive-yes 1 "$(python3 -c "import json; print(1 if 'agy_work' in json.load(open('$t3'))['providerInstances'] else 0)")"
+printf 'n\n' > "$T/t3-no"
+before_sum=$(cksum < "$t3")
+err t3code-interactive-no env HOME="$RH" AGYX_DATA_DIR="$DD" AGYX_TTY=$T/t3-no "$here/bin/agyx" setup t3code
+eq t3code-cancelled-unchanged "$before_sum" "$(cksum < "$t3")"
+err t3code-args ax setup t3code extra
+err t3code-yes-and-extra ax setup t3code -y extra
+err setup-missing ax setup
+err setup-unknown ax setup other
 # Doctor never reads token contents (deliberately not JSON), reports modes, drift and logs.
 printf collision-shared > "$shared/collision"
 printf collision-profile > "$app/collision"
@@ -617,68 +617,9 @@ printf 'y\n' > "$T/yes"
 (AGYX_DATA_DIR=$fresh AGYX_TTY=$T/yes ax profile login p >/dev/null 2>"$T/err")
 eq first-yes present "$([ -d "$fresh/profiles/p/antigravity-cli" ] && echo present)"
 eq no-whitelist absent "$([ -e "$RH/.config/agyx/symlinks" ] && echo present || echo absent)"
-# Legacy migration: refusal changes nothing, then one consent covers all profiles.
-legacy=$T/legacy
-mkdir -p "$legacy/bin"
-ln -s "$T/native one/agy" "$legacy/real-agy"
-ln -s "$here/bin/agy" "$legacy/bin/agy"
-for p in old oldtwo; do
-  mkdir -p "$legacy/profiles/$p/home/Library/Keychains" "$legacy/profiles/$p/log"
-  printf keychain > "$legacy/profiles/$p/home/Library/Keychains/login.keychain-db"
-  printf kept > "$legacy/profiles/$p/log/old.log"
-  printf old@example.com > "$legacy/profiles/$p/email"
-done
-mkdir -p "$RH/.config/agyx"
-printf whitelist > "$RH/.config/agyx/symlinks"
-# Replace only our fixture's default token file, never a real user's file.
-rm "$shared/antigravity-oauth-token"
-mkdir "$shared/antigravity-oauth-token"
-cat > "$shared/antigravity-oauth-token/README" <<'EOF'
-agyx keeps this directory here so the Antigravity CLI (agy) cannot write a token file at this path:
-all agyx profiles share this ~/.gemini, so such a file would be shared by every Google account.
-Logins live only in each profile's own keychain. Delete this directory only after uninstalling agyx.
-EOF
-: > "$SECLOG"
-(AGYX_DATA_DIR=$legacy ax --version >/dev/null)
-err migration-no-tty env AGYX_DATA_DIR="$legacy" "$here/bin/agyx" profile list
-err migration-no env AGYX_DATA_DIR="$legacy" AGYX_TTY="$T/no" "$here/bin/agyx" profile list
-eq migration-no-writes '' "$(cat "$SECLOG")"
-eq migration-refusal-keeps-013-entries yes "$([ -L "$legacy/real-agy" ] && [ -L "$legacy/bin/agy" ] && echo yes)"
-"$fr/writer with spaces" "$fr/migrate-ready" "$legacy/profiles/old/home/Library/Keychains/login.keychain-db" & writer=$!
-i=0; while [ ! -f "$fr/migrate-ready" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
-err migration-busy env AGYX_DATA_DIR="$legacy" AGYX_ASSUME_YES=1 "$here/bin/agyx" profile list
-eq migration-busy-diagnostic 1 "$(grep -c 'close agy before migration' "$T/err")"
-eq migration-busy-no-keychain-deletes '' "$(cat "$SECLOG")"
-kill "$writer"; wait "$writer" 2>/dev/null
-(AGYX_DATA_DIR=$legacy AGYX_TTY=$T/yes ax profile list > "$T/list" 2> "$T/err")
-eq migration-all 2 "$(grep -c 'not logged in' "$T/list")"
-eq migration-prompt-once 1 "$(grep -c 'Continue?' "$T/err")"
-eq migration-keychains 2 "$(grep -c 'delete-keychain' "$SECLOG")"
-eq migration-explicit-home 2 "$(grep -c "^HOME=$legacy/profiles/.*home delete-keychain $legacy/profiles/.*home/Library/Keychains/login.keychain-db$" "$SECLOG")"
-eq migration-home-gone absent "$([ -d "$legacy/profiles/old/home" ] && echo present || echo absent)"
-eq migration-email-kept old@example.com "$(cat "$legacy/profiles/old/email")"
-eq migration-outer-log-trashed absent "$([ -e "$legacy/profiles/old/log" ] && echo present || echo absent)"
-eq migration-app-mode 700 "$(mode_of "$legacy/profiles/old/antigravity-cli")"
-eq migration-single-trash-root 1 "$(find "$AGYX_TRASH_DIR" -maxdepth 1 -type d -name 'agyx-migrate-*' | wc -l | tr -d ' ')"
-eq migration-trash 2 "$(find "$AGYX_TRASH_DIR" -name home -type d | wc -l | tr -d ' ')"
-eq migration-then-entry-updated "$here/bin/agy" "$(readlink "$legacy/agy")"
-eq migration-blocker-removed absent "$([ -e "$shared/antigravity-oauth-token" ] && echo present || echo absent)"
-eq migration-whitelist-removed absent "$([ -e "$RH/.config/agyx/symlinks" ] && echo present || echo absent)"
-eq migration-whitelist-trashed whitelist "$(cat "$(find "$AGYX_TRASH_DIR" -type f -name symlinks)")"
-(AGYX_DATA_DIR=$legacy ax profile list >/dev/null)
-eq migration-idempotent 2 "$(grep -c delete-keychain "$SECLOG")"
-# A failed keychain deletion must stop, not silently abandon the login in the Trash.
-mkdir -p "$legacy/profiles/fail/home/Library/Keychains"
-printf fail > "$legacy/profiles/fail/home/Library/Keychains/login.keychain-db"
-err migration-failure env AGYX_DATA_DIR="$legacy" AGYX_ASSUME_YES=1 FAKE_SEC_FAIL=1 "$here/bin/agyx" profile list
-eq migration-failure-kept present "$([ -d "$legacy/profiles/fail/home" ] && echo present)"
-(AGYX_DATA_DIR=$legacy AGYX_ASSUME_YES=1 ax profile list >/dev/null 2>&1)
-# Unknown blocker dirs and a plain-agy token are never removed/read.
-mkdir "$shared/antigravity-oauth-token"
-printf unknown > "$shared/antigravity-oauth-token/README"
-( . "$here/runtime/sync.sh"; R=$RH; agyx_remove_blocker )
-eq unknown-blocker-kept unknown "$(cat "$shared/antigravity-oauth-token/README")"
-rm "$shared/antigravity-oauth-token/README"; rmdir "$shared/antigravity-oauth-token"
+# Uninstall fixture + shared native-agy token (agyx never touches ~/.gemini).
+udata=$T/uninstall-data
+mkdir -p "$udata/profiles/old/antigravity-cli"
 printf plain-agy > "$shared/antigravity-oauth-token"
 # Uninstall refuses an open profile DB, but never blocks an unrelated plain native agy process.
 "$fr/writer with spaces" "$fr/plain-ready" "$T/fake-agy" & plain_writer=$!
@@ -694,9 +635,9 @@ eq uninstall-live-profile-diagnostic 1 "$(grep -c 'agy is still running' "$T/err
 eq uninstall-live-profile-preserved yes "$([ -d "$DD/profiles/work" ] && echo yes)"
 kill "$writer"; wait "$writer" 2>/dev/null
 # Uninstall refusal, then Trash; shared state and plain agy are retained.
-err uninstall-no env AGYX_DATA_DIR="$legacy" AGYX_TTY="$T/no" "$here/bin/agyx" uninstall
-(AGYX_DATA_DIR=$legacy AGYX_ASSUME_YES=1 ax uninstall >/dev/null 2>"$T/err")
-eq uninstall-data-gone absent "$([ -e "$legacy" ] && echo present || echo absent)"
+err uninstall-no env AGYX_DATA_DIR="$udata" AGYX_TTY="$T/no" "$here/bin/agyx" uninstall
+(AGYX_DATA_DIR=$udata AGYX_ASSUME_YES=1 ax uninstall >/dev/null 2>"$T/err")
+eq uninstall-data-gone absent "$([ -e "$udata" ] && echo present || echo absent)"
 eq uninstall-data-trash 1 "$(find "$AGYX_TRASH_DIR" -path '*/data/profiles/old/antigravity-cli' | wc -l | tr -d ' ')"
 eq uninstall-plain-token-kept plain-agy "$(cat "$shared/antigravity-oauth-token")"
 eq uninstall-shared-history-kept history "$(cat "$shared/history.jsonl")"

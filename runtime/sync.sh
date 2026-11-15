@@ -16,7 +16,7 @@ agyx_valid_name() {
 
 # Management subcommands of bin/agyx; they are also the reserved profile names (the only list).
 agyx_subcommand() {
-  case ${1-} in doctor|profile|uninstall) return 0 ;; esac
+  case ${1-} in doctor|profile|setup|uninstall) return 0 ;; esac
   return 1
 }
 
@@ -87,20 +87,6 @@ agyx_open_pids() {
       done
     done | sort -u | tr '\n' ' '
   fi
-}
-
-agyx_legacy() {
-  command -v agyx_do_remove_blocker >/dev/null 2>&1 && return 0
-  # shellcheck source=legacy.sh
-  . "${AGYX_RUNTIME:-${here:+$here/runtime}}/legacy.sh"
-}
-
-agyx_remove_blocker() { agyx_legacy && agyx_do_remove_blocker; }
-
-agyx_migrate() {
-  for _d in "$data"/profiles/*; do
-    if [ -d "$_d/home" ] || [ -L "$_d/home" ]; then agyx_legacy && agyx_run_migrate; return; fi
-  done
 }
 
 # Strict per-account regular files (token and atomic-rename state).
@@ -498,19 +484,8 @@ agyx_own_link() {
   agyx_resolve_path "$1" 2>/dev/null && agyx_is_shim "$_resolved"
 }
 
-agyx_has_obsolete_layout() {
-  [ -L "$data/real-agy" ] || [ -d "$data/bin" ] || [ -e "$data/.verified" ] || [ -e "$data/.verified-agy" ] && return 0
-  for _d in "$data"/profiles/*; do
-    [ -d "$_d/log" ] && [ ! -L "$_d/log" ] && return 0
-  done
-  return 1
-}
-
 # <data>/agy is the only app entry. Preserve unrelated files/links at that path.
 agyx_ensure_entry() {
-  if agyx_has_obsolete_layout; then
-    agyx_legacy && agyx_clean_old_entry || return 1
-  fi
   [ "$data/agy" -ef "$AGYX_SHIM" ] && return 0
   if [ -e "$data/agy" ] || [ -L "$data/agy" ]; then agyx_own_link "$data/agy" || return 0; fi
   (umask 077; mkdir -p "$data") && ln -sfn "$AGYX_SHIM" "$data/agy"
