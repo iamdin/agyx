@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC3013 # -ef/-nt are POSIX.1-2024 ( omitted only in older ShellCheck < 0.10 )
 # Offline tests. PATH excludes the real agy; every security call uses a stub.
 umask 022
 here=$(cd "$(dirname "$0")/.." && pwd -P)

@@ -1,5 +1,5 @@
 # shellcheck shell=sh
-# shellcheck disable=SC2154,SC2034 # R, P, data, AGYX_SHIM and AGYX_RUNTIME are set by callers
+# shellcheck disable=SC2154,SC2034,SC3013 # R/P/data/AGYX_* set by callers; -ef/-nt are POSIX.1-2024
 # R = real HOME; P = profile app directory. Never read or copy a token.
 AGYX_VERSION=0.2.0-beta.9 # the one place the version lives (the formula's url tag must match)
 AGYX_SHARED_DIRS='annotations bin brain builtin conversations implicit presence sidecar_data'
