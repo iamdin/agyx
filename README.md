@@ -1,5 +1,7 @@
 # agyx
 
+English | [简体中文](README.zh-CN.md)
+
 Run multiple Google accounts side by side with the official Antigravity CLI (`agy`, macOS & Linux). Each profile gets its own login and settings while keeping your **real `HOME`** and sharing conversations, history, brain, skills, and MCP config. Plain `agy` and your system keyring stay untouched.
 
 POSIX `sh`, zero runtime dependencies.
