@@ -164,10 +164,17 @@ case $cmd in
     fi
     pl=''; for n in $(names); do pl="$pl${pl:+, }$n"; done
     kind=other
+    prefix=${me%/*/*}
     case $me in */Cellar/*/*) formula=${me#*/Cellar/}; formula=${formula%%/*}; kind=brew ;;
-      *) [ -e "${me%/*/*}/.git" ] && kind=checkout ;; esac
+      *)
+        if [ -e "$prefix/.git" ]; then kind=checkout
+        elif [ -f "$prefix/.agyx-prefix" ]; then kind=prefix
+        fi ;;
+    esac
     plink=$rh/.local/bin/agyx
-    if [ "$kind" = checkout ] && { [ ! -L "$plink" ] || [ ! "$plink" -ef "$me" ]; }; then plink=''; fi
+    case $kind in
+      checkout|prefix) [ -L "$plink" ] && [ "$plink" -ef "$me" ] || plink= ;;
+    esac
     {
       echo "agyx uninstall will remove:"
       [ -d "$data" ] && echo "  $(agyx_tilde "$data")/   profiles ${pl:-none} (private app files, logins and logs; moved to Trash)"
@@ -176,6 +183,10 @@ case $cmd in
       case $kind in
         brew) echo "  agyx itself   (brew uninstall $formula)" ;;
         checkout) if [ -n "$plink" ]; then echo "  agyx itself   (the link $(agyx_tilde "$plink"))"; else echo "  agyx itself   (nothing: it runs from a checkout, which is left alone)"; fi ;;
+        prefix)
+          echo "  agyx itself   (the install $(agyx_tilde "$prefix"))"
+          [ -z "$plink" ] || echo "  $(agyx_tilde "$plink")   PATH link"
+          ;;
         *) echo "  agyx itself   (delete $(agyx_tilde "$me") yourself)" ;;
       esac
       echo "Kept: ~/.gemini (shared settings, history and conversations) and plain agy."
@@ -198,6 +209,11 @@ case $cmd in
       checkout)
         if [ -n "$plink" ]; then rm -f "$plink" && echo "agyx: removed the link $(agyx_tilde "$plink") (the checkout is left alone)"
         else echo "agyx: nothing else to remove (agyx runs from a checkout, which is left alone)"; fi ;;
+      prefix)
+        [ -z "$plink" ] || rm -f "$plink"
+        rm -rf "$prefix"
+        echo "agyx: removed the install $(agyx_tilde "$prefix")${plink:+ and $(agyx_tilde "$plink")}"
+        ;;
       *) echo "agyx: to finish, delete $me yourself" ;;
     esac
     ;;

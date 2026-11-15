@@ -12,16 +12,17 @@ Install [the official `agy`](https://antigravity.google/docs/cli/overview) first
 
 ```sh
 curl -fsSL https://antigravity.google/cli/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/iamdin/agyx/main/scripts/install.sh | sh
+```
 
+The installer puts `bin/` + `runtime/` in `~/.local/lib/agyx` and links `~/.local/bin/agyx` (add that dir to `PATH` if needed; agyx never edits shell startup files). Profile data stays in `~/.local/share/agyx`.
+
+macOS with Homebrew instead:
+
+```sh
 brew tap iamdin/tap
 brew trust iamdin/tap
 brew install agyx
-```
-
-Or from a git clone (`bin/` and `runtime/` must stay together):
-
-```sh
-git clone https://github.com/iamdin/agyx && ln -s "$PWD/agyx/bin/agyx" ~/.local/bin/agyx
 ```
 
 ## Usage
@@ -65,7 +66,7 @@ Logins are stored as `0600` token files inside `0700` profile directories — th
 ```sh
 sh test/run.sh
 sh test/release.sh
-shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh runtime/legacy.sh runtime/bash_env runtime/zsh/.zshenv test/run.sh test/release.sh scripts/release.sh
+shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh runtime/legacy.sh runtime/bash_env runtime/zsh/.zshenv test/run.sh test/release.sh scripts/release.sh scripts/install.sh
 ```
 
 ## License

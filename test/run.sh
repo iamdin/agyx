@@ -142,7 +142,7 @@ err override-management-shim env AGYX_REAL_AGY="$T/alias/management" "$here/bin/
 err override-missing-no-fallback env AGYX_REAL_AGY="$T/missing-agy" "$here/bin/agy" --profile work
 eq doctor-new-entry 1 "$(ax doctor 2>/dev/null | grep -c "agy entry: $DD/agy (in place")"
 eq doctor-native-fallback 1 "$(AGYX_REAL_AGY='' ax doctor 2>/dev/null | grep -c "^real agy: $RH/.local/bin/agy$")"
-eq beta-version 1 "$(ax --version | grep -c '^agyx 0.2.0-beta.9$')"
+eq version-string 1 "$(ax --version | grep -c '^agyx 0.2.0$')"
 # Only doctor above queried item existence; launches still must make no security calls.
 eq doctor-item-queries-only 2 "$(wc -l < "$SECLOG" | tr -d ' ')"
 : > "$SECLOG"
@@ -726,9 +726,21 @@ brewtest() { # $1 = Cellar dir (formula/version), $2 = opt name, $3 = formula br
   eq "uninstall-$2-hint" "1" "$(grep -c "(brew uninstall $3)" "$T/err-$2")"
 }
 : > "$BREWLOG"
-brewtest agyx/0.1.3 agyx agyx
+brewtest agyx/0.2.0 agyx agyx
 brewtest agyx-beta/0.2.0-beta.9 agyx-beta agyx-beta
 # Linux/XDG trash base fallback when AGYX_TRASH_DIR is unset and ~/.Trash does not exist.
 eq xdg-trash-fallback "$T/xdg-data/Trash/files" "$(unset AGYX_TRASH_DIR; XDG_DATA_HOME=$T/xdg-data R=$T/linux-home; . "$here/runtime/sync.sh"; AGYX_OS=Linux; agyx_trash_base)"
+# curl|sh style prefix install: bin+runtime under ~/.local/lib/agyx, PATH link, uninstall removes both.
+IP=$T/rh-install
+mkdir -p "$IP"
+(HOME=$IP sh "$here/scripts/install.sh" --from "$here" --prefix "$IP/.local/lib/agyx" --bin-dir "$IP/.local/bin" >/dev/null)
+eq install-prefix-marker "$(sed -n 's/^AGYX_VERSION=\([^ #]*\).*/\1/p' "$here/runtime/sync.sh")" "$(cat "$IP/.local/lib/agyx/.agyx-prefix")"
+eq install-prefix-link "$IP/.local/lib/agyx/bin/agyx" "$(readlink "$IP/.local/bin/agyx")"
+eq install-prefix-version "agyx $(cat "$IP/.local/lib/agyx/.agyx-prefix")" "$(HOME=$IP "$IP/.local/bin/agyx" --version | head -n 1)"
+mkdir -p "$IP/.local/share/agyx/profiles/work/antigravity-cli"
+(HOME=$IP AGYX_ASSUME_YES=1 "$IP/.local/bin/agyx" uninstall >/dev/null 2>"$T/err-prefix")
+eq uninstall-prefix-program absent "$([ -e "$IP/.local/lib/agyx" ] && echo present || echo absent)"
+eq uninstall-prefix-link absent "$([ -e "$IP/.local/bin/agyx" ] && echo present || echo absent)"
+eq uninstall-prefix-data-trashed 1 "$(find "$AGYX_TRASH_DIR" -path '*/data/profiles/work/antigravity-cli' | wc -l | tr -d ' ')"
 printf 'passed: %s, failed: %s\n' "$pass" "$fail"
 [ "$fail" = 0 ]

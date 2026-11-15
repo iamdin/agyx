@@ -12,16 +12,16 @@
 
 ```sh
 curl -fsSL https://antigravity.google/cli/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/iamdin/agyx/main/scripts/install.sh | sh
+```
 
+安装脚本会把 `bin/` 与 `runtime/` 放到 `~/.local/lib/agyx`，并链接 `~/.local/bin/agyx`（若不在 `PATH` 里请自行加入；agyx 从不改 Shell 启动文件）。账号数据仍在 `~/.local/share/agyx`。
+macOS 也可用 Homebrew：
+
+```sh
 brew tap iamdin/tap
 brew trust iamdin/tap
 brew install agyx
-```
-
-或从源码仓库软链安装（保持 `bin/` 与 `runtime/` 同级）：
-
-```sh
-git clone https://github.com/iamdin/agyx && ln -s "$PWD/agyx/bin/agyx" ~/.local/bin/agyx
 ```
 
 ## 使用
@@ -65,7 +65,7 @@ agyx uninstall                     # 将数据移入废纸篓并卸载 agyx
 ```sh
 sh test/run.sh
 sh test/release.sh
-shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh runtime/legacy.sh runtime/bash_env runtime/zsh/.zshenv test/run.sh test/release.sh scripts/release.sh
+shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh runtime/legacy.sh runtime/bash_env runtime/zsh/.zshenv test/run.sh test/release.sh scripts/release.sh scripts/install.sh
 ```
 
 ## 许可证
