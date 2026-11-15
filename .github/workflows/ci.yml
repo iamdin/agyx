@@ -10,15 +10,21 @@ permissions:
 
 jobs:
   test:
-    # macOS only: agyx drives the macOS keychain (`security`) and reads tokens with `plutil`,
-    # and the tests use BSD userland behaviour, so they are not written to pass on Linux.
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - name: Install shellcheck
-        run: command -v shellcheck >/dev/null || brew install shellcheck
+      - name: Install dependencies
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            command -v shellcheck >/dev/null || brew install shellcheck
+          else
+            sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck sqlite3 lsof psmisc
+          fi
       - name: shellcheck
-        run: shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh runtime/bash_env runtime/zsh/.zshenv test/run.sh test/release.sh scripts/release.sh
+        run: shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh runtime/legacy.sh runtime/bash_env runtime/zsh/.zshenv test/run.sh test/release.sh scripts/release.sh scripts/install.sh
       - name: Tests
         run: sh test/run.sh </dev/null
       - name: Release script tests

@@ -1,961 +1,746 @@
 #!/bin/sh
-# Self-contained tests; uses a fake agy, never the real one.
+# shellcheck disable=SC3013 # -ef/-nt are POSIX.1-2024 ( omitted only in older ShellCheck < 0.10 )
+# Offline tests. PATH excludes the real agy; every security call uses a stub.
+umask 022
 here=$(cd "$(dirname "$0")/.." && pwd -P)
 T=$(mktemp -d) || exit 1
+T=$(cd "$T" && pwd -P)
 trap 'rm -rf "$T"' EXIT
-DD=$T/data RH=$T/realhome
-mkdir -p "$DD/profiles" "$RH"
-export LAUNCHLOG=$T/launched AGYX_DATA_DIR=$DD AGYX_REAL_HOME=$RH HOME=$RH
-unset AGY_PROFILE ZDOTDIR BASH_ENV AGYX_ORIG_ZDOTDIR_SET AGYX_ORIG_ZDOTDIR AGYX_ORIG_BASH_ENV_SET AGYX_ORIG_BASH_ENV
-# Minimal PATH so the real agy can never be found. $T/brewbin has a Homebrew-style symlink to
-# agyx; <data dir>/bin holds the bare `agy` entry (created below by hand to mimic an existing install).
-PATH=$T/brewbin:$DD/bin:/usr/bin:/bin:/usr/sbin:/sbin
-[ -x "$here/bin/agy" ] && [ -x "$here/bin/agyx" ] || { echo "bin/agy, bin/agyx must be executable" >&2; exit 1; }
-
+export HOME=$T/home AGYX_DATA_DIR=$T/data AGYX_TRASH_DIR=$T/trash
+export SECLOG=$T/security.log AGYX_SECURITY=$T/security AGYX_REAL_AGY=$T/fake-agy AGYX_DOCKERENV=$T/no-docker DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/fake-bus
+unset AGYX_PROFILE AGY_PROFILE AGYX_REAL_HOME WSL_DISTRO_NAME WSL_INTEROP SSH_CLIENT SSH_CONNECTION SSH_TTY ZDOTDIR BASH_ENV XDG_CONFIG_HOME XDG_DATA_HOME XDG_RUNTIME_DIR
+unset AGYX_ASSUME_YES AGYX_TTY AGYX_ORIG_WSL_INTEROP AGYX_ORIG_ZDOTDIR AGYX_ORIG_BASH_ENV
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+mkdir -p "$HOME" "$AGYX_DATA_DIR/profiles/work/antigravity-cli" "$AGYX_DATA_DIR/profiles/personal/antigravity-cli" "$AGYX_TRASH_DIR"
+RH=$HOME DD=$AGYX_DATA_DIR
 cat > "$T/fake-agy" <<'EOF'
 #!/bin/sh
-[ "$1" = --version ] || echo x >> "$LAUNCHLOG"
-FAKE_LOGFILE=; prev=
-for a in "$@"; do [ "$prev" = --log-file ] && FAKE_LOGFILE=$a; prev=$a; done
-export FAKE_LOGFILE
-if [ -n "$FAKE_RUN" ]; then exec sh -c "$FAKE_RUN"; fi
-echo "HOME=$HOME"
-echo "AGY_PROFILE=$AGY_PROFILE"
-echo "ZDOTDIR=${ZDOTDIR-<unset>}"
-echo "BASH_ENV=${BASH_ENV-<unset>}"
-echo "ORIG_ZDOTDIR=$AGYX_ORIG_ZDOTDIR"
-[ "$1" = --log-file ] && echo "LOGFIRST=$2"
-skip=0
+# Markers checked by agyx doctor: WSL_INTEROP app_data_dir Using file-based token storage
+app= log=
+for a in "$@"; do case $a in --app_data_dir=*) app=${a#*=} ;; esac; done
+prev=
 for a in "$@"; do
-  # the shim's own --log-file F is reported on LOGFIRST, not as an ARG
-  if [ "$skip" = 1 ]; then skip=0; continue; fi
-  if [ "$a" = --log-file ] && [ "$a" = "$1" ]; then skip=1; continue; fi
-  echo "ARG=$a"
+  [ "$prev" != --log-file ] || log=$a
+  case $a in --log-file=*) log=${a#*=} ;; esac
+  prev=$a
 done
+[ -z "$app" ] || app=$HOME/.gemini/$app
+export FAKE_APP=$app
+if [ -z "$log" ] && [ -n "$app" ]; then
+  case ${1-} in
+    help|changelog|mcp|update|--help|-h|--version) ;;
+    *)
+      mkdir -p "$app/log"
+      log=$app/log/cli-native.log
+      ln -sfn log/cli-native.log "$app/cli.log"
+      ;;
+  esac
+fi
+if [ -n "$log" ]; then
+  case ${FAKE_STORAGE:-WSL} in
+    missing) ;;
+    keychain) printf 'Using keychain token storage\n' > "$log" ;;
+    *) printf 'Using file-based token storage because %s environment detected\n' "${FAKE_STORAGE:-WSL}" > "$log" ;;
+  esac
+fi
+if [ "${FAKE_LOGIN-}" = 1 ]; then
+  (umask 077; printf 'not-a-real-token\n' > "$app/antigravity-oauth-token")
+  printf 'applyAuthResult ok email=%s\n' "${FAKE_EMAIL-own@example.com}" >> "$log"
+  exit 0
+fi
+if [ -n "${FAKE_RUN-}" ]; then exec /bin/sh -c "$FAKE_RUN"; fi
+printf 'EXE=%s\n' "$0"
+printf 'HOME=%s\nPROFILE=%s\nWSL_INTEROP=%s\nWSL_DISTRO=%s\nZDOTDIR=%s\nBASH_ENV=%s\nSSH_CLIENT=%s\nSSH_CONNECTION=%s\nSSH_TTY=%s\n' "$HOME" "$AGYX_PROFILE" "${WSL_INTEROP-unset}" "${WSL_DISTRO_NAME-unset}" "${ZDOTDIR-unset}" "${BASH_ENV-unset}" "${SSH_CLIENT-unset}" "${SSH_CONNECTION-unset}" "${SSH_TTY-unset}"
+for a in "$@"; do printf 'ARG=%s\n' "$a"; done
+exit "${FAKE_STATUS:-0}"
 EOF
-chmod +x "$T/fake-agy"
-# Fake `security`: logs every call (never prints to stdout), keeps a per-HOME default keychain.
-cat > "$T/fake-security" <<'EOF'
+cat > "$T/security" <<'EOF'
 #!/bin/sh
-echo "HOME=$HOME $*" >> "$SECLOG"
-if [ "$FAKE_SEC_FAIL" = "$1" ]; then echo "security: fake failure" >&2; exit 1; fi
+printf 'HOME=%s %s\n' "$HOME" "$*" >> "$SECLOG"
 case $1 in
-  create-keychain) mkdir -p "$(dirname "$4")"; : > "$4" ;;
-  find-generic-password) [ -f "$HOME/.fake-item" ]; exit $? ;;
-  default-keychain)
-    if [ "$4" = -s ]; then echo "$5" > "$HOME/.fake-default"
-    elif [ -f "$HOME/.fake-default" ]; then echo "    \"$(cat "$HOME/.fake-default")\""
-    else echo "    \"$HOME/Library/Keychains/login.keychain-db\""; fi ;;
+  delete-keychain) [ "${FAKE_SEC_FAIL-}" != 1 ] || exit 1; rm "$2" ;;
+  find-generic-password) [ "${FAKE_KEYCHAIN_ITEM-}" = 1 ] ;;
+  *) exit 99 ;;
 esac
 EOF
-chmod +x "$T/fake-security"
-export SECLOG=$T/seclog AGYX_SECURITY=$T/fake-security
-mkdir "$T/brewbin"; ln -s "$here/bin/agyx" "$T/brewbin/agyx"
-mkdir "$DD/bin"; ln -s "$T/fake-agy" "$DD/real-agy"; ln -s "$here/bin/agy" "$DD/bin/agy"
-[ "$(command -v agy)" = "$DD/bin/agy" ] || { echo "agy not resolved to $DD/bin/agy" >&2; exit 1; }
-for p in work home other; do mkdir -p "$DD/profiles/$p/home"; done
-echo work > "$DD/default"
-"$here/bin/agyx" profile list >/dev/null 2>&1   # writes the symlinks file once (first-run stderr line)
-
+chmod +x "$T/fake-agy" "$T/security"
+: > "$SECLOG"
+printf 'work\n' > "$DD/default"
+ax() { "$here/bin/agyx" "$@"; }
+launch() { "$here/bin/agy" "$@"; }
 pass=0 fail=0
-eq() { # name expected actual
+mode_of() { if [ "$(uname -s)" = Darwin ]; then stat -f %Lp "$1"; else stat -c %a "$1"; fi; }
+stamp_of() { if [ "$(uname -s)" = Darwin ]; then stat -f '%i:%p:%m:%z' "$@"; else stat -c '%i:%f:%Y:%s' "$@"; fi; }
+eq() {
   if [ "$2" = "$3" ]; then pass=$((pass + 1)); else fail=$((fail + 1)); printf 'FAIL %s\n  want: %s\n  got:  %s\n' "$1" "$2" "$3"; fi
 }
-prof() { agy "$@" | sed -n 's/^AGY_PROFILE=//p'; }
-args() { agy "$@" | grep '^ARG='; }
-nl='
-'
-
-# priority
-eq default "work" "$(prof)"
-eq env "home" "$(AGY_PROFILE=home prof)"
-eq flag-over-env "other" "$(AGY_PROFILE=home prof --profile other)"
-eq flag-equals "other" "$(AGY_PROFILE=home prof --profile=other)"
-eq home-dir "HOME=$DD/profiles/other/home" "$(agy --profile other | grep ^HOME=)"
-eq no-default-file-env-only "home" "$(mv "$DD/default" "$T/d"; AGY_PROFILE=home prof; mv "$T/d" "$DD/default")"
-
-# errors: nonzero, message on stderr, nothing on stdout (never falls back)
-bad() { # name args...
-  n=$1; shift
-  out=$(AGY_PROFILE=work agy "$@" 2>"$T/err"); rc=$?
-  eq "err-$n" "nonzero,empty-stdout,has-stderr" \
-    "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty-stdout),$([ -s "$T/err" ] && echo has-stderr)"
+field() { launch "$@" | sed -n "s/^$FIELD=//p"; }
+prof() { FIELD=PROFILE field "$@"; }
+err() {
+  _name=$1; shift
+  _out=$("$@" 2>"$T/err"); _rc=$?
+  eq "$_name" 'nonzero,empty,stderr' "$([ "$_rc" -ne 0 ] && echo nonzero),$([ -z "$_out" ] && echo empty),$([ -s "$T/err" ] && echo stderr)"
 }
-bad missing-value --profile
-bad empty-eq --profile=
-bad empty-arg --profile ""
-bad repeated --profile work --profile other
-bad repeated-eq --profile=work --profile=other
-bad uppercase --profile Work
-bad digit-first --profile 1x
-bad too-long --profile abcdefghijklmnopqrstuvwxyzabcdefg
-bad bad-chars "--profile=a/b"
-bad no-profile-dir --profile nope
-bad env-no-dir-fallback --profile nope x
-out=$(AGY_PROFILE=BAD agy 2>&1); eq env-invalid "1" "$([ -n "$out" ] && ! echo "$out" | grep -q HOME= && echo 1)"
-out=$(AGY_PROFILE=nope agy 2>&1); eq env-no-dir "1" "$([ -n "$out" ] && ! echo "$out" | grep -q HOME= && echo 1)"
-mv "$DD/default" "$T/d"
-out=$(agy 2>&1); rc=$?
-eq no-default "1" "$([ $rc -ne 0 ] && ! echo "$out" | grep -q HOME= && echo 1)"
-mv "$T/d" "$DD/default"
-
-# argv preserved
-eq argv "ARG=hello world${nl}ARG=${nl}ARG=--profile${nl}ARG=b${nl}ARG=--${nl}ARG=x" \
-  "$(args --profile other "hello world" "" --profile b -- x)"
-eq dashdash-consumed "ARG=--profile${nl}ARG=b" "$(args --profile other -- --profile b)"
-eq dashdash-no-flag "ARG=--profile${nl}ARG=b" "$(AGY_PROFILE=home args -- --profile b)"
-eq prompt-profile-untouched "work ARG=-p${nl}ARG=--profile${nl}ARG=zzz" "work $(args -p --profile zzz)"
-eq no-args "" "$(args)"
-
-# bridge: run `$1` (shell snippet) inside the shim environment
-inshim() { FAKE_RUN=$1 agy --profile other; }
-for sh in zsh bash; do
-  command -v $sh >/dev/null || { echo "SKIP $sh (not installed)"; continue; }
-  eq "$sh-home" "$RH" "$(inshim "$sh -c 'echo \$HOME'")"
-  # ZDOTDIR / BASH_ENV come back as unset, empty, or a value
-  show="$sh -c 'echo ZD=\${ZDOTDIR-unset}:BE=\${BASH_ENV-unset}'"
-  eq "$sh-orig-unset" "ZD=unset:BE=unset" "$(inshim "$show")"
-  eq "$sh-orig-empty" "ZD=:BE=" "$(ZDOTDIR='' BASH_ENV='' inshim "$show")"
-  eq "$sh-orig-value" "ZD=/zd:BE=/be" "$(ZDOTDIR=/zd BASH_ENV=/be inshim "$show")"
-done
-
-# user's own startup files are sourced exactly once
-mkdir -p "$T/zd"
-echo 'echo x >> "$ZCOUNT"' > "$RH/.zshenv"
-echo 'echo x >> "$ZCOUNT"' > "$T/zd/.zshenv"
-echo 'echo x >> "$BCOUNT"' > "$T/benv"
-export ZCOUNT=$T/zcount BCOUNT=$T/bcount
-count() { [ -f "$1" ] && wc -l < "$1" | tr -d ' ' || echo 0; }
-if command -v zsh >/dev/null; then
-  : > "$ZCOUNT"; inshim "zsh -c true"; eq zshenv-home-once 1 "$(count "$ZCOUNT")"
-  : > "$ZCOUNT"; (ZDOTDIR=$T/zd inshim "zsh -c true"); eq zshenv-zdotdir-once 1 "$(count "$ZCOUNT")"
-  eq zshenv-zdotdir-kept "ZD=$T/zd" "$(ZDOTDIR=$T/zd inshim "zsh -c 'echo ZD=\$ZDOTDIR'")"
+# Profile selection, validation, untouched user arguments.
+eq default work "$(prof)"
+eq env personal "$(AGYX_PROFILE=personal prof)"
+eq flag work "$(AGYX_PROFILE=personal prof --profile=work)"
+eq old-profile-env-ignored work "$(AGY_PROFILE=personal prof)"
+eq real-home "$RH" "$(FIELD=HOME field)"
+eq desktop-wsl-interop agyx "$(FIELD=WSL_INTEROP field)"
+eq desktop-no-wsl-distro unset "$(FIELD=WSL_DISTRO field)"
+eq wsl-interop-existing /run/WSL/1 "$(WSL_INTEROP=/run/WSL/1 FIELD=WSL_INTEROP field)"
+eq wsl-interop-empty agyx "$(WSL_INTEROP='' FIELD=WSL_INTEROP field)"
+# Per-platform native bypass: SSH, container, and headless Linux inject NEITHER WSL_* NOR ZDOTDIR/BASH_ENV.
+eq ssh-zero-bridge 'unset|unset|unset' "$(SSH_CLIENT='1.2.3.4 1 22' launch | awk -F= '/^(WSL_INTEROP|ZDOTDIR|BASH_ENV)=/{printf "%s|", $2}' | sed 's/|$//')"
+if [ "$(uname -s)" = Linux ]; then
+  eq linux-headless-zero-bridge 'unset|unset|unset' "$(DBUS_SESSION_BUS_ADDRESS='' XDG_RUNTIME_DIR="$T/no-bus" launch | awk -F= '/^(WSL_INTEROP|ZDOTDIR|BASH_ENV)=/{printf "%s|", $2}' | sed 's/|$//')"
 fi
-if command -v bash >/dev/null; then
-  : > "$BCOUNT"; (BASH_ENV=$T/benv inshim "bash -c true"); eq bash-env-once 1 "$(count "$BCOUNT")"
-  : > "$BCOUNT"; inshim "bash -c true"; eq bash-env-unset-none 0 "$(count "$BCOUNT")"
-fi
-rm -f "$RH/.zshenv"
-
-# nested: bare agy inside a bridged shell keeps the profile; --profile switches
-if command -v zsh >/dev/null; then
-  eq nested-same "other" "$(inshim "zsh -c 'FAKE_RUN= agy x'" | sed -n 's/^AGY_PROFILE=//p')"
-  eq nested-switch "home" "$(inshim "zsh -c 'FAKE_RUN= agy --profile home x'" | sed -n 's/^AGY_PROFILE=//p')"
-  eq nested-home "HOME=$DD/profiles/other/home" "$(inshim "zsh -c 'FAKE_RUN= agy x'" | grep ^HOME=)"
-  eq nested-originals "ORIG_ZDOTDIR=/zd" "$(ZDOTDIR=/zd inshim "zsh -c 'FAKE_RUN= agy x'" | grep ^ORIG_ZDOTDIR=)"
-fi
-# direct nested call (ZDOTDIR/BASH_ENV still point at the bridge): saved originals survive
-eq nested-direct "orig-zd=/zd orig-be=/be set=1" "$(ZDOTDIR=$here/runtime/zsh BASH_ENV=$here/runtime/bash_env \
-  AGYX_ORIG_ZDOTDIR_SET=1 AGYX_ORIG_ZDOTDIR=/zd AGYX_ORIG_BASH_ENV_SET=1 AGYX_ORIG_BASH_ENV=/be \
-  FAKE_RUN='echo orig-zd=$AGYX_ORIG_ZDOTDIR orig-be=$AGYX_ORIG_BASH_ENV set=$AGYX_ORIG_ZDOTDIR_SET' agy --profile home)"
-
-# real-agy pointing at the shim is never used (nor is the shim found on PATH): agy is "not installed"
-ln -sfn "$here/bin/agy" "$DD/real-agy"
-out=$(agy 2>&1); rc=$?
-eq refuse-self "1" "$([ $rc -ne 0 ] && echo "$out" | grep -q 'needs the Antigravity CLI' && ! echo "$out" | grep -q HOME= && echo 1)"
-ln -sfn "$T/fake-agy" "$DD/real-agy"
-
-# agyx launches agy unless the first argument is one of its own subcommands
-eq launch-flag "other" "$(agyx --profile other | sed -n 's/^AGY_PROFILE=//p')"
-eq launch-flag-eq-args "AGY_PROFILE=other${nl}ARG=-p${nl}ARG=hi" "$(agyx --profile=other -p hi | grep '^AGY_PROFILE=\|^ARG=')"
-eq launch-env "AGY_PROFILE=home${nl}ARG=--model${nl}ARG=x" "$(AGY_PROFILE=home agyx --model x | grep '^AGY_PROFILE=\|^ARG=')"
-eq launch-no-args "AGY_PROFILE=work/0" "$(agyx | grep '^AGY_PROFILE=')/$(agyx | grep -c '^ARG=')"
-eq launch-flag-then-subcommand "ARG=mcp${nl}ARG=list" "$(agyx --profile work mcp list | grep '^ARG=')"
-eq launch-argv-boundaries "ARG=a b${nl}ARG=${nl}ARG=--profile${nl}ARG=zz" "$(agyx --profile work "a b" "" --profile zz | grep '^ARG=')"
-eq launch-help-flags "AGY_PROFILE=other${nl}ARG=--help" "$(agyx --profile other --help | grep '^AGY_PROFILE=\|^ARG=')"
-eq project-passthrough "AGY_PROFILE=work${nl}ARG=--project${nl}ARG=x" "$(agyx --project x | grep '^AGY_PROFILE=\|^ARG=')"
-eq project-after-profile "AGY_PROFILE=other${nl}ARG=--project${nl}ARG=x" "$(agyx --profile other --project x | grep '^AGY_PROFILE=\|^ARG=')"
-eq account-flag-is-plain-arg "AGY_PROFILE=work${nl}ARG=--account${nl}ARG=other" "$(agyx --account other | grep '^AGY_PROFILE=\|^ARG=')"
-eq account-eq-is-plain-arg "AGY_PROFILE=work${nl}ARG=--account=other" "$(agyx --account=other | grep '^AGY_PROFILE=\|^ARG=')"
-eq escape-dashdash "AGY_PROFILE=home${nl}ARG=foo" "$(AGY_PROFILE=home agyx -- foo | grep '^AGY_PROFILE=\|^ARG=')"
-eq launch-umask "$(umask)" "$(FAKE_RUN='umask' agyx --profile other)"
-# the old top-level list/login/use are gone: they are ordinary arguments for agy, and valid profile names
-eq old-list-passthrough "AGY_PROFILE=work${nl}ARG=list" "$(agyx list | grep '^AGY_PROFILE=\|^ARG=')"
-eq old-login-passthrough "AGY_PROFILE=work${nl}ARG=login${nl}ARG=x" "$(agyx login x | grep '^AGY_PROFILE=\|^ARG=')"
-eq old-use-passthrough "AGY_PROFILE=work${nl}ARG=use${nl}ARG=x" "$(agyx use x | grep '^AGY_PROFILE=\|^ARG=')"
-mkdir -p "$DD/profiles/list/home"
-eq profile-named-list "list" "$(agyx --profile list | sed -n 's/^AGY_PROFILE=//p')"
-rm -rf "${DD:?}/profiles/list"
-# nested calls inside an agent shell route to the inherited profile (agyx, and bare agy when shimmed)
-eq nested-agyx "other" "$(FAKE_RUN='FAKE_RUN= agyx x' agyx --profile other | sed -n 's/^AGY_PROFILE=//p')"
-eq nested-agy "other" "$(FAKE_RUN='FAKE_RUN= agy x' agyx --profile other | sed -n 's/^AGY_PROFILE=//p')"
-eq nested-agyx-switch "home" "$(FAKE_RUN='FAKE_RUN= agyx --profile home x' agyx --profile other | sed -n 's/^AGY_PROFILE=//p')"
-# profile names equal to an agyx subcommand are rejected, even if the directory exists
-res=
-for n in doctor profile uninstall; do
-  mkdir -p "$DD/profiles/$n/home"; : > "$LAUNCHLOG"
-  agyx --profile "$n" >/dev/null 2>&1 && res="$res launched:$n"
-  agy --profile "$n" >/dev/null 2>&1 && res="$res shim-launched:$n"
-  "$here/bin/agyx" profile login "$n" >/dev/null 2>&1 && res="$res login:$n"
-  "$here/bin/agyx" profile default "$n" >/dev/null 2>&1 && res="$res default:$n"
-  [ -s "$LAUNCHLOG" ] && res="$res log:$n"
-  rm -rf "${DD:?}/profiles/$n"
-done
-eq reserved-names "" "$res"
-
-# agyx
-ctl() { "$here/bin/agyx" "$@"; }
-eq ctl-default "home" "$(ctl profile default home; cat "$DD/default")"
-eq ctl-default-bad "1" "$(ctl profile default nope 2>/dev/null || echo 1)"
-# list / doctor show the Google account from id_token_email, and never any other token field
-tokdir() { mkdir -p "$DD/profiles/$1/home/.gemini/antigravity-cli"; echo "$DD/profiles/$1/home/.gemini/antigravity-cli/antigravity-oauth-token"; }
-tokjson() { # profile email  (fake token strings that must never be printed)
-  printf '{"token":{"access_token":"SECRET-ACCESS-%s","refresh_token":"SECRET-REFRESH-%s","expiry":"2030-01-01T00:00:00Z"},"auth_method":"oauth","id_token_email":"%s"}\n' "$1" "$1" "$2" > "$(tokdir "$1")"
-}
-giveitem() { mkdir -p "$DD/profiles/$1/home/Library/Keychains"; : > "$DD/profiles/$1/home/Library/Keychains/login.keychain-db"; : > "$DD/profiles/$1/home/.fake-item"; }
-for n in home twin work junk; do giveitem $n; done
-printf 'alice@example.com\n' > "$DD/profiles/home/email"; printf 'alice@example.com\n' > "$DD/profiles/twin/email"
-dupline="WARNING: profiles home twin are logged in to the same Google account (alice@example.com)"
-want=$(printf '%-12s %s\n' home 'alice@example.com  (default)' junk 'logged in, email unknown' other 'not logged in' twin 'alice@example.com' work 'logged in, email unknown')
-eq ctl-list "$want${nl}$dupline" "$(ctl profile list)"
-eq ctl-doctor-email "1" "$(ctl doctor | grep -c '^profile home: alice@example.com, home ')"
-eq ctl-doctor-not-logged-in "1" "$(ctl doctor | grep -c '^profile other: not logged in, home ')"
-eq ctl-doctor-unknown "2" "$(ctl doctor | grep -c '^profile \(work\|junk\): logged in, email unknown, home ')"
-eq ctl-doctor-dup "1" "$(ctl doctor | grep -cF "$dupline")"
-eq ctl-no-token-strings "0" "$( (ctl profile list; ctl doctor) | grep -c SECRET)"
-rm -rf "${DD:?}/profiles/twin" "${DD:?}/profiles/junk"
-eq ctl-list-no-dup "0" "$(ctl profile list | grep -c WARNING)"
-eq ctl-login-bad "1" "$(ctl profile login Bad 2>/dev/null || echo 1)"
-eq ctl-login "PROFILE=newp" "$(FAKE_RUN='echo PROFILE=$AGY_PROFILE' ctl profile login newp)"
-eq ctl-login-mode "drwx------" "$(ls -ld "$DD/profiles/newp/home" | cut -c1-10)"
-# management subcommands never launch agy
-: > "$LAUNCHLOG"
-for c in "profile list" "profile default work" doctor; do
-  # shellcheck disable=SC2086
-  agyx $c >/dev/null 2>&1
-done
-eq mgmt-never-launches "0" "$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
-# no profiles yet
-mkdir -p "$T/empty"
-eq ctl-empty-list "no profiles yet; run: agyx profile login NAME/0" "$(AGYX_DATA_DIR=$T/empty ctl profile list)/$(AGYX_DATA_DIR=$T/empty ctl profile list >/dev/null; echo $?)"
-# misuse of a management subcommand prints the usage (exit 2) and never launches agy
-: > "$LAUNCHLOG"
-res=
-for c in profile "profile bogus" "profile login" "profile login Bad" "profile login profile" "profile login a b" "profile default a b" "profile default nope" "profile default profile" "profile list x" "doctor x" "uninstall x"; do
-  # shellcheck disable=SC2086
-  out=$(ctl $c 2>&1 >/dev/null); rc=$?
-  [ "$rc" = 2 ] && echo "$out" | grep -q '^usage: agyx' || res="$res [$c rc=$rc]"
-done
-eq ctl-misuse-usage "" "$res"
-eq ctl-misuse-no-launch "0" "$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
-# the removed commands are ordinary arguments for agy now, and valid profile names
-for c in setup shim unshim; do
-  eq "removed-$c" "AGY_PROFILE=work${nl}ARG=$c" "$(agyx "$c" | grep '^AGY_PROFILE=\|^ARG=')"
-  mkdir -p "$DD/profiles/$c/home"
-  eq "profile-named-$c" "$c" "$(agyx --profile "$c" | sed -n 's/^AGY_PROFILE=//p')"
-  rm -rf "${DD:?}/profiles/$c"
-done
-eq usage-lists-only-current "0" "$(ctl profile 2>&1 | grep -c 'setup\|shim')"
-
-# agyx subcommands never overlap with the real agy 1.5.6 subcommands/flags
-ctl_subs="doctor profile uninstall"
-agy_subs="acp agent agents changelog install mcp mic-serve models plugin plugins remote-control update"
-both=
-for a in $ctl_subs; do for b in $agy_subs; do [ "$a" = "$b" ] && both="$both $a"; done; done
-eq subcommands-disjoint "" "$both"
-eq subcommands-match-script "$ctl_subs" "$(sed -n 's/^  case \$1 in \(.*\)) return 0 ;; esac$/\1/p' "$here/runtime/sync.sh" | tr '|' ' ')"
-res=
-for s in $agy_subs; do [ "$(agyx "$s" | grep '^ARG=')" = "ARG=$s" ] || res="$res $s"; done
-eq agy-subcommands-reach-agy "" "$res"
-# names of agy subcommands are fine as profile names
-mkdir -p "$DD/profiles/install/home"
-eq profile-named-install "install" "$(agyx --profile install | sed -n 's/^AGY_PROFILE=//p')"
-rm -rf "${DD:?}/profiles/install"
-
-# doctor
-eq ctl-doctor-path "1" "$(ctl doctor | grep -c 'agyx resolves to this script')"
-eq ctl-doctor-path-missing "1" "$(PATH=/usr/bin:/bin ctl doctor | grep -c 'agyx does NOT resolve')"
-eq ctl-doctor-real "1" "$(ctl doctor | grep -c "^real agy: $T/fake-agy\$")"
-eq ctl-doctor-entry "1" "$(ctl doctor | grep -c "^agy entry: $DD/bin/agy (in place; the path to give apps that need a binary named agy)\$")"
-eq ctl-doctor-no-takeover "0" "$(ctl doctor | grep -ci 'takeover\|unshim\|agyx shim\|agyx setup')"
-
-# ---- automatic setup (fresh data dir and real home each time; there is no setup command) ----
-islink() { [ -L "$1" ] && [ "$1" -ef "$2" ] && echo link || echo "not-link"; }
-fresh() { N=$T/$1; rm -rf "$N"; mkdir -p "$N/rh" "$N/data/profiles/p/home"; }
-fx() { env AGYX_DATA_DIR="$N/data" AGYX_REAL_HOME="$N/rh" "$@"; }
-AX=$here/bin/agyx
-rm -rf "$T/fakebin"; mkdir "$T/fakebin"; ln -s "$T/fake-agy" "$T/fakebin/agy"
-SP=$T/fakebin:/usr/bin:/bin
-# real agy: found on PATH (skipping agyx's own entry), stored, then no PATH needed
-fresh a1; mkdir -p "$N/data/bin"; ln -s "$here/bin/agy" "$N/data/bin/agy"
-out=$(fx env PATH="$N/data/bin:$SP" "$AX" --profile p 2>/dev/null)
-eq auto-real-found "AGY_PROFILE=p" "$(echo "$out" | grep '^AGY_PROFILE=')"
-eq auto-real-stored "$T/fakebin/agy" "$(readlink "$N/data/real-agy")"
-eq auto-real-steady "AGY_PROFILE=p" "$(fx env PATH=/usr/bin:/bin "$AX" --profile p 2>/dev/null | grep '^AGY_PROFILE=')"
-# a stored link that no longer works is searched again
-ln -sfn "$T/gone-agy" "$N/data/real-agy"
-eq auto-real-refound "AGY_PROFILE=p/$T/fakebin/agy" "$(fx env PATH="$SP" "$AX" --profile p 2>/dev/null | grep '^AGY_PROFILE=')/$(readlink "$N/data/real-agy")"
-# a relative PATH entry is stored absolute
-fresh a2; ( cd "$T" && fx env PATH="fakebin:/usr/bin:/bin" "$AX" --profile p >/dev/null 2>&1 )
-eq auto-real-relative-path "$T/fakebin/agy" "$(readlink "$N/data/real-agy")"
-# AGYX_REAL_AGY overrides everything and is not stored
-fresh a3
-out=$(fx env PATH=/usr/bin:/bin AGYX_REAL_AGY="$T/fake-agy" "$AX" --profile p 2>/dev/null)
-eq override-used "AGY_PROFILE=p" "$(echo "$out" | grep '^AGY_PROFILE=')"
-eq override-not-stored "absent" "$([ -e "$N/data/real-agy" ] || [ -L "$N/data/real-agy" ] || echo absent)"
-ln -s "$T/gone-agy" "$N/data/real-agy"
-eq override-beats-stored "AGY_PROFILE=p" "$(fx env AGYX_REAL_AGY="$T/fake-agy" "$AX" --profile p 2>/dev/null | grep '^AGY_PROFILE=')"
-n=0
-for badv in "$T/nonexistent" "$here/bin/agy" "$T"; do
-  n=$((n + 1)); : > "$LAUNCHLOG"
-  out=$(fx env PATH="$SP" AGYX_REAL_AGY="$badv" "$AX" --profile p 2>"$T/err"); rc=$?
-  eq "override-bad-$n" "nonzero,empty,AGYX_REAL_AGY,0" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -o AGYX_REAL_AGY "$T/err" | head -n 1),$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
-done
-# not installed: clear message, nothing on stdout, nothing stored
-fresh a4
-out=$(fx env PATH=/usr/bin:/bin "$AX" --profile p 2>"$T/err"); rc=$?
-eq not-installed "nonzero,empty,not-installed,how-to" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -q 'needs the Antigravity CLI' "$T/err" && echo not-installed),$(grep -q 'AGYX_REAL_AGY=/path/to/agy' "$T/err" && echo how-to)"
-eq not-installed-nothing-stored "absent" "$([ -e "$N/data/real-agy" ] || [ -L "$N/data/real-agy" ] || echo absent)"
-# <data>/bin/agy: created on launch, profile and doctor runs; a dangling link is replaced
-for c in "--profile p" "profile list" doctor; do
-  fresh a5
-  # shellcheck disable=SC2086
-  fx env PATH="$SP" "$AX" $c >/dev/null 2>&1
-  eq "entry-created-$c" "$here/bin/agy" "$(readlink "$N/data/bin/agy")"
-done
-rm "$N/data/bin/agy"; ln -s "$T/gone-agy" "$N/data/bin/agy"
-fx env PATH="$SP" "$AX" doctor >/dev/null 2>&1
-eq entry-dangling-replaced "$here/bin/agy" "$(readlink "$N/data/bin/agy")"
-echo mine > "$N/x"; rm "$N/data/bin/agy"; ln -s "$N/x" "$N/data/bin/agy"
-eq entry-existing-kept "$N/x" "$(fx env PATH="$SP" "$AX" doctor >/dev/null 2>&1; readlink "$N/data/bin/agy")"
-eq entry-doctor-flags-foreign "1" "$(fx env PATH="$SP" "$AX" doctor 2>&1 | grep -c '^agy entry: .*MISSING or not agyx')"
-# the entry works as a bare agy
-fresh a6; fx env PATH="$SP" "$AX" doctor >/dev/null 2>&1
-eq entry-runs-agy "AGY_PROFILE=p" "$(fx env PATH="$SP" "$N/data/bin/agy" --profile p 2>/dev/null | grep '^AGY_PROFILE=')"
-# symlinks file: written on the first run (one stderr line, nothing extra on stdout), default list inside
-fresh a7
-out=$(fx env PATH="$SP" "$AX" --profile p 2>"$T/err")
-eq links-first-stderr "1/1" "$(grep -c . "$T/err")/$(grep -c "^agyx: wrote $N/rh/.config/agyx/symlinks " "$T/err")"
-eq links-first-stdout "0" "$(echo "$out" | grep -c wrote)"
-eq links-content ".gitconfig .ssh .config .npm .npmrc .bun .bunfig.toml .cache .cargo .rustup go Code GitHub " "$(grep -v '^#' "$N/rh/.config/agyx/symlinks" | tr '\n' ' ')"
-eq links-header "2" "$(grep -c '^#' "$N/rh/.config/agyx/symlinks")"
-fx env PATH="$SP" "$AX" --profile p >/dev/null 2>"$T/err"
-eq links-second-silent "0" "$(grep -c . "$T/err")"
-echo mine > "$N/rh/.config/agyx/symlinks"
-fx env PATH="$SP" "$AX" --profile p >/dev/null 2>&1
-eq links-never-overwritten "mine" "$(cat "$N/rh/.config/agyx/symlinks")"
-# unwritable: no message, the built-in default list still applies, doctor says so
-fresh a8; echo notadir > "$N/rh/.config"; echo gc > "$N/rh/.gitconfig"
-fx env FAKE_RUN=true PATH="$SP" "$AX" --profile p >/dev/null 2>"$T/err"; rc=$?
-eq links-unwritable "0/0/link" "$rc/$(grep -c . "$T/err")/$(islink "$N/data/profiles/p/home/.gitconfig" "$N/rh/.gitconfig")"
-eq links-unwritable-doctor "1" "$(fx env PATH="$SP" "$AX" doctor 2>&1 | grep -c '^symlinks: .*missing and could not be written')"
-# launch path: nothing on stdout from agyx itself
-fresh a9
-eq launch-stdout-clean "" "$(fx env FAKE_RUN=true PATH="$SP" "$AX" --profile p 2>/dev/null)"
-# first-run messages: nonzero, nothing on stdout, nothing launched
-fresh b1; rmdir "$N/data/profiles/p/home" "$N/data/profiles/p"
-: > "$LAUNCHLOG"
-out=$(fx env PATH="$SP" "$AX" 2>"$T/err"); rc=$?
-eq first-none "nonzero,empty,msg,0" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -q 'no profiles yet' "$T/err" && grep -q 'agyx profile login NAME' "$T/err" && grep -q 'for example' "$T/err" && echo msg),$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
-fresh b2; mkdir -p "$N/data/profiles/q/home"
-out=$(fx env PATH="$SP" "$AX" 2>"$T/err"); rc=$?
-eq first-no-default "nonzero,empty,msg" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -q 'Existing profiles: p q' "$T/err" && grep -q -e '--profile NAME' "$T/err" && grep -q 'agyx profile default NAME' "$T/err" && echo msg)"
-echo gone > "$N/data/default"
-out=$(fx env PATH="$SP" "$AX" 2>"$T/err"); rc=$?
-eq first-default-missing "nonzero,empty,msg" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -q "default profile 'gone'.*does not exist" "$T/err" && grep -q 'agyx profile default NAME' "$T/err" && grep -q 'agyx profile login gone' "$T/err" && echo msg)"
-echo p > "$N/data/default"
-eq not-logged-in-launches "AGY_PROFILE=p" "$(fx env PATH="$SP" "$AX" 2>/dev/null | grep '^AGY_PROFILE=')"
-# profile login: the first successful login becomes the default
-fresh c1; rmdir "$N/data/profiles/p/home" "$N/data/profiles/p"
-mktok='touch $HOME/.fake-item'
-out=$(fx env FAKE_RUN="$mktok" PATH="$SP" "$AX" profile login first 2>"$T/err"); rc=$?
-eq login-sets-default "0/first/1" "$rc/$(cat "$N/data/default")/$(echo "$out" | grep -c "'first' is now the default profile")"
-fx env FAKE_RUN="$mktok" PATH="$SP" "$AX" profile login second >/dev/null 2>&1
-eq login-keeps-existing-default "first" "$(cat "$N/data/default")"
-out=$(fx env FAKE_RUN=true PATH="$SP" "$AX" profile login first 2>"$T/err")
-eq login-already-logged-in "1/0" "$(grep -c 'already logged in' "$T/err")/$(echo "$out" | grep -c .)"
-fresh c2; rmdir "$N/data/profiles/p/home" "$N/data/profiles/p"
-out=$(fx env FAKE_RUN=true PATH="$SP" "$AX" profile login nologin 2>/dev/null); rc=$?
-eq login-without-login-no-default "0/absent/" "$rc/$([ -e "$N/data/default" ] || echo absent)/$out"
-fx env FAKE_RUN='exit 3' PATH="$SP" "$AX" profile login failed >/dev/null 2>&1; rc=$?
-eq login-failed-rc-no-default "3/absent" "$rc/$([ -e "$N/data/default" ] || echo absent)"
-# login detected through the profile keychain item too
-fx env FAKE_RUN='touch $HOME/.fake-item' PATH="$SP" "$AX" profile login viakc >/dev/null 2>&1
-eq login-keychain-sets-default "viakc" "$(cat "$N/data/default" 2>/dev/null)"
-
-# ---- ask once before the first write (data dir absent = not set up) ----
-gfresh() { N=$T/$1; rm -rf "$N"; mkdir -p "$N/rh"; }
-nothing_written() { [ ! -e "$N/data" ] && [ ! -e "$N/rh/.config" ] && echo yes || echo no; }
-for c in "--profile p" "profile login p" "profile default p"; do
-  gfresh g1; : > "$LAUNCHLOG"
-  # shellcheck disable=SC2086
-  out=$(fx env PATH="$SP" "$AX" $c 2>"$T/err" </dev/null); rc=$?
-  eq "gate-noterm-$c" "nonzero,empty,1,msg,yes,0" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -c . "$T/err"),$(grep -q 'not set up yet.*once in a terminal.*AGYX_ASSUME_YES=1' "$T/err" && echo msg),$(nothing_written),$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
-done
-# read-only commands never ask and never create anything
-for c in doctor "profile list" "profile default"; do
-  gfresh g2
-  # shellcheck disable=SC2086
-  out=$(fx env PATH="$SP" "$AX" $c 2>"$T/err" </dev/null); rc=$?
-  eq "gate-readonly-$c" "0,notyet,empty-err,yes" "$rc,$(echo "$out" | grep -c 'not set up yet' | sed 's/1/notyet/'),$([ -s "$T/err" ] || echo empty-err),$(nothing_written)"
-done
-# AGYX_ASSUME_YES=1 skips the question
-gfresh g3
-out=$(fx env PATH="$SP" AGYX_ASSUME_YES=1 FAKE_RUN="$mktok" "$AX" profile login w 2>"$T/err" </dev/null)
-eq gate-assume-yes "w/$here/bin/agy/present/1" "$(cat "$N/data/default")/$(readlink "$N/data/bin/agy")/$([ -f "$N/rh/.config/agyx/symlinks" ] && echo present)/$(grep -c 'Continue' "$T/err" | sed 's/0/1/')"
-# the prompt: answers come from AGYX_TTY (tests only); yes, empty line (default yes), no, EOF
-printf 'y\n' > "$T/ans-y"; printf '\n' > "$T/ans-enter"; printf 'n\n' > "$T/ans-n"; : > "$T/ans-eof"
-for a in y enter; do
-  gfresh g4
-  out=$(fx env PATH="$SP" AGYX_TTY="$T/ans-$a" FAKE_RUN="$mktok" "$AX" profile login w 2>"$T/err" </dev/null); rc=$?
-  eq "gate-prompt-$a" "0/w/$here/bin/agy/present" "$rc/$(cat "$N/data/default" 2>/dev/null)/$(readlink "$N/data/bin/agy")/$([ -f "$N/rh/.config/agyx/symlinks" ] && echo present)"
-done
-eq gate-prompt-text-outside-home "agyx will set up:|  $N/data/  profiles (one HOME and keychain per account), a link to agy at $T/fakebin/agy|  $N/data/bin/agy  entry for apps that need a binary named agy|  ~/.config/agyx/symlinks  home entries linked into every profile (editable)|Profiles share your ~/.gemini settings and history; your login keychain is not touched.|Continue? [Y/n] " "$(sed -n '/^agyx will set up/,/Continue/p' "$T/err" | tr '\n' '|' | sed -e 's/|$//' -e 's/Continue.*/Continue? [Y\/n] /')"
-# inside the real home the notice shows ~/...
-gfresh g4h; mkdir -p "$N/rh/.local/bin"; ln -s "$T/fake-agy" "$N/rh/.local/bin/agy"
-env -u AGYX_DATA_DIR AGYX_REAL_HOME="$N/rh" PATH="$N/rh/.local/bin:/usr/bin:/bin" AGYX_TTY="$T/ans-n" "$AX" --profile p </dev/null 2>"$T/err"
-eq gate-prompt-text-home "agyx will set up:|  ~/.local/share/agyx/  profiles (one HOME and keychain per account), a link to agy at ~/.local/bin/agy|  ~/.local/share/agyx/bin/agy  entry for apps that need a binary named agy|  ~/.config/agyx/symlinks  home entries linked into every profile (editable)|Profiles share your ~/.gemini settings and history; your login keychain is not touched.|Continue? [Y/n] " "$(sed -n '/^agyx will set up/,/Continue/p' "$T/err" | tr '\n' '|' | sed -e 's/|$//' -e 's/Continue.*/Continue? [Y\/n] /')"
-eq gate-prompt-continues "1" "$(echo "$out" | grep -c "'w' is now the default profile")"
-for a in n eof; do
-  gfresh g5; : > "$LAUNCHLOG"
-  out=$(fx env PATH="$SP" AGYX_TTY="$T/ans-$a" "$AX" --profile p 2>"$T/err" </dev/null); rc=$?
-  eq "gate-prompt-$a" "nonzero,empty,yes,0" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(nothing_written),$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
-done
-# an existing data dir is never asked
-fresh g6
-eq gate-existing-not-asked "AGY_PROFILE=p/0" "$(fx env PATH="$SP" AGYX_TTY="$T/ans-n" "$AX" --profile p 2>"$T/err" </dev/null | grep '^AGY_PROFILE=')/$(grep -c 'Continue' "$T/err")"
-# after setup, repairs are silent
-rm -f "$N/data/bin/agy"; : > "$T/err"
-fx env PATH="$SP" AGYX_TTY="$T/ans-n" "$AX" doctor >/dev/null 2>"$T/err" </dev/null
-eq gate-repair-silent "present/0" "$([ -L "$N/data/bin/agy" ] && echo present)/$(grep -c . "$T/err")"
-
-# ---- Homebrew layout: Cellar paths map to the stable opt path; the entry link is repointed ----
-ver=$(sed -n 's/^AGYX_VERSION=\([0-9.]*\).*/\1/p' "$here/runtime/sync.sh")
-brewlayout() { # prefix version: a Cellar install with the opt link and bin link, as Homebrew makes it
-  mkdir -p "$1/Cellar/agyx/$2/libexec" "$1/bin" "$1/opt"
-  cp -R "$here/bin" "$here/runtime" "$1/Cellar/agyx/$2/libexec/"
-  ln -sfn "../Cellar/agyx/$2" "$1/opt/agyx"
-  ln -sfn "../Cellar/agyx/$2/libexec/bin/agyx" "$1/bin/agyx"
-}
-ustable() { ( . "$here/runtime/sync.sh"; agyx_stable "$1"; printf %s "$AGYX_STABLE" ); }
-TP=$(cd "$T" && pwd -P); HB=$TP/hb; brewlayout "$HB" 0.1.0
-eq stable-cellar-mapped "$HB/opt/agyx/libexec/bin/agy" "$(ustable "$HB/Cellar/agyx/0.1.0/libexec/bin/agy")"
-eq stable-cellar-no-opt "$T/nope/Cellar/agyx/0.1.0/libexec/bin/agy" "$(ustable "$T/nope/Cellar/agyx/0.1.0/libexec/bin/agy")"
-eq stable-checkout-kept "$here/bin/agy" "$(ustable "$here/bin/agy")"
-eq stable-other-cellar-formula-kept "$HB/Cellar/agyxfoo/1/bin/agy" "$(ustable "$HB/Cellar/agyxfoo/1/bin/agy")"
-fresh h1; mkdir -p "$N/data/bin"
-out=$(fx env PATH=/usr/bin:/bin AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN='echo ZD=$ZDOTDIR; echo BE=$BASH_ENV' "$HB/bin/agyx" --profile p 2>/dev/null </dev/null)
-eq cellar-entry-opt "$HB/opt/agyx/libexec/bin/agy" "$(readlink "$N/data/bin/agy")"
-eq cellar-zdotdir-bashenv "ZD=$HB/opt/agyx/libexec/runtime/zsh${nl}BE=$HB/opt/agyx/libexec/runtime/bash_env" "$out"
-eq cellar-doctor-entry-ok "1" "$(fx env PATH=/usr/bin:/bin "$HB/bin/agyx" doctor </dev/null 2>&1 | grep -c "^agy entry: $N/data/bin/agy (in place")"
-# an upgrade replaces the Cellar directory and the opt link; the stored paths keep working
-brewlayout "$HB" 0.2.0; rm -rf "${HB:?}/Cellar/agyx/0.1.0"
-eq upgrade-entry-still-works "AGY_PROFILE=p" "$(fx env PATH=/usr/bin:/bin AGYX_REAL_AGY="$T/fake-agy" "$N/data/bin/agy" --profile p 2>/dev/null </dev/null | grep '^AGY_PROFILE=')"
-eq upgrade-link-unchanged "$HB/opt/agyx/libexec/bin/agy" "$(readlink "$N/data/bin/agy")"
-# a link to an old Cellar location (as an older agyx stored it) is repointed on any run
-rm "$N/data/bin/agy"; mkdir -p "$T/oldcell/Cellar/agyx/0.0.9/libexec"; cp -R "$here/bin" "$here/runtime" "$T/oldcell/Cellar/agyx/0.0.9/libexec/"
-ln -s "$T/oldcell/Cellar/agyx/0.0.9/libexec/bin/agy" "$N/data/bin/agy"
-fx env PATH=/usr/bin:/bin "$HB/bin/agyx" profile list >/dev/null 2>&1 </dev/null
-eq repoint-other-agyx "$HB/opt/agyx/libexec/bin/agy" "$(readlink "$N/data/bin/agy")"
-# ... a dangling link too
-rm "$N/data/bin/agy"; ln -s "$T/oldcell/Cellar/agyx/0.0.1/libexec/bin/agy" "$N/data/bin/agy"
-fx env PATH=/usr/bin:/bin AGYX_REAL_AGY="$T/fake-agy" "$HB/bin/agyx" --profile p >/dev/null 2>&1 </dev/null
-eq repoint-dangling "$HB/opt/agyx/libexec/bin/agy" "$(readlink "$N/data/bin/agy")"
-# ... but a link that is not an agyx entry stays (a file named agy without agyx's runtime beside it, a file)
-mkdir -p "$T/notagyx/bin"; echo x > "$T/notagyx/bin/agy"
-rm "$N/data/bin/agy"; ln -s "$T/notagyx/bin/agy" "$N/data/bin/agy"
-fx env PATH=/usr/bin:/bin "$HB/bin/agyx" profile list >/dev/null 2>&1 </dev/null
-eq no-repoint-foreign-link "$T/notagyx/bin/agy" "$(readlink "$N/data/bin/agy")"
-rm "$N/data/bin/agy"; echo mine > "$N/data/bin/agy"
-fx env PATH=/usr/bin:/bin "$HB/bin/agyx" profile list >/dev/null 2>&1 </dev/null
-eq no-repoint-regular-file "mine" "$(cat "$N/data/bin/agy")"
-# a Cellar install without an opt link keeps the resolved path
-HC=$TP/hc; brewlayout "$HC" 0.1.0; rm "$HC/opt/agyx"
-fresh h2
-fx env PATH=/usr/bin:/bin "$HC/bin/agyx" profile list >/dev/null 2>&1 </dev/null
-eq cellar-without-opt-kept "$HC/Cellar/agyx/0.1.0/libexec/bin/agy" "$(readlink "$N/data/bin/agy")"
-# version: one place, shown by --version and doctor
-eq version-one-place "1" "$(grep -rl '^AGYX_VERSION=' "$here/bin" "$here/runtime" "$here/Formula" | wc -l | tr -d ' ')"
-eq version-format "yes" "$(echo "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' && echo yes)"
-eq version-formula-tag "1" "$(grep -c "archive/refs/tags/v$ver.tar.gz" "$here/Formula/agyx.rb")"
-fresh v1
-out=$(fx env PATH="$SP" "$AX" --version </dev/null 2>&1)
-eq version-both "agyx $ver/agy" "$(echo "$out" | sed -n 1p)/$(echo "$out" | sed -n 2p | cut -d' ' -f1)"
-eq version-writes-nothing "yes" "$(rm -rf "$N/data"; fx env PATH="$SP" "$AX" --version >/dev/null 2>&1 </dev/null; [ ! -e "$N/data" ] && [ ! -e "$N/rh/.config" ] && echo yes)"
-eq version-no-agy "agyx $ver" "$(fx env PATH=/usr/bin:/bin "$AX" --version </dev/null 2>&1)"
-eq version-override "agyx $ver/agy" "$(fx env PATH=/usr/bin:/bin AGYX_REAL_AGY="$T/fake-agy" "$AX" --version </dev/null 2>&1 | tr '\n' / | cut -d/ -f1)/$(fx env AGYX_REAL_AGY="$T/fake-agy" "$AX" --version </dev/null 2>&1 | sed -n 2p | cut -d' ' -f1)"
-fresh v2
-eq version-doctor "agyx version: $ver" "$(fx env PATH="$SP" "$AX" doctor </dev/null 2>/dev/null | sed -n 1p)"
-eq version-doctor-before-setup "agyx version: $ver" "$(rm -rf "$N/data"; fx env PATH="$SP" "$AX" doctor </dev/null 2>/dev/null | sed -n 1p)"
-
-# ---- help forms and the missing-agy message (0.1.1) ----
-# agyx --help / -h / help: agyx's own usage; read-only, never asks, works before setup
-for h in --help -h help; do
-  gfresh h1; : > "$LAUNCHLOG"
-  out=$(fx env PATH=/usr/bin:/bin AGYX_TTY="$T/ans-y" "$AX" "$h" 2>"$T/err" </dev/null); rc=$?
-  eq "help-$h" "0,usage,agy-help-line,empty-err,yes,0" "$rc,$(echo "$out" | grep -c '^usage: agyx' | sed 's/1/usage/'),$(echo "$out" | grep -qF "any other arguments go to agy; agy's own help: agyx --profile NAME --help" && echo agy-help-line),$([ -s "$T/err" ] || echo empty-err),$(nothing_written),$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
-done
-fresh h2; : > "$LAUNCHLOG"
-eq help-after-setup-no-launch "usage/0" "$(fx env PATH="$SP" "$AX" --help </dev/null 2>&1 | grep -c '^usage: agyx' | sed 's/1/usage/')/$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
-# with a chosen profile --help still goes to agy
-eq help-profile-passthrough "AGY_PROFILE=p${nl}ARG=--help" "$(fx env PATH="$SP" "$AX" --profile p --help </dev/null 2>/dev/null | grep '^AGY_PROFILE=\|^ARG=')"
-eq help-extra-args-to-agy "AGY_PROFILE=p${nl}ARG=-h${nl}ARG=x" "$(fx env PATH="$SP" AGY_PROFILE=p "$AX" -h x </dev/null 2>/dev/null | grep '^AGY_PROFILE=\|^ARG=')"
-# agy not installed: no prompt, nothing written, the message, nonzero; for every writing command
-msgwant="agyx: agyx needs the Antigravity CLI (agy) first, and it is not installed.${nl}Install it with the official command:  curl -fsSL https://antigravity.google/cli/install.sh | bash${nl}(docs: https://antigravity.google/docs/cli/overview)${nl}Then run agyx again. If agy is installed somewhere else, set AGYX_REAL_AGY=/path/to/agy."
-for c in "--profile p" "profile login p" "profile default p"; do
-  for mode in tty assume noterm; do
-    gfresh h3; : > "$LAUNCHLOG"
-    case $mode in
-      tty) e="AGYX_TTY=$T/ans-y" ;; assume) e="AGYX_ASSUME_YES=1" ;; noterm) e="X=1" ;;
-    esac
-    # shellcheck disable=SC2086
-    out=$(fx env PATH=/usr/bin:/bin $e "$AX" $c 2>"$T/err" </dev/null); rc=$?
-    eq "noagy-$mode-$c" "nonzero,empty,msg,no-prompt,yes,0" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$([ "$(cat "$T/err")" = "$msgwant" ] && echo msg),$(grep -q 'Continue\|will set up' "$T/err" || echo no-prompt),$(nothing_written),$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
-  done
-done
-# set up already but no agy: same message (launch and profile login)
-for c in "--profile p" "profile login p"; do
-  fresh h4
-  out=$(fx env PATH=/usr/bin:/bin "$AX" $c 2>"$T/err" </dev/null); rc=$?
-  eq "noagy-setup-$c" "nonzero,empty,msg" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$([ "$(tail -n 4 "$T/err")" = "$msgwant" ] && echo msg)"
-done
-# the override pointing at something unusable keeps its own message (before setup, nothing written)
-gfresh h5
-out=$(fx env PATH="$SP" AGYX_ASSUME_YES=1 AGYX_REAL_AGY="$T/nonexistent" "$AX" --profile p 2>"$T/err" </dev/null); rc=$?
-eq noagy-bad-override "nonzero,empty,yes,1" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(nothing_written),$(grep -c 'AGYX_REAL_AGY=.*is not an executable file' "$T/err")"
-# the notice no longer has a "not found yet" branch
-eq no-not-found-yet "0" "$(grep -c 'not found yet' "$here/runtime/sync.sh")"
-
-# per-profile keychain (fake security; the real one is never called)
-H=$DD/profiles/kc/home K=$DD/profiles/kc/home/Library/Keychains/login.keychain-db
-mkdir -p "$H"; : > "$SECLOG"
-out=$(agyx --profile kc x)
-eq kc-stdout-only-agy "7" "$(echo "$out" | wc -l | tr -d ' ')"
-eq kc-exact-calls "$(printf 'HOME=%s create-keychain -p  %s\nHOME=%s list-keychains -d user -s %s\nHOME=%s default-keychain -d user -s %s\nHOME=%s set-keychain-settings %s' "$H" "$K" "$H" "$K" "$H" "$K" "$H" "$K")" "$(cat "$SECLOG")"
-eq kc-dir-modes "drwx------ drwx------" "$(ls -ld "$H/Library" "$H/Library/Keychains" | cut -c1-10 | tr '\n' ' ' | sed 's/ $//')"
-: > "$SECLOG"; agyx --profile kc x >/dev/null
-eq kc-second-launch-no-calls "0" "$(wc -c < "$SECLOG" | tr -d ' ')"
-# failing security only warns; agy still launches; a later launch retries
-mkdir -p "$DD/profiles/kcfail/home"
-out=$(FAKE_SEC_FAIL=create-keychain agyx --profile kcfail y 2>"$T/err")
-eq kc-fail-launches "ARG=y" "$(echo "$out" | grep '^ARG=')"
-eq kc-fail-warns "1" "$(grep -c 'warning: could not create the profile keychain' "$T/err")"
-eq kc-fail-no-keychain "absent" "$([ -e "$DD/profiles/kcfail/home/Library/Keychains/login.keychain-db" ] || echo absent)"
-out=$(FAKE_SEC_FAIL=default-keychain agyx --profile kcfail y 2>/dev/null)
-eq kc-fail-late-step-launches "ARG=y" "$(echo "$out" | grep '^ARG=')"
-eq kc-fail-late-step-removed "absent" "$([ -e "$DD/profiles/kcfail/home/Library/Keychains/login.keychain-db" ] || echo absent)"
-agyx --profile kcfail y >/dev/null
-eq kc-retried "present" "$([ -e "$DD/profiles/kcfail/home/Library/Keychains/login.keychain-db" ] && echo present)"
-# doctor
-mkdir -p "$DD/profiles/nokc/home" "$DD/profiles/badkc/home"
-agyx --profile badkc z >/dev/null; echo /elsewhere > "$DD/profiles/badkc/home/.fake-default"
-eq kc-doctor-ok "1" "$(ctl doctor | grep -c '^profile kc: .*keychain ok (default for this profile)$')"
-eq kc-doctor-missing "1" "$(ctl doctor | grep -c '^profile nokc: .*keychain missing (created on next launch)$')"
-eq kc-doctor-not-default "1" "$(ctl doctor | grep -c '^profile badkc: .*keychain NOT the default for this profile (found: /elsewhere)$')"
-eq kc-doctor-real-ok "1" "$(ctl doctor | grep -c "^keychain: real default keychain is $RH/Library/Keychains/login.keychain-db, outside the agyx data dir$")"
-echo "$DD/profiles/kc/home/Library/Keychains/login.keychain-db" > "$RH/.fake-default"
-eq kc-doctor-real-inside "1" "$(ctl doctor | grep -c '^keychain: WARNING the real default keychain is inside the agyx data dir')"
-rm -f "$RH/.fake-default"
-eq kc-doctor-no-secrets "0" "$(ctl doctor | grep -c SECRET)"
-# every write call went to a profile HOME with an explicit keychain path; never the real HOME
-eq kc-never-real-keychain "0" "$(grep -e ' -s ' -e create-keychain -e set-keychain-settings "$SECLOG" | grep -vc "^HOME=$DD/profiles/[a-z]*/home .*$DD/profiles/[a-z]*/home/Library/Keychains/login.keychain-db")"
-rm -rf "${DD:?}/profiles/kc" "${DD:?}/profiles/kcfail" "${DD:?}/profiles/nokc" "${DD:?}/profiles/badkc"
-
-# ---- shared ~/.gemini and home whitelist ----
-G=$RH/.gemini
-launch() { FAKE_RUN=true agyx --profile "$1" 2>"$T/err"; }
-islink() { [ -L "$1" ] && [ "$1" -ef "$2" ] && echo link || echo "not-link"; }
-# the per-launch log files change on every launch and are not part of what the snapshots compare
-snap() { find "$@" -path '*/log/cli-*.log' -delete 2>/dev/null; ls -lRA "$@"; }
-mkdir -p "$G/antigravity-cli"
-# whitelist: default list when symlinks is missing
-HL=$RH/.config/agyx/symlinks   # the whitelist file lives in the real home's config dir
-rm -f "$HL"
-mkdir -p "$RH/.ssh" "$RH/.config"; echo gc > "$RH/.gitconfig"
-S4=$DD/profiles/s4/home; mkdir -p "$S4/.ssh"; echo mine > "$S4/.ssh/x"; ln -s /elsewhere "$S4/.config"
-launch s4 >/dev/null
-eq wl-default-link "link" "$(islink "$S4/.gitconfig" "$RH/.gitconfig")"
-eq wl-conflict-dir "mine" "$(cat "$S4/.ssh/x")"
-eq wl-conflict-dir-not-link "no" "$([ -L "$S4/.ssh" ] && echo yes || echo no)"
-eq wl-conflict-link "/elsewhere" "$(readlink "$S4/.config")"
-eq wl-conflict-silent "0" "$(grep -vc '^agyx: wrote' "$T/err")"
-eq wl-missing-not-linked "absent" "$([ -e "$S4/.npm" ] || [ -L "$S4/.npm" ] || echo absent)"
-mkdir "$RH/.cache"; launch s4 >/dev/null
-eq wl-later-linked "link" "$(islink "$S4/.cache" "$RH/.cache")"
-rmdir "$RH/.cache"; launch s4 >/dev/null
-eq wl-dangling-removed "gone" "$([ -L "$S4/.cache" ] || [ -e "$S4/.cache" ] || echo gone)"
-# doctor reports (section of profile s4 / s1)
-sect() { ctl doctor | awk -v p="$1:" '/^profile /{on=($2==p)} on'; }
-eq wl-doctor "1 1 1 1" "$(sect s4 | grep -c 'symlinks .gitconfig: linked') $(sect s4 | grep -c 'symlinks .ssh: CONFLICT') $(sect s4 | grep -c 'symlinks .npm: missing in the real home') $(sect s4 | grep -c 'symlinks .config: CONFLICT')"
-# list file: comments, blanks, whitespace, invalid names
-mkdir -p "$RH/.local" "$RH/mydir2"
-mkdir -p "$(dirname "$HL")"; printf '# comment\n\n   # indented comment\n  .gitconfig  \n../etc\na/b\n.gemini\nLibrary\n.local\n.\n..\nmydir2\n' > "$HL"
-S5=$DD/profiles/s5/home; mkdir -p "$S5"
-launch s5 >/dev/null
-eq wl-file-valid "link link" "$(islink "$S5/.gitconfig" "$RH/.gitconfig") $(islink "$S5/mydir2" "$RH/mydir2")"
-eq wl-file-invalid-warned "7" "$(grep -c "symlinks: skipping invalid name" "$T/err")"
-eq wl-file-not-linked ".local absent, .gemini is the shared link" "$([ -e "$S5/.local" ] || [ -L "$S5/.local" ] || printf '.local absent,') $(islink "$S5/.gemini" "$RH/.gemini" | sed 's/^link$/.gemini is the shared link/')"
-eq wl-library-not-link "no" "$([ -L "$S5/Library" ] && echo yes || echo no)"
-# profile default: show (or none) and set
-rm -f "$DD/default"
-eq default-none "none/0" "$(ctl profile default)/$(ctl profile default >/dev/null; echo $?)"
-(ctl profile default other >/dev/null)
-eq default-shown "other/other" "$(ctl profile default)/$(cat "$DD/default")"
-eq default-launch-uses-it "other" "$(agyx 2>/dev/null | sed -n 's/^AGY_PROFILE=//p')"
-eq default-use-gone "1" "$(ctl profile use other >/dev/null 2>&1 || echo 1)"
-printf work > "$DD/default"
-# doctor (any run) writes the default list once and never overwrites it
-D2=$T/d2 RH3=$T/rh3
-mkdir -p "$D2"
-(AGYX_REAL_HOME=$RH3 AGYX_DATA_DIR=$D2 ctl doctor >/dev/null 2>&1)
-L3=$RH3/.config/agyx/symlinks
-eq doctor-writes-list ".gitconfig .ssh .config .npm .npmrc .bun .bunfig.toml .cache .cargo .rustup go Code GitHub " "$(grep -v '^#' "$L3" | tr '\n' ' ')"
-eq doctor-not-in-data-dir "absent" "$([ -e "$D2/symlinks" ] || echo absent)"
-echo mine > "$L3"; (AGYX_REAL_HOME=$RH3 AGYX_DATA_DIR=$D2 ctl doctor >/dev/null 2>&1)
-eq doctor-keeps-list "mine" "$(cat "$L3")"
-rm -rf "${DD:?}/profiles/s1" "${DD:?}/profiles/s2" "${DD:?}/profiles/s3" "${DD:?}/profiles/s4" "${DD:?}/profiles/s5"
-
-# logged in via the profile keychain (item gemini/antigravity); the email comes from the profile's email file
-mklk() { h=$DD/profiles/$1/home; mkdir -p "$h/Library/Keychains"; : > "$h/Library/Keychains/login.keychain-db"; echo "$h"; }
-setemail() { printf '%s\n' "$2" > "$DD/profiles/$1/email"; }
-h=$(mklk lk1); : > "$h/.fake-item"; setemail lk1 last@example.com
-h=$(mklk lk2); : > "$h/.fake-item"
-h=$(mklk lk3); : > "$h/.fake-item"; tokjson lk3 tok@example.com; setemail lk3 file@example.com
-h=$(mklk lk4); : > "$h/.fake-item"; printf '{"token":{"access_token":"SECRET-ACCESS-lk4"},"auth_method":"oauth"}\n' > "$(tokdir lk4)"
-h=$(mklk lk5); setemail lk5 nobody@example.com
-h=$(mklk lk6); : > "$h/.fake-item"; setemail lk6 last@example.com
-h=$(mklk lk7); : > "$h/.fake-item"; tokjson lk7 fromtok@example.com
+eq desktop-uses-bridge agyx "$(DBUS_SESSION_BUS_ADDRESS='unix:path=/tmp/bus' FIELD=WSL_INTEROP field)"
+touch "$T/fake-dockerenv"
+eq container-zero-bridge 'unset|unset|unset' "$(AGYX_DOCKERENV="$T/fake-dockerenv" launch | awk -F= '/^(WSL_INTEROP|ZDOTDIR|BASH_ENV)=/{printf "%s|", $2}' | sed 's/|$//')"
+for bad in Work 1a a/b doctor profile uninstall ''; do err "profile-$bad" launch --profile "$bad"; done
+err missing launch --profile
+err duplicate launch --profile work --profile personal
+err missing-dir launch --profile absent
+err env-invalid env AGYX_PROFILE=BAD "$here/bin/agy"
+mv "$DD/default" "$T/default"
+err no-default launch
+mv "$T/default" "$DD/default"
+# A single entry, uncached PATH discovery and the official GUI fallback.
+eq single-entry "$here/bin/agy" "$(readlink "$DD/agy")"
+eq no-real-cache no "$([ -e "$DD/real-agy" ] || [ -L "$DD/real-agy" ] && echo yes || echo no)"
+mkdir -p "$T/native one" "$T/native-two" "$RH/.local/bin" "$T/old/bin" "$T/old/runtime" "$T/alias"
+cp "$T/fake-agy" "$T/native one/agy"
+cp "$T/fake-agy" "$T/native-two/agy"
+cp "$T/fake-agy" "$RH/.local/bin/agy"
+cp "$here/bin/agy" "$here/bin/agyx" "$T/old/bin/"
+cp "$here/runtime/"*.sh "$T/old/runtime/"
+ln -s '../native one/agy' "$T/alias/agy"
+eq path-native-first "$T/native one/agy" "$(AGYX_REAL_AGY='' PATH="$DD:$T/old/bin:$T/native one:$PATH" FIELD=EXE field)"
+eq path-reread-next-launch "$T/native-two/agy" "$(AGYX_REAL_AGY='' PATH="$T/native-two:$PATH" FIELD=EXE field)"
+eq native-alias-resolved "$T/native one/agy" "$(AGYX_REAL_AGY='' PATH="$T/alias:$PATH" FIELD=EXE field)"
+mkdir "$T/literal[one]" "$T/literaln"
+cp "$T/fake-agy" "$T/literal[one]/agy"
+cp "$T/fake-agy" "$T/literaln/agy"
+eq path-literal-no-globbing "$T/literal[one]/agy" "$(AGYX_REAL_AGY='' PATH="$T/literal[one]:$PATH" FIELD=EXE field)"
+eq native-override-resolved "$T/native one/agy" "$(AGYX_REAL_AGY="$T/alias/agy" FIELD=EXE field)"
+eq native-override-wins "$T/fake-agy" "$(PATH="$T/native-two:$PATH" FIELD=EXE field)"
+eq minimal-path-fallback "$RH/.local/bin/agy" "$(AGYX_REAL_AGY='' FIELD=EXE field)"
+eq skip-only-shims-to-fallback "$RH/.local/bin/agy" "$(AGYX_REAL_AGY='' PATH="$DD:$T/old/bin:$PATH" FIELD=EXE field)"
+# A real binary beside an agyx runtime is still native, not an agyx shell shim.
+mkdir -p "$T/collocated/bin" "$T/collocated/runtime"
+cp /usr/bin/true "$T/collocated/bin/agy"
+cp "$here/runtime/"*.sh "$T/collocated/runtime/"
+( . "$here/runtime/sync.sh"; AGYX_SHIM=$here/bin/agy; agyx_real_candidate "$T/collocated/bin/agy" ); rc=$?
+eq native-not-rejected-by-runtime-neighbor 0 "$rc"
+err override-current-shim env AGYX_REAL_AGY="$DD/agy" "$here/bin/agy" --profile work
+err override-other-shim env AGYX_REAL_AGY="$T/old/bin/agy" "$here/bin/agy" --profile work
+ln -s "$here/bin/agyx" "$T/alias/management"
+err override-management-shim env AGYX_REAL_AGY="$T/alias/management" "$here/bin/agy" --profile work
+err override-missing-no-fallback env AGYX_REAL_AGY="$T/missing-agy" "$here/bin/agy" --profile work
+eq doctor-new-entry 1 "$(ax doctor 2>/dev/null | grep -c "agy entry: $DD/agy (in place")"
+eq doctor-native-fallback 1 "$(AGYX_REAL_AGY='' ax doctor 2>/dev/null | grep -c "^real agy: $RH/.local/bin/agy$")"
+eq version-string 1 "$(ax --version | grep -c '^agyx 0.2.0$')"
+# Only doctor above queried item existence; launches still must make no security calls.
+eq doctor-item-queries-only 2 "$(wc -l < "$SECLOG" | tr -d ' ')"
 : > "$SECLOG"
-lst=$(ctl profile list)
-row() { echo "$lst" | grep "^$1 " | sed 's/  */ /g'; }
-eq lk-email-file "lk1 last@example.com" "$(row lk1)"
-eq lk-keychain-no-email "lk2 logged in, email unknown" "$(row lk2)"
-eq lk-email-file-wins-over-token "lk3 file@example.com" "$(row lk3)"
-eq lk-token-without-field-unknown "lk4 logged in, email unknown" "$(row lk4)"
-eq lk-no-item-no-token "lk5 not logged in" "$(row lk5)"
-eq lk-token-field-fallback "lk7 fromtok@example.com" "$(row lk7)"
-eq lk-dup-warning "1" "$(echo "$lst" | grep -c 'WARNING: profiles lk1 lk6 are logged in to the same Google account (last@example.com)')"
-eq lk-doctor "1" "$(ctl doctor | grep -c '^profile lk1: last@example.com, home ')"
-K=$DD/profiles/lk1/home/Library/Keychains/login.keychain-db
-eq lk-find-call "HOME=$DD/profiles/lk1/home find-generic-password -s gemini -a antigravity $K" "$(grep 'HOME=[^ ]*/lk1/home find-generic' "$SECLOG" | head -n 1)"
-eq lk-never-secret "0" "$(grep find-generic-password "$SECLOG" | grep -c -e ' -w' -e ' -g')"
-eq lk-no-secrets-printed "0" "$( (echo "$lst"; ctl doctor) | grep -c SECRET)"
-for n in lk1 lk2 lk3 lk4 lk5 lk6 lk7; do rm -rf "${DD:?}/profiles/$n"; done
-
-
-# whitelist file location: ${XDG_CONFIG_HOME:-<real home>/.config}/agyx/symlinks
-RH4=$T/rh4 XDG=$T/xdg
-mkdir -p "$T/d3"
-(AGYX_REAL_HOME=$RH4 XDG_CONFIG_HOME=$XDG AGYX_DATA_DIR=$T/d3 ctl doctor >/dev/null 2>&1)
-eq xdg-abs-written "present/absent" "$([ -f "$XDG/agyx/symlinks" ] && echo present)/$([ -e "$RH4/.config/agyx/symlinks" ] || echo absent)"
-mkdir -p "$T/cwd"
-(cd "$T/cwd" && AGYX_REAL_HOME=$RH4 XDG_CONFIG_HOME=relative/dir AGYX_DATA_DIR=$T/d3 ctl doctor >/dev/null 2>&1)
-eq xdg-relative-ignored "present/absent" "$([ -f "$RH4/.config/agyx/symlinks" ] && echo present)/$([ -e "$T/cwd/relative" ] || echo absent)"
-(AGYX_REAL_HOME=$RH4 XDG_CONFIG_HOME=$XDG AGYX_DATA_DIR=$T/d3 ctl doctor | grep -c "^symlinks: $XDG/agyx/symlinks\$") > "$T/n"
-eq doctor-links-path "1" "$(cat "$T/n")"
-mkdir -p "$T/rh5"; echo x > "$T/rh5/.config"
-eq doctor-links-path-missing "1" "$(AGYX_REAL_HOME=$T/rh5 ctl doctor | grep -c "^symlinks: $T/rh5/.config/agyx/symlinks (missing")"
-# launch uses that file; the old <data>/symlinks is no longer read
-mkdir -p "$RH/mydir2" "$RH/ignored-by-xdg" "$XDG/agyx"
-echo mydir2 > "$XDG/agyx/symlinks"
-echo ignored-by-xdg > "$DD/symlinks"
-S7=$DD/profiles/s7/home; mkdir -p "$S7"
-(XDG_CONFIG_HOME=$XDG launch s7 >/dev/null)
-eq xdg-launch-uses-file "link/absent/absent" "$(islink "$S7/mydir2" "$RH/mydir2")/$([ -e "$S7/.gitconfig" ] || echo absent)/$([ -e "$S7/ignored-by-xdg" ] || echo absent)"
-rm -rf "${DD:?}/profiles/s7"; rm -f "$DD/symlinks"
-
-
-# ---- whole shared ~/.gemini: one link per profile, the token blocker, migration, email ----
-# fl PROFILE: launch in the current fresh environment ($N), trash folder under $N/trash
-fl() { fx env PATH="${FLPATH:-$SP}" AGYX_REAL_AGY="$T/fake-agy" AGYX_TRASH_DIR="$N/trash" FAKE_RUN=true "$AX" --profile "$1" </dev/null 2>"$T/err"; }
-wfresh() { N=$T/$1; rm -rf "$N"; mkdir -p "$N/rh" "$N/data/profiles/p/home"; }
-BL=.gemini/antigravity-cli/antigravity-oauth-token
-
-# a fresh profile gets the single link; the layout is exactly the target layout
-wfresh w1
-out=$(fl p)
-eq w-stdout-empty "" "$out"
-eq w-link "link" "$(islink "$N/data/profiles/p/home/.gemini" "$N/rh/.gemini")"
-eq w-link-target "$N/rh/.gemini" "$(readlink "$N/data/profiles/p/home/.gemini")"
-eq w-profile-layout "home log" "$(ls -A "$N/data/profiles/p" | tr '\n' ' ' | sed 's/ $//')"
-eq w-home-layout ".config .fake-default .gemini Library" "$(ls -A "$N/data/profiles/p/home" | tr '\n' ' ' | sed 's/ $//')"
-eq w-no-drift "absent" "$(find "$N/data" -name 'agyx-drift*' | grep -c . | sed 's/^0$/absent/')"
-eq w-blocker-dir "dir/README" "$([ -d "$N/rh/$BL" ] && [ ! -L "$N/rh/$BL" ] && echo dir)/$(ls "$N/rh/$BL")"
-eq w-blocker-readme "1" "$(grep -c 'cannot write a token file' "$N/rh/$BL/README")"
-# steady state: nothing changes, nothing printed, and no helper process is started by the sync code
-before=$(snap "$N/data/profiles" "$N/rh/.gemini")
-STUBS=$T/stubs; STUBLOG=$T/stublog; rm -rf "$STUBS"; mkdir "$STUBS"; : > "$STUBLOG"
-for n in ln rm mv find date cmp mkdir ls cat sed tr head; do
-  printf '#!/bin/sh\necho %s >> "%s"\nexec %s "$@"\n' "$n" "$STUBLOG" "$(command -v "$n")" > "$STUBS/$n"
-  chmod +x "$STUBS/$n"
+# Help/version are strictly read-only; doctor/launches clean old layout, old .verified and outer profile logs.
+mkdir -p "$DD/bin" "$DD/profiles/work/log"
+printf oldlog > "$DD/profiles/work/log/cli-old.log"
+printf stamp > "$DD/.verified"
+ln -s "$T/native one/agy" "$DD/real-agy"
+ln -s "$here/bin/agy" "$DD/bin/agy"
+ax --version >/dev/null
+ax --help >/dev/null
+eq help-version-readonly yes "$([ -L "$DD/real-agy" ] && [ -L "$DD/bin/agy" ] && [ -f "$DD/.verified" ] && [ -d "$DD/profiles/work/log" ] && echo yes)"
+ax doctor >/dev/null
+layout_trash=$(find "$AGYX_TRASH_DIR" -type d -name 'agyx-entry-layout-*')
+eq old-cache-removed no "$([ -L "$DD/real-agy" ] || [ -e "$DD/.verified" ] && echo yes || echo no)"
+eq old-entry-trashed "$here/bin/agy" "$(readlink "$layout_trash/agy")"
+eq old-empty-bin-trashed yes "$([ -d "$layout_trash/bin" ] && [ ! -e "$DD/bin" ] && echo yes)"
+eq old-outer-logs-trashed oldlog "$(cat "$layout_trash/logs/work/cli-old.log")"
+eq no-outer-logs-left no "$([ -e "$DD/profiles/work/log" ] && echo yes || echo no)"
+ax doctor >/dev/null
+eq layout-cleanup-once 1 "$(find "$AGYX_TRASH_DIR" -type d -name 'agyx-entry-layout-*' | wc -l | tr -d ' ')"
+: > "$SECLOG"
+mkdir "$DD/bin"
+printf custom > "$DD/bin/keep"
+ln -s "$T/gone/opt/agyx-beta/libexec/bin/agy" "$DD/bin/agy"
+launch >/dev/null
+eq old-nonempty-bin-kept custom "$(cat "$DD/bin/keep")"
+eq old-stale-brew-entry-removed no "$([ -L "$DD/bin/agy" ] && echo yes || echo no)"
+printf unrelated-cache > "$DD/real-agy"
+ln -s "$T/fake-agy" "$DD/bin/agy"
+launch >/dev/null
+eq unrelated-cache-file-kept unrelated-cache "$(cat "$DD/real-agy")"
+eq unrelated-old-entry-kept "$T/fake-agy" "$(readlink "$DD/bin/agy")"
+rm "$DD/bin/agy" "$DD/bin/keep" "$DD/real-agy"; rmdir "$DD/bin"
+ln -s /usr/bin/true "$DD/real-agy"
+launch >/dev/null
+eq unrelated-cache-link-kept /usr/bin/true "$(readlink "$DD/real-agy")"
+rm "$DD/real-agy"
+mkdir "$T/external-bin"; ln -s "$here/bin/agy" "$T/external-bin/agy"
+ln -s "$T/external-bin" "$DD/bin"
+launch >/dev/null
+eq bin-symlink-not-followed "$here/bin/agy" "$(readlink "$T/external-bin/agy")"
+rm "$DD/bin"
+rm "$DD/agy"; printf custom-entry > "$DD/agy"
+launch >/dev/null
+eq unrelated-new-entry-kept custom-entry "$(cat "$DD/agy")"
+rm "$DD/agy"; ln -s "$DD/agy" "$DD/agy"
+launch >/dev/null
+eq cyclic-entry-not-overwritten "$DD/agy" "$(readlink "$DD/agy")"
+rm "$DD/agy"; ln -s "$here/bin/agy" "$DD/agy"
+err official-missing env HOME="$T/no-native-home" AGYX_DATA_DIR="$T/no-native-data" AGYX_REAL_AGY='' "$here/bin/agyx" profile login p
+eq missing-native-no-setup no "$([ -e "$T/no-native-data" ] && echo yes || echo no)"
+(env AGYX_DATA_DIR="$T/gui-data" AGYX_REAL_AGY='' AGYX_ASSUME_YES=1 FAKE_LOGIN=1 "$here/bin/agyx" profile login p >/dev/null)
+eq gui-first-setup-entry "$here/bin/agy" "$(readlink "$T/gui-data/agy")"
+# The app flag precedes all subcommands; agyx never injects --log-file (native agy manages logs).
+for cmd in interactive -p acp mcp login logout models agent agents plugins plugin remote-control mic-serve install help changelog update --help -h --version; do
+  if [ "$cmd" = interactive ]; then out=$(launch); else out=$(launch "$cmd"); fi
+  first=$(printf '%s\n' "$out" | grep '^ARG=' | head -n 1)
+  eq "app-first-$cmd" 1 "$(printf '%s\n' "$first" | grep -c '^ARG=--app_data_dir=')"
+  eq "no-injected-log-$cmd" 0 "$(printf '%s\n' "$out" | grep -c '^ARG=--log-file$')"
 done
-AGYX_LOG_STAMP=20260101_000000; export AGYX_LOG_STAMP # no date fork to name the log
-out=$(FLPATH="$STUBS:$SP" fl p)
-unset AGYX_LOG_STAMP
-after=$(snap "$N/data/profiles" "$N/rh/.gemini")
-eq w-steady-same "$before/0/" "$after/$(grep -c . "$T/err")/$out"
-eq w-steady-fork-free "" "$(cat "$STUBLOG")"
-# a link pointing elsewhere is replaced; a missing one is created
-rm "$N/data/profiles/p/home/.gemini"; ln -s /elsewhere "$N/data/profiles/p/home/.gemini"; fl p >/dev/null
-eq w-link-elsewhere "link" "$(islink "$N/data/profiles/p/home/.gemini" "$N/rh/.gemini")"
-rm "$N/data/profiles/p/home/.gemini"; fl p >/dev/null
-eq w-link-missing "link" "$(islink "$N/data/profiles/p/home/.gemini" "$N/rh/.gemini")"
-
-# the blocker: created when missing (doctor says so first), reported by doctor
-rm -rf "$N/rh/$BL"
-eq w-doctor-blocker-missing "1" "$(fx env PATH="$SP" "$AX" doctor </dev/null 2>/dev/null | grep -c '^token blocker: missing (created on next launch)')"
-fl p >/dev/null
-eq w-blocker-recreated "dir" "$([ -d "$N/rh/$BL" ] && echo dir)"
-eq w-doctor-blocker-ok "1" "$(fx env PATH="$SP" "$AX" doctor </dev/null 2>/dev/null | grep -c '^token blocker: ok')"
-eq w-doctor-gemini-line "1" "$(fx env PATH="$SP" "$AX" doctor </dev/null 2>/dev/null | grep -c '^  .gemini: linked to the shared ~/.gemini')"
-# a regular file at the blocker path stops every launch and nothing changes (the file is never touched)
-rm -rf "$N/rh/$BL"; printf 'SECRET-TOKEN-CONTENT\n' > "$N/rh/$BL"
-mkdir -p "$N/data/profiles/q/home"
-before=$(snap "$N/data/profiles" "$N/rh/.gemini"); : > "$LAUNCHLOG"
-for pr in p q; do
-  out=$(fl $pr); rc=$?
-  eq "w-blocking-$pr" "nonzero,empty,msg" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -q 'not starting this profile: ~/.gemini/antigravity-cli/antigravity-oauth-token exists and is not a directory' "$T/err" && grep -q 'every account could read that file' "$T/err" && grep -q 'agyx never reads, moves or deletes it' "$T/err" && grep -q 'plain agy will ask you to sign in again' "$T/err" && echo msg)"
+out=$(launch --profile work -- 'hello world' '' --profile personal -- x)
+eq argv 'ARG=hello world|ARG=|ARG=--profile|ARG=personal|ARG=--|ARG=x|' "$(printf '%s\n' "$out" | grep '^ARG=' | tail -n 6 | tr '\n' '|')"
+eq own-log 1 "$(launch --log-file "$T/own.log" | grep -c '^ARG=--log-file$')"
+err override-app launch --app_data_dir=elsewhere
+err override-gemini launch --gemini_dir /elsewhere
+err override-single-dash launch -app_data_dir=elsewhere
+# Resolve the relative argument, including spaces and data outside HOME.
+out=$(launch)
+rel=$(printf '%s\n' "$out" | sed -n 's/^ARG=--app_data_dir=//p')
+eq relative-target "$(cd "$DD/profiles/work/antigravity-cli" && pwd -P)" "$(cd "$RH/.gemini/$rel" && pwd -P)"
+mkdir -p "$T/space data/profiles/p/antigravity-cli"
+out=$(AGYX_DATA_DIR="$T/space data" launch --profile p)
+rel=$(printf '%s\n' "$out" | sed -n 's/^ARG=--app_data_dir=//p')
+eq space-target "$(cd "$T/space data/profiles/p/antigravity-cli" && pwd -P)" "$(cd "$RH/.gemini/$rel" && pwd -P)"
+eq no-keychain-launches '' "$(cat "$SECLOG")"
+# SSH passthrough is byte-for-byte, including an empty variable.
+out=$(SSH_CLIENT='client value' SSH_CONNECTION='connection value' SSH_TTY='' launch)
+eq ssh 'SSH_CLIENT=client value|SSH_CONNECTION=connection value|SSH_TTY=|' "$(printf '%s\n' "$out" | grep '^SSH_' | tr '\n' '|')"
+# Desktop mode Bash/Zsh bridge restores unset/empty/existing WSL_INTEROP and user's startup variables, even nested.
+for shell in bash zsh; do
+  command -v "$shell" >/dev/null || { echo "SKIP $shell"; continue; }
+  snippet="$shell -c 'printf \"%s|%s|%s|%s\" \"\$HOME\" \"\${WSL_INTEROP-unset}\" \"\${ZDOTDIR-unset}\" \"\${BASH_ENV-unset}\"'"
+  eq "$shell-unset" "$RH|unset|unset|unset" "$(FAKE_RUN="$snippet" launch)"
+  eq "$shell-empty" "$RH|||" "$(WSL_INTEROP='' ZDOTDIR='' BASH_ENV='' FAKE_RUN="$snippet" launch)"
+  eq "$shell-existing" "$RH|/run/WSL/9|/zd|/be" "$(WSL_INTEROP=/run/WSL/9 ZDOTDIR=/zd BASH_ENV=/be FAKE_RUN="$snippet" launch)"
+  nested="$shell -c 'FAKE_RUN= AGYX_DOCKERENV=\"$T/no-docker\" \"$here/bin/agy\" --profile personal'"
+  eq "$shell-nested" personal "$(FAKE_RUN="$nested" launch | sed -n 's/^PROFILE=//p')"
+  nested="$shell -c 'FAKE_RUN= AGYX_DOCKERENV=\"$T/no-docker\" \"$here/bin/agy\"'"
+  eq "$shell-nested-inherits-profile" personal "$(FAKE_RUN="$nested" launch --profile personal | sed -n 's/^PROFILE=//p')"
+  if [ "$shell" = bash ]; then names='compgen -A variable AGYX_ORIG_ || :'
+  else names='print -rl -- ${(k)parameters[(I)AGYX_ORIG_*]}'; fi
+  eq "$shell-originals-cleaned" '' "$(AGYX_ORIG_EXTRA=probe FAKE_RUN="$shell -c '$names'" launch)"
+  eq "$shell-home-helper-cleaned" unset "$(AGYX_REAL_HOME=/unused FAKE_RUN="$shell -c 'printf %s \${AGYX_REAL_HOME-unset}'" launch)"
+  if [ "$shell" = bash ]; then routing='compgen -e AGYX_'
+  else routing='print -rl -- ${(k)parameters[(I)AGYX_*]}'; fi
+  eq "$shell-routing-vars-only" 'AGYX_DATA_DIR AGYX_PROFILE AGYX_REAL_AGY ' "$(FAKE_RUN="$shell -c '$routing'" launch | sort | tr '\n' ' ')"
+  eq "$shell-native-env-kept" '/native-api|kept' "$(ANTIGRAVITY_AGENTAPI_EXE=/native-api AGY_CLI_PROBE=kept FAKE_RUN="$shell -c 'printf \"%s|%s\" \"\$ANTIGRAVITY_AGENTAPI_EXE\" \"\$AGY_CLI_PROBE\"'" launch)"
 done
-after=$(snap "$N/data/profiles" "$N/rh/.gemini")
-eq w-blocking-nothing-changed "$before/0/SECRET-TOKEN-CONTENT" "$after/$(wc -c < "$LAUNCHLOG" | tr -d ' ')/$(cat "$N/rh/$BL")"
-eq w-blocking-not-printed "0" "$(grep -c SECRET "$T/err")"
-eq w-doctor-blocker-blocking "1" "$(fx env PATH="$SP" "$AX" doctor </dev/null 2>/dev/null | grep -c '^token blocker: BLOCKING')"
-rm -f "$N/rh/$BL"
-
-# ---- migration of profiles in the per-entry layout ----
-wmk() { mkdir -p "$(dirname "$1")"; printf '%s\n' "$2" > "$1"; }
-wfresh m1; rmdir "$N/data/profiles/p/home" "$N/data/profiles/p"
-GS=$N/rh/.gemini
-mkdir -p "$GS/antigravity-cli/log" "$GS/skills" "$GS/conversations" "$GS/antigravity-cli/mcp"
-wmk "$GS/settings.json" shared-settings; wmk "$GS/antigravity-cli/mcp.json" mcp; wmk "$GS/antigravity-cli/log/shared.log" sharedlog
-wmk "$GS/conversations/a.pb" a; wmk "$GS/same.txt" same
-wmk "$GS/c-new.txt" shared-old-c; touch -t 202001010000 "$GS/c-new.txt"
-wmk "$GS/c-old.txt" shared-new-c; touch -t 202401010000 "$GS/c-old.txt"
-mkdir -p "$GS/fd"; wmk "$GS/fd/inner" in-shared-dir
-wmk "$GS/antigravity-cli/mcp/tool.json" shared-tool
-mkold() { # profile: the per-entry layout of 0.1.0-0.1.2
-  h=$N/data/profiles/$1/home; g=$h/.gemini; a=$g/antigravity-cli
-  mkdir -p "$a/log" "$g/brain" "$g/conversations" "$a/mcp"
-  ln -s "$GS/settings.json" "$g/settings.json"; ln -s "$GS/skills" "$g/skills"; ln -s "$GS/antigravity-cli/mcp.json" "$a/mcp.json"
-  wmk "$a/log/x.log" "10:00 applyAuthResult ok email=fromlog-$1@example.com"
-  wmk "$a/cli.log" clilog; wmk "$a/jetbox_summaries_proto.pb" jb; wmk "$a/conv.db-wal" wal
-  wmk "$g/brain/b1" brain-one; wmk "$g/conversations/b.pb" b; wmk "$g/same.txt" same
-  wmk "$g/c-new.txt" profile-new-c; touch -t 202401010000 "$g/c-new.txt"
-  wmk "$g/c-old.txt" profile-old-c; touch -t 202001010000 "$g/c-old.txt"
-  wmk "$g/fd" file-in-profile
-  wmk "$a/mcp/tool.json" shared-tool; wmk "$a/mcp/own.json" own-tool
-}
-mkold old; mkold old2; mkold old3
-# old: token file + keychain item; old2: token file, no keychain item; old3: no token file, log email only
-printf '{"token":{"access_token":"SECRET-ACCESS","refresh_token":"SECRET-REFRESH"},"auth_method":"oauth","id_token_email":"fromtoken@example.com"}\n' > "$N/data/profiles/old/home/$BL"
-printf '{"token":{"access_token":"SECRET-ACCESS2"},"auth_method":"oauth"}\n' > "$N/data/profiles/old2/home/$BL"
-mkdir -p "$N/data/profiles/old/home" && : > "$N/data/profiles/old/home/.fake-item"
-: > "$N/data/profiles/old3/home/.fake-item"
-out=$(fl old); rc=$?
-OH=$N/data/profiles/old/home
-eq m-rc-stdout "0/" "$rc/$out"
-eq m-link "link" "$(islink "$OH/.gemini" "$GS")"
-eq m-layout "email home log" "$(ls -A "$N/data/profiles/old" | tr '\n' ' ' | sed 's/ $//')"
-eq m-home-layout ".config .fake-default .fake-item .gemini Library" "$(ls -A "$OH" | tr '\n' ' ' | sed 's/ $//')"
-eq m-email-from-token "fromtoken@example.com" "$(cat "$N/data/profiles/old/email")"
-eq m-disjoint-moved "brain-one/b" "$(cat "$GS/brain/b1")/$(cat "$GS/conversations/b.pb")"
-eq m-shared-kept "shared-settings/a/mcp" "$(cat "$GS/settings.json")/$(cat "$GS/conversations/a.pb")/$(cat "$GS/antigravity-cli/mcp.json")"
-eq m-nested-merge "own-tool/shared-tool" "$(cat "$GS/antigravity-cli/mcp/own.json")/$(cat "$GS/antigravity-cli/mcp/tool.json")"
-eq m-identical "same" "$(cat "$GS/same.txt")"
-eq m-profile-newer-wins "profile-new-c" "$(cat "$GS/c-new.txt")"
-eq m-shared-newer-wins "shared-new-c" "$(cat "$GS/c-old.txt")"
-eq m-file-vs-dir "in-shared-dir" "$(cat "$GS/fd/inner")"
-eq m-no-links-left "2" "$(find "$N/data/profiles/old" -type l | grep -c .)"
-TR=$(echo "$N"/trash/agyx-old-*)
-eq m-trash-one-folder "1" "$(echo "$N"/trash/agyx-old-* | wc -w | tr -d ' ')"
-eq m-trash-logs "clilog/jb/wal/10:00 applyAuthResult ok email=fromlog-old@example.com" "$(cat "$TR/antigravity-cli/cli.log")/$(cat "$TR/antigravity-cli/jetbox_summaries_proto.pb")/$(cat "$TR/antigravity-cli/conv.db-wal")/$(cat "$TR/antigravity-cli/log/x.log")"
-eq m-trash-token "1" "$(grep -c SECRET-ACCESS "$TR/antigravity-cli/antigravity-oauth-token" | sed 's/^[1-9].*/1/')"
-eq m-trash-losers "profile-old-c/shared-old-c/file-in-profile" "$(cat "$TR/c-old.txt")/$(cat "$TR/c-new.txt")/$(cat "$TR/fd")"
-eq m-shared-log-untouched "sharedlog" "$(cat "$GS/antigravity-cli/log/shared.log")"
-eq m-only-private-files ".fake-default .fake-item email " "$(find "$N/data/profiles/old" -path '*/Library' -prune -o -path '*/log' -prune -o -type f -print | sed 's|.*/||' | sort | tr '\n' ' ')"
-eq m-summary-line "1" "$(grep -c "^agyx: profile old: its .gemini was merged into the shared ~/.gemini: .* entries moved, 3 old links removed, .* items to the Trash (.*/trash/agyx-old-[0-9]*)\$" "$T/err")"
-eq m-token-msg-keychain "1" "$(grep -c "^agyx: profile old: its login token file was moved to the Trash (.*). Its keychain holds a login, so nothing else is needed.\$" "$T/err")"
-eq m-no-secrets-printed "0" "$(grep -c SECRET "$T/err")"
-before=$(snap "$N/data/profiles/old" "$GS" "$N/trash"); out=$(fl old); after=$(snap "$N/data/profiles/old" "$GS" "$N/trash")
-eq m-second-launch "$before/0/" "$after/$(grep -c . "$T/err")/$out"
-# without a keychain item the message says to log in again; the log email is kept when there is no token
-fl old2 >/dev/null
-eq m-token-msg-no-keychain "1" "$(grep -c "^agyx: profile old2: its login token file was moved to the Trash (.*), and its keychain holds no login: run 'agyx profile login old2' again if agy asks you to sign in.\$" "$T/err")"
-eq m-email-old2 "fromlog-old2@example.com" "$(cat "$N/data/profiles/old2/email")"
-fl old3 >/dev/null
-eq m-email-from-log "fromlog-old3@example.com" "$(cat "$N/data/profiles/old3/email")"
-eq m-no-token-msg "0" "$(grep -c 'login token file' "$T/err")"
-fx env PATH="$SP" "$AX" profile list </dev/null 2>/dev/null > "$T/list.out"
-eq m-list-emails "old fromtoken@example.com;old2 not logged in;old3 fromlog-old3@example.com" "$(sed 's/  */ /g; s/ (default)//' "$T/list.out" | tr '\n' ';' | sed 's/;$//')"
-eq m-list-no-secret "0" "$(grep -c SECRET "$T/list.out")"
-# migration is not repeated and a shared token blocker is not needed to exist beforehand
-eq m-blocker-intact "dir" "$([ -d "$N/rh/$BL" ] && echo dir)"
-
-# ---- email after a successful login (from the shared logs written during the login) ----
-wfresh e1; rmdir "$N/data/profiles/p/home" "$N/data/profiles/p"
-wmk "$N/rh/.gemini/antigravity-cli/log/stale.log" "09:00 applyAuthResult ok email=stale@example.com"; touch -t 202001010000 "$N/rh/.gemini/antigravity-cli/log/stale.log"
-LOGIN='touch $HOME/.fake-item; sleep 1; mkdir -p $HOME/.gemini/antigravity-cli/log; echo "11:00 applyAuthResult ok email=first@example.com" > $HOME/.gemini/antigravity-cli/log/new.log; echo "11:01 applyAuthResult ok email=last@example.com" >> $HOME/.gemini/antigravity-cli/log/new.log'
-out=$(fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN="$LOGIN" "$AX" profile login acct1 2>/dev/null </dev/null)
-eq email-after-login "last@example.com" "$(cat "$N/data/profiles/acct1/email")"
-eq email-layout "email home log" "$(ls -A "$N/data/profiles/acct1" | tr '\n' ' ' | sed 's/ $//')"
-eq email-in-list "acct1 last@example.com (default)" "$(fx env PATH="$SP" "$AX" profile list </dev/null 2>/dev/null | sed 's/  */ /g')"
-# a login that wrote no new log line leaves no email file (the stale shared log is ignored)
-out=$(fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN='touch $HOME/.fake-item' "$AX" profile login acct2 2>/dev/null </dev/null)
-eq email-ignores-old-logs "absent" "$([ -e "$N/data/profiles/acct2/email" ] && echo present || echo absent)"
-eq email-unknown-listed "acct2 logged in, email unknown" "$(fx env PATH="$SP" "$AX" profile list </dev/null 2>/dev/null | sed 's/  */ /g' | grep '^acct2')"
-# a failed login writes nothing
-fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN='echo "11:00 applyAuthResult ok email=nope@example.com" > $HOME/.gemini/antigravity-cli/log/z.log' "$AX" profile login acct3 >/dev/null 2>&1 </dev/null
-eq email-failed-login "absent" "$([ -e "$N/data/profiles/acct3/email" ] && echo present || echo absent)"
-eq email-no-marker-left "0" "$(find "$N/data/profiles" -name '.login-start' | grep -c .)"
-# duplicate warning uses the email files
-printf 'last@example.com\n' > "$N/data/profiles/acct2/email"
-eq email-dup-warning "1" "$(fx env PATH="$SP" "$AX" profile list </dev/null 2>/dev/null | grep -c 'WARNING: profiles acct1 acct2 are logged in to the same Google account (last@example.com)')"
-
-
-# ---- login writes its own agy log (--log-file) and reads the email from that file only ----
-wfresh o1; rmdir "$N/data/profiles/p/home" "$N/data/profiles/p"
-# another instance logs a different account into the shared log while this login runs; it is ignored
-OWN='touch $HOME/.fake-item; sleep 1; mkdir -p $HOME/.gemini/antigravity-cli/log; echo "11:00 applyAuthResult ok email=other@example.com" > $HOME/.gemini/antigravity-cli/log/shared-new.log; echo "11:01 applyAuthResult ok email=mine@example.com" > "$FAKE_LOGFILE"; printf "%s\n" "$FAKE_LOGFILE" > "$N_LOGPATH"'
-out=$(fx env PATH="$SP" N_LOGPATH="$T/logpath" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN="$OWN" "$AX" profile login own1 2>/dev/null </dev/null)
-eq login-own-log-email "mine@example.com" "$(cat "$N/data/profiles/own1/email")"
-lp=$(cat "$T/logpath")
-eq login-own-log-path "$N/data/profiles/own1/log" "$(dirname "$lp")"
-eq login-own-log-name "yes" "$(basename "$lp" | grep -Eq '^cli-[0-9]{8}_[0-9]{6}\.log$' && echo yes)"
-eq login-own-log-deleted "0" "$(find "$N/data/profiles" -name '.login-*' | grep -c .)"
-# the file exists but has no email: unknown, not the shared log
-out=$(fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN='touch $HOME/.fake-item; sleep 1; echo "11:00 applyAuthResult ok email=other2@example.com" > $HOME/.gemini/antigravity-cli/log/shared-new2.log; echo "12:00 nothing here" > "$FAKE_LOGFILE"' "$AX" profile login own2 2>/dev/null </dev/null)
-eq login-own-log-no-email "absent" "$([ -e "$N/data/profiles/own2/email" ] && echo present || echo absent)"
-# the file is never created (flag ignored): the shared logs written during the login are used
-out=$(fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" FAKE_RUN='touch $HOME/.fake-item; sleep 1; echo "13:00 applyAuthResult ok email=fallback@example.com" > $HOME/.gemini/antigravity-cli/log/shared-new3.log' "$AX" profile login own3 2>/dev/null </dev/null)
-eq login-flag-ignored-fallback "fallback@example.com" "$(cat "$N/data/profiles/own3/email")"
-eq login-no-leftovers "0" "$(find "$N/data/profiles" -name '.login-*' | grep -c .)"
-
-# ---- a token file at the blocker path: ask in a terminal, refuse otherwise ----
-printf 'y\n' > "$T/ans-y2"; printf 'n\n' > "$T/ans-n2"; printf '\n' > "$T/ans-enter2"; : > "$T/ans-eof2"
-tokwant="agyx: found a login token file at ~/.gemini/antigravity-cli/antigravity-oauth-token${nl}  It is probably plain agy's login. While it exists, every agyx profile could read it.${nl}  Move it to the Trash? Plain agy will ask you to sign in again. [y/N] "
-flt() { fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" AGYX_TRASH_DIR="$N/trash" FAKE_RUN=true AGYX_TTY="$T/ans-$1" "$AX" --profile p </dev/null 2>"$T/err"; }
-tk() { wfresh "$1"; mkdir -p "$N/rh/.gemini/antigravity-cli"; printf 'SECRET-TOKEN-CONTENT\n' > "$N/rh/$BL"; }
-tk t1; : > "$LAUNCHLOG"
-out=$(flt y2); rc=$?
-eq tokfile-yes "0,empty,prompt,moved,blocker,kept,launched" "$rc,$([ -z "$out" ] && echo empty),$([ "$(grep -v '^agyx: wrote' "$T/err" | sed -n '1,3p' | sed 's/\[y\/N\] .*/[y\/N] /')" = "$tokwant" ] && echo prompt),$(grep -c 'agyx: moved the token file to .*/trash/agyx-token-' "$T/err" | sed 's/0/-/;s/1/moved/'),$([ -d "$N/rh/$BL" ] && [ -f "$N/rh/$BL/README" ] && echo blocker),$(cat "$N"/trash/agyx-token-*/antigravity-oauth-token | tr -d '\n' | sed 's/SECRET-TOKEN-CONTENT/kept/'),$([ -s "$LAUNCHLOG" ] && echo launched)"
-eq tokfile-yes-no-secret-printed "0" "$(grep -c SECRET "$T/err")"
-for a in n2 enter2 eof2; do
-  tk t2; : > "$LAUNCHLOG"
-  out=$(flt $a); rc=$?
-  eq "tokfile-no-$a" "nonzero,empty,refusal,intact,0" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -q 'not starting this profile' "$T/err" && echo refusal),$(cat "$N/rh/$BL" | sed 's/SECRET-TOKEN-CONTENT/intact/'),$(wc -c < "$LAUNCHLOG" | tr -d ' ')"
+mkdir -p "$T/zd"
+printf '[ ! "${AGYX_ORIG_WSL_INTEROP+x}" ] || printf leak >> "$COUNT"\nprintf x >> "$COUNT"\n' > "$T/zd/.zshenv"
+printf '[ ! "${AGYX_ORIG_WSL_INTEROP+x}" ] || printf leak >> "$COUNT"\nprintf x >> "$COUNT"\n' > "$T/benv"
+export COUNT=$T/count
+if command -v zsh >/dev/null 2>&1; then
+  : > "$COUNT"
+  (ZDOTDIR=$T/zd FAKE_RUN='zsh -c true' launch >/dev/null)
+  eq zshenv-once x "$(cat "$COUNT")"
+fi
+: > "$COUNT"
+(BASH_ENV=$T/benv FAKE_RUN='bash -c true' launch >/dev/null)
+eq bashenv-once x "$(cat "$COUNT")"
+# Share database files, but never link/adopt SQLite sidecars (SQLite owns their lifecycle).
+shared=$RH/.gemini/antigravity-cli app=$DD/profiles/work/antigravity-cli
+mkdir -p "$shared/conversations" "$shared/brain"
+printf history > "$shared/history.jsonl"
+printf database > "$shared/conversation_summaries.db"
+printf wal > "$shared/conversation_summaries.db-wal"
+printf hidden > "$shared/.hidden"
+for private in antigravity-oauth-token settings.json jetski_state.pbtxt jetbox_summaries_proto.pb; do
+  (umask 077; printf private > "$shared/$private")
 done
-# without a terminal there is no question at all (also with AGYX_ASSUME_YES)
-tk t3
-out=$(fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" AGYX_ASSUME_YES=1 FAKE_RUN=true "$AX" --profile p </dev/null 2>"$T/err"); rc=$?
-eq tokfile-noterm "nonzero,refusal,no-question,intact" "$([ $rc -ne 0 ] && echo nonzero),$(grep -q 'not starting this profile' "$T/err" && echo refusal),$(grep -q 'Move it to the Trash' "$T/err" || echo no-question),$(sed 's/SECRET-TOKEN-CONTENT/intact/' "$N/rh/$BL")"
-
-# ---- agyx uninstall ----
-UP=$T/ubin; rm -rf "$UP"; mkdir "$UP"
-printf '#!/bin/sh\necho "brew $*" >> "%s"\n' "$T/brewlog" > "$UP/brew"; chmod +x "$UP/brew"
-ln -s "$T/fake-security" "$UP/security"
-# ufresh NAME: default-layout install (data in ~/.local/share/agyx) with profiles a b c, config, blocker, shared .gemini
-ufresh() {
-  N=$T/$1; rm -rf "$N"; mkdir -p "$N/rh/.local/share/agyx/bin" "$N/rh/.local/bin" "$N/rh/.config/agyx" "$N/rh/.gemini/antigravity-cli/antigravity-oauth-token"
-  UD=$N/rh/.local/share/agyx
-  for pr in a b c; do mkdir -p "$UD/profiles/$pr/home/Library/Keychains"; : > "$UD/profiles/$pr/home/Library/Keychains/login.keychain-db"; done
-  ln -s "$T/fake-agy" "$UD/real-agy"; echo a > "$UD/default"; printf '.gitconfig\n' > "$N/rh/.config/agyx/symlinks"
-  printf 'agyx README\n' > "$N/rh/.gemini/antigravity-cli/antigravity-oauth-token/README"; echo keep > "$N/rh/.gemini/settings.json"
-  : > "$SECLOG"; : > "$T/brewlog"
-}
-ux() { env -u AGYX_DATA_DIR AGYX_REAL_HOME="$N/rh" AGYX_TRASH_DIR="$N/trash" PATH="$UP:$SP" "$@"; }
-printf 'y\n' > "$T/ua-y"; printf 'n\n' > "$T/ua-n"; printf '\n' > "$T/ua-enter"
-# a checkout install: the PATH link in ~/.local/bin goes, the checkout stays
-ufresh u1; ln -s "$here/bin/agyx" "$N/rh/.local/bin/agyx"
-out=$(ux env AGYX_TTY="$T/ua-y" "$here/bin/agyx" uninstall 2>"$T/err" </dev/null); rc=$?
-uwant="agyx uninstall will remove:${nl}  ~/.local/share/agyx/   profiles a, b, c (their keychains and logins are deleted)${nl}  ~/.config/agyx/   your symlinks list${nl}  ~/.gemini/antigravity-cli/antigravity-oauth-token/   the token-file blocker${nl}  agyx itself   (the link ~/.local/bin/agyx)${nl}Kept: ~/.gemini (shared settings, history and conversations) and plain agy.${nl}Apps set up with ~/.local/share/agyx/bin/agy (for example T3 Code) will stop working.${nl}Remove? [y/N] "
-eq uninstall-text "$uwant" "$(sed '/^$/d' "$T/err" | sed -n '1,8p' | sed 's/\(Remove? \[y\/N\] \).*/\1/' | head -c 2000)"
-eq uninstall-checkout "0,gone,gone,gone,kept,kept,kept" "$rc,$([ ! -e "$N/rh/.local/share/agyx" ] && echo gone),$([ ! -e "$N/rh/.config/agyx" ] && echo gone),$([ ! -e "$N/rh/.gemini/antigravity-cli/antigravity-oauth-token" ] && echo gone),$(cat "$N/rh/.gemini/settings.json" | sed 's/keep/kept/'),$([ -d "$N/rh/.gemini/antigravity-cli" ] && echo kept),$([ -x "$here/bin/agyx" ] && [ ! -L "$N/rh/.local/bin/agyx" ] && echo kept)"
-UTR=$(echo "$N"/trash/agyx-uninstall-*)
-eq uninstall-trash "3/1/1" "$(find "$UTR/data/profiles" -mindepth 1 -maxdepth 1 | grep -c .)/$([ -f "$UTR/config/symlinks" ] && echo 1)/$(echo "$N"/trash/agyx-uninstall-* | wc -w | tr -d ' ')"
-eq uninstall-keychains "3" "$(grep -c "delete-keychain" "$SECLOG")"
-eq uninstall-keychain-call "HOME=$N/rh/.local/share/agyx/profiles/a/home delete-keychain $N/rh/.local/share/agyx/profiles/a/home/Library/Keychains/login.keychain-db" "$(grep 'delete-keychain' "$SECLOG" | head -n 1)"
-eq uninstall-keychains-before-move "3" "$(grep -c 'delete-keychain' "$SECLOG")"
-eq uninstall-no-brew "" "$(cat "$T/brewlog")"
-# the blocker stays when it holds anything besides agyx's README; answering No removes nothing
-ufresh u2; echo extra > "$N/rh/.gemini/antigravity-cli/antigravity-oauth-token/other"
-out=$(ux env AGYX_TTY="$T/ua-y" "$here/bin/agyx" uninstall 2>"$T/err" </dev/null)
-eq uninstall-blocker-kept "kept/gone" "$([ -f "$N/rh/.gemini/antigravity-cli/antigravity-oauth-token/other" ] && echo kept)/$([ ! -e "$N/rh/.local/share/agyx" ] && echo gone)"
-eq uninstall-blocker-line-absent "0" "$(grep -c 'the token-file blocker' "$T/err")"
-for a in n enter; do
-  ufresh u3
-  out=$(ux env AGYX_TTY="$T/ua-$a" "$here/bin/agyx" uninstall 2>"$T/err" </dev/null); rc=$?
-  eq "uninstall-no-$a" "nonzero,present,present,0,nothing" "$([ $rc -ne 0 ] && echo nonzero),$([ -d "$N/rh/.local/share/agyx" ] && echo present),$([ -d "$N/rh/.config/agyx" ] && echo present),$(grep -c delete-keychain "$SECLOG"),$(grep -q 'nothing was removed' "$T/err" && echo nothing)"
+launch >/dev/null
+for entry in conversations brain history.jsonl conversation_summaries.db .hidden; do
+  eq "link-$entry" "$shared/$entry" "$(readlink "$app/$entry")"
 done
-: > "$T/ua-eof"
-ufresh u3; ux env AGYX_TTY="$T/ua-eof" "$here/bin/agyx" uninstall >/dev/null 2>&1 </dev/null
-eq uninstall-eof "present" "$([ -d "$N/rh/.local/share/agyx" ] && echo present)"
-# no terminal: refuse, unless AGYX_ASSUME_YES=1
-ufresh u4
-out=$(ux "$here/bin/agyx" uninstall 2>"$T/err" </dev/null); rc=$?
-eq uninstall-noterm "nonzero,empty,msg,present" "$([ $rc -ne 0 ] && echo nonzero),$([ -z "$out" ] && echo empty),$(grep -q 'uninstall needs a terminal to ask (or set AGYX_ASSUME_YES=1); nothing was removed.' "$T/err" && echo msg),$([ -d "$N/rh/.local/share/agyx" ] && echo present)"
-ux env AGYX_ASSUME_YES=1 "$here/bin/agyx" uninstall >/dev/null 2>&1 </dev/null
-eq uninstall-assume-yes "gone" "$([ ! -e "$N/rh/.local/share/agyx" ] && echo gone)"
-# a running agy (matched on the command line) blocks it, with its PID
-ufresh u5
-printf '#!/bin/sh\nsleep 20\n:\n' > "$T/agy-sleeper"; chmod +x "$T/agy-sleeper"
-ln -sfn "$T/agy-sleeper" "$N/rh/.local/share/agyx/real-agy"
-"$N/rh/.local/share/agyx/real-agy" & spid=$!
+for suffix in wal shm journal; do
+  printf sidecar > "$shared/conversation_summaries.db-$suffix"
+  printf local > "$app/local.db-$suffix"
+  ln -s "$shared/deleted.db-$suffix" "$app/deleted.db-$suffix"
+done
+launch >/dev/null
+for suffix in wal shm journal; do
+  eq "sidecar-not-linked-$suffix" no "$([ -L "$app/conversation_summaries.db-$suffix" ] && echo yes || echo no)"
+  eq "sidecar-broken-link-cleaned-$suffix" no "$([ -L "$app/deleted.db-$suffix" ] && echo yes || echo no)"
+  eq "sidecar-not-adopted-$suffix" no "$([ -e "$shared/local.db-$suffix" ] && echo yes || echo no)"
+  eq "sidecar-local-preserved-$suffix" local "$(cat "$app/local.db-$suffix")"
+  ln -s "$shared/missing.db-$suffix" "$app/doctor.db-$suffix"
+done
+eq doctor-ignores-sidecars 0 "$(ax doctor 2>/dev/null | grep -Ec 'antigravity-cli .*(-wal|-shm|-journal):')"
+# SQLite resolves the DB link before deriving WAL/SHM names and taking locks.
+if command -v sqlite3 >/dev/null 2>&1; then
+  mkdir -p "$T/sqlite/shared" "$T/sqlite/one" "$T/sqlite/two"
+  sqldb=$T/sqlite/shared/test.db
+  sqlite3 "$sqldb" 'PRAGMA journal_mode=WAL; CREATE TABLE t(n);' >/dev/null
+  ln -s "$sqldb" "$T/sqlite/one/test.db"
+  ln -s "$sqldb" "$T/sqlite/two/test.db"
+  sqlite3 "$T/sqlite/one/test.db" <<EOF &
+BEGIN IMMEDIATE;
+INSERT INTO t VALUES(1);
+.shell touch "$T/sqlite/ready"
+.shell sleep 1
+COMMIT;
+EOF
+  sqlite_pid=$!
+  i=0
+  while [ ! -f "$T/sqlite/ready" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+  eq sqlite-shared-wal-shm yes "$([ -f "$sqldb-wal" ] && [ -f "$sqldb-shm" ] && echo yes)"
+  eq sqlite-no-profile-sidecars no "$(find "$T/sqlite/one" "$T/sqlite/two" -type f | grep -q . && echo yes || echo no)"
+  sqlite3 "$T/sqlite/two/test.db" 'BEGIN IMMEDIATE;' 2>"$T/sqlite/error"; rc=$?
+  eq sqlite-shared-writer-lock 1 "$([ "$rc" -ne 0 ] && grep -q 'database is locked' "$T/sqlite/error" && echo 1)"
+  wait "$sqlite_pid"; rc=$?
+  eq sqlite-first-commit 0 "$rc"
+  sqlite3 "$T/sqlite/two/test.db" 'BEGIN IMMEDIATE; INSERT INTO t VALUES(2); COMMIT;'
+  eq sqlite-both-writes-visible 2 "$(sqlite3 "$sqldb" 'SELECT count(*) FROM t;')"
+  eq sqlite-integrity ok "$(sqlite3 "$sqldb" 'PRAGMA integrity_check;')"
+else
+  echo "SKIP sqlite3"
+fi
+for private in antigravity-oauth-token settings.json jetski_state.pbtxt jetbox_summaries_proto.pb; do
+  eq "not-shared-$private" no "$([ -e "$app/$private" ] && echo yes || echo no)"
+done
+# Per-account cache/log/updater links from older betas are automatically detached to stay private.
+mkdir -p "$shared/cache"
+printf shared-proj > "$shared/cache/default_project_id.txt"
+ln -s "$shared/cache" "$app/cache"
+launch >/dev/null
+eq former-shared-cache-detached no "$([ -L "$app/cache" ] && echo yes || echo no)"
+mkdir -p "$app/cache"
+printf work-proj > "$app/cache/default_project_id.txt"
+launch >/dev/null
+eq private-cache-not-adopted shared-proj "$(cat "$shared/cache/default_project_id.txt")"
+eq private-cache-kept work-proj "$(cat "$app/cache/default_project_id.txt")"
+printf newly-created > "$app/future-entry"
+printf future-db > "$app/future.db"
+printf future-wal > "$app/future.db-wal"
+launch >/dev/null
+eq adopted newly-created "$(cat "$shared/future-entry")"
+eq adoption-link "$shared/future-entry" "$(readlink "$app/future-entry")"
+eq adopted-db-with-wal 'future-db,future-wal' "$(cat "$shared/future.db"),$(cat "$shared/future.db-wal")"
+eq adopted-db-link "$shared/future.db" "$(readlink "$app/future.db")"
+rm "$app/conversation_summaries.db"
+printf replaced-db > "$app/conversation_summaries.db"
+eq doctor-replaced-db-drift 1 "$(ax doctor 2>/dev/null | grep -c 'antigravity-cli conversation_summaries.db: DRIFT')"
+eq doctor-keeps-replaced-db replaced-db "$(cat "$app/conversation_summaries.db")"
+rm "$app/conversation_summaries.db"
+ln -s "$shared/conversation_summaries.db" "$app/conversation_summaries.db"
+launch --profile personal >/dev/null
+eq cross-account-conversations yes "$([ "$app/conversations" -ef "$DD/profiles/personal/antigravity-cli/conversations" ] && echo yes)"
+ln -s "$shared/settings.json" "$app/settings.json"
+err private-link launch
+rm "$app/settings.json"
+(umask 077; printf own > "$app/settings.json")
+launch >/dev/null
+eq own-settings own "$(cat "$app/settings.json")"
+ln -s "$app" "$DD/profiles/alias"
+err profile-dir-symlink launch --profile alias
+err profile-login-symlink ax profile login alias
+rm "$DD/profiles/alias"
+# Direct exec + doctor binary check + native log storage guards preserve PID, stdin, exit status and INT/TERM/HUP.
+cat > "$T/unmarked-agy" <<'EOF'
+#!/bin/sh
+printf 'PROFILE=%s\n' "$AGYX_PROFILE"
+exit "${FAKE_STATUS:-0}"
+EOF
+chmod +x "$T/unmarked-agy"
+(AGYX_REAL_AGY="$T/unmarked-agy" FAKE_STATUS=7 launch -p hello >"$T/out" 2>"$T/err"); rc=$?
+eq storage-unmarked-status 7 "$rc"
+eq storage-unmarked-stdout 1 "$(grep -c '^PROFILE=work$' "$T/out")"
+eq storage-no-verified-file no "$([ -e "$DD/.verified" ] && echo yes || echo no)"
+(AGYX_REAL_AGY="$T/unmarked-agy" ax doctor >/dev/null 2>"$T/err")
+eq doctor-unmarked-binary-warning 1 "$(grep -c 'WARNING: file-based token storage markers NOT confirmed' "$T/err")"
+eq storage-warning-risk 1 "$(grep -c 'keychain fallback can mix accounts and delete the profile token file' "$T/err")"
+(FAKE_STORAGE=keychain launch >/dev/null 2>"$T/err"); rc=$?
+eq storage-keychain-first-exit 0 "$rc"
+# Next launch sees the previous non-empty bad native log and warns before exec.
+launch mcp list >/dev/null 2>"$T/err"
+eq storage-recent-log-warning 1 "$(grep -c 'WARNING: file-based token storage NOT confirmed' "$T/err")"
+launch >/dev/null 2>"$T/err"
+launch >/dev/null 2>"$T/err"
+eq storage-wsl-clears-warning '' "$(cat "$T/err")"
+(FAKE_LOGIN=1 FAKE_STORAGE=keychain ax profile login badstore >/dev/null 2>"$T/err")
+eq storage-login-immediate-warning 1 "$(grep -c 'WARNING: file-based token storage NOT confirmed' "$T/err")"
+eq storage-login-temp-cleaned 0 "$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'agyx-login-*' 2>/dev/null | wc -l | tr -d ' ')"
+rm -rf "$DD/profiles/badstore"
+eq storage-stdin 'stdin preserved' "$(printf 'stdin preserved\n' | FAKE_RUN='IFS= read -r line; printf "%s" "$line"' launch)"
+# Direct exec means no wrapper shell sits above agy, and INT/TERM/HUP all arrive with default dispositions intact.
+FAKE_RUN='printf %s "$$" > "$T/child-pid"' T=$T "$here/bin/agy" >/dev/null &
+spawned_pid=$!
+wait "$spawned_pid"
+eq exec-direct-pid "$spawned_pid" "$(cat "$T/child-pid")"
+export READY=$T/guard-ready
+sig_shell=/bin/sh
+command -v bash >/dev/null 2>&1 && sig_shell=bash
+for sig in INT TERM HUP; do
+  rm -f "$READY"
+  rc=$(
+    "$sig_shell" -c '
+      set -m
+      FAKE_RUN="trap \"exit 23\" INT TERM HUP; : > \"\$READY\"; sleep 2; exit 24" "$1/bin/agy" >/dev/null 2>"$2/err" &
+      guard_pid=$!
+      i=0
+      while [ ! -f "$READY" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+      kill -"$3" "$guard_pid"
+      wait "$guard_pid" 2>/dev/null; printf %s "$?"
+    ' _ "$here" "$T" "$sig"
+  )
+  eq "exec-$sig-status" 23 "$rc"
+  eq "exec-$sig-no-warning" '' "$(cat "$T/err")"
+done
+# Newest log only: an older positive marker cannot hide a new keychain fallback.
+mkdir -p "$app/log"
+printf 'Using file-based token storage because WSL environment detected\n' > "$app/log/guard-old.log"
 sleep 1
-out=$(ux env AGYX_TTY="$T/ua-y" "$here/bin/agyx" uninstall 2>"$T/err" </dev/null); rc=$?
-eq uninstall-running "nonzero,pid,present,no-question" "$([ $rc -ne 0 ] && echo nonzero),$(grep -c "agy is still running (PIDs: .*$spid" "$T/err" | sed 's/1/pid/'),$([ -d "$N/rh/.local/share/agyx" ] && echo present),$(grep -q 'Remove?' "$T/err" || echo no-question)"
-kill "$spid" 2>/dev/null; wait "$spid" 2>/dev/null
-# the Homebrew install: the program is removed with brew uninstall at the end
-ufresh u6; TP2=$(cd "$T" && pwd -P); HB2=$TP2/hb2; brewlayout "$HB2" 0.1.2
-out=$(ux env AGYX_TTY="$T/ua-y" "$HB2/bin/agyx" uninstall 2>"$T/err" </dev/null); rc=$?
-eq uninstall-brew "0,brew uninstall agyx,gone,line,untap" "$rc,$(cat "$T/brewlog"),$([ ! -e "$N/rh/.local/share/agyx" ] && echo gone),$(grep -c '  agyx itself   (brew uninstall agyx)' "$T/err" | sed 's/1/line/'),$(echo "$out" | grep -q 'brew untap iamdin/tap' && echo untap)"
-# any other location: it says what to delete and removes nothing of the program
-ufresh u7; mkdir -p "$T/otherinst"; cp -R "$here/bin" "$here/runtime" "$T/otherinst/"
-out=$(ux env AGYX_TTY="$T/ua-y" "$T/otherinst/bin/agyx" uninstall 2>"$T/err" </dev/null); rc=$?
-eq uninstall-other "0,line,msg,still-there" "$rc,$(grep -c "agyx itself   (delete $(cd "$T/otherinst/bin" && pwd -P)/agyx yourself)" "$T/err" | sed 's/1/line/'),$(echo "$out" | grep -q 'to finish, delete .* yourself' && echo msg),$([ -x "$T/otherinst/bin/agyx" ] && echo still-there)"
-# nothing installed yet: the list only has the program line; nothing is created
-N=$T/u8; rm -rf "$N"; mkdir -p "$N/rh"
-out=$(ux env AGYX_ASSUME_YES=1 "$T/otherinst/bin/agyx" uninstall 2>"$T/err" </dev/null); rc=$?
-eq uninstall-empty "0,nothing-created" "$rc,$([ ! -e "$N/rh/.local" ] && [ ! -e "$N/rh/.config" ] && [ ! -e "$N/rh/.gemini" ] && echo nothing-created)"
-
-# ---- per-profile log: <profile>/log/cli-YYYYMMDD_HHMMSS.log, one file per launch (agyx only names it) ----
-LD() { echo "$N/data/profiles/${1:-p}/log"; }
-PD() { echo "$N/data/profiles/${1:-p}"; }
-ll() { fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" "$AX" --profile p "$@" </dev/null 2>"$T/err"; }
-llq() { FAKE_RUN=true ll "$@"; }
-wfresh l1
-# the flag comes first, then the user's arguments untouched
-AGYX_LOG_STAMP=20260101_120000; export AGYX_LOG_STAMP
-out=$(ll -c)
-eq log-flag-first "LOGFIRST=$(LD)/cli-20260101_120000.log" "$(echo "$out" | grep '^LOGFIRST=')"
-eq log-flag-args-untouched "ARG=-c" "$(echo "$out" | grep '^ARG=')"
-eq log-file-created-empty "0" "$(wc -c < "$(LD)/cli-20260101_120000.log" | tr -d ' ')"
-out=$(ll models); eq log-flag-before-subcommand "ARG=models" "$(echo "$out" | grep '^ARG=')"
-out=$(ll -p hello); eq log-flag-print-mode "ARG=-p ARG=hello" "$(echo "$out" | grep '^ARG=' | tr '\n' ' ' | sed 's/ $//')"
-# no two launches share a file, even in the same second
-LC_ALL=C ls "$(LD)" > "$T/names"
-eq log-unique-same-second "cli-20260101_120000.log cli-20260101_120000_02.log cli-20260101_120000_03.log" "$(tr '\n' ' ' < "$T/names" | sed 's/ $//')"
-# acp is a launch like any other
-out=$(ll acp)
-eq log-acp-same-as-others "yes/ARG=acp" "$(echo "$out" | sed -n 's/^LOGFIRST=//p' | grep -Eq '/cli-20260101_120000_0[0-9]\.log$' && echo yes)/$(echo "$out" | grep '^ARG=')"
-# subcommands that never write a log get no file and no flag; a log file chosen by the caller is kept
-before=$(ls "$(LD)" | wc -l | tr -d ' ')
-res=
-for a in help changelog "mcp list" "update --help" --help --version; do
-  # shellcheck disable=SC2086 # $a is a word list on purpose
-  out=$(ll $a); [ -z "$(echo "$out" | grep '^LOGFIRST=')" ] || res="$res $a"
+printf 'Using keychain token storage\n' > "$app/log/guard-new.log"
+ax doctor >/dev/null 2>"$T/err"
+eq doctor-storage-newest 1 "$(grep -c 'NOT confirmed in .*work/antigravity-cli/log/guard-new.log' "$T/err")"
+printf 'Using file-based token storage because SSH environment detected\n' >> "$app/log/guard-new.log"
+ax doctor >/dev/null 2>"$T/err"
+eq doctor-storage-confirmed 0 "$(grep -c 'NOT confirmed in .*work/antigravity-cli/log/' "$T/err")"
+# Token existence only; no parser needed, email comes from own launch log.
+(FAKE_LOGIN=1 ax profile login new >/dev/null)
+eq login-default-unchanged work "$(cat "$DD/default")"
+eq login-email own@example.com "$(cat "$DD/profiles/new/email")"
+eq token-mode 600 "$(mode_of "$DD/profiles/new/antigravity-cli/antigravity-oauth-token")"
+eq profile-mode 700 "$(mode_of "$DD/profiles/new")"
+eq profile-app-mode 700 "$(mode_of "$DD/profiles/new/antigravity-cli")"
+chmod 750 "$DD/profiles/new"
+chmod 705 "$DD/profiles/new/antigravity-cli"
+out=$(ax doctor 2>/dev/null)
+eq doctor-profile-permissions 1 "$(printf '%s\n' "$out" | grep -c "permissions: WARNING $DD/profiles/new mode 750")"
+eq doctor-app-permissions 1 "$(printf '%s\n' "$out" | grep -c "permissions: WARNING $DD/profiles/new/antigravity-cli mode 705")"
+chmod 700 "$DD/profiles/new" "$DD/profiles/new/antigravity-cli"
+eq doctor-private-dirs-clean 0 "$(ax doctor 2>/dev/null | grep -c "permissions: WARNING $DD/profiles/new")"
+eq list-login 1 "$(ax profile list | grep -c '^new .*own@example.com')"
+rm "$DD/default"
+(FAKE_LOGIN=1 ax profile login next >/dev/null)
+eq first-default next "$(cat "$DD/default")"
+eq duplicate-warning 1 "$(ax profile list | grep -c '^WARNING: profiles')"
+(FAKE_LOGIN=1 FAKE_EMAIL='' ax profile login next >/dev/null 2>&1)
+eq no-stale-login-email 1 "$(ax profile list | grep -c '^next .*logged in, email unknown')"
+eq stale-email 1 "$(ax profile list | grep -c '^personal .*not logged in')"
+# Doctor never reads token contents (deliberately not JSON), reports modes, drift and logs.
+printf collision-shared > "$shared/collision"
+printf collision-profile > "$app/collision"
+(umask 022; printf invalid-json > "$app/antigravity-oauth-token")
+ln -s "$shared/missing" "$app/broken"
+out=$(FAKE_KEYCHAIN_ITEM=1 ax doctor)
+eq doctor-mode 1 "$(printf '%s\n' "$out" | grep -c '^profile mode: real HOME; WSL_INTEROP=agyx')"
+eq doctor-permissions 1 "$(printf '%s\n' "$out" | grep -c 'token: WARNING mode 644')"
+eq doctor-drift 1 "$(printf '%s\n' "$out" | grep -c 'antigravity-cli collision: DRIFT')"
+eq doctor-link 1 "$(printf '%s\n' "$out" | grep -c 'antigravity-cli broken: WARNING')"
+eq doctor-keychain-info 1 "$(printf '%s\n' "$out" | grep -c '^keychain: INFO plain agy')"
+eq doctor-no-secret 0 "$(grep -Ec ' -[wg]( |$)' "$SECLOG")"
+eq doctor-no-token-content 0 "$(printf '%s\n' "$out" | grep -c invalid-json)"
+rm "$app/collision"
+# Fresh profiles share every known entry before either fake native process writes.
+fr=$T/shared-repair frhome=$T/shared-repair/home frdata=$T/shared-repair/data
+mkdir -p "$frhome" "$frdata/profiles/one/antigravity-cli" "$frdata/profiles/two/antigravity-cli"
+fresh_run() { env HOME="$frhome" AGYX_DATA_DIR="$frdata" AGYX_TRASH_DIR="$fr/trash" "$@"; }
+one=$frdata/profiles/one/antigravity-cli two=$frdata/profiles/two/antigravity-cli fs=$frhome/.gemini/antigravity-cli
+fresh_run FAKE_RUN='[ -L "$FAKE_APP/conversations" ] && printf first > "$FAKE_APP/conversations/first"' "$here/bin/agy" --profile one >/dev/null
+eq first-profile-linked-before-write first "$(cat "$fs/conversations/first")"
+fresh_run FAKE_RUN='[ -f "$FAKE_APP/conversations/first" ] && printf second > "$FAKE_APP/conversations/second"' "$here/bin/agy" --profile two >/dev/null
+eq second-profile-shares-from-first-launch second "$(cat "$one/conversations/second")"
+for e in $(. "$here/runtime/sync.sh"; agyx_shared_entries dirs; agyx_shared_entries files); do
+  eq "fresh-both-$e" yes "$([ "$one/$e" -ef "$two/$e" ] && [ -L "$one/$e" ] && [ -L "$two/$e" ] && echo yes)"
 done
-eq log-flag-not-passed "" "$res"
-out=$(ll models --log-file /x/own.log)
-eq log-own-flag-respected "no-first/ARG=models ARG=--log-file ARG=/x/own.log" "$([ -z "$(echo "$out" | grep '^LOGFIRST=')" ] && echo no-first)/$(echo "$out" | grep '^ARG=' | tr '\n' ' ' | sed 's/ $//')"
-eq log-no-file-for-those "$before" "$(ls "$(LD)" | wc -l | tr -d ' ')"
-unset AGYX_LOG_STAMP
-# the name is the launch time, like agy's own files; private modes
-rm -rf "$(LD)"; llq >/dev/null
-eq log-name-format "yes" "$(basename "$(echo "$(LD)"/cli-*.log)" | grep -Eq '^cli-[0-9]{8}_[0-9]{6}\.log$' && echo yes)"
-eq log-private-mode "drwx------/-rw-------" "$(ls -ld "$(LD)" | cut -c1-10)/$(ls -l "$(LD)"/cli-*.log | cut -c1-10)"
-out=$(llq true); eq log-stdout-empty "" "$out"
-# nothing goes to the shared ~/.gemini log dir or cli.log
-eq log-shared-untouched "absent/absent" "$([ -e "$N/rh/.gemini/antigravity-cli/log" ] && echo present || echo absent)/$([ -e "$N/rh/.gemini/antigravity-cli/cli.log" ] && echo present || echo absent)"
-# logs are per profile
-mkdir -p "$N/data/profiles/q/home"; FAKE_RUN=true; export FAKE_RUN
-fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" "$AX" --profile q </dev/null 2>/dev/null; unset FAKE_RUN
-eq log-per-profile "1,absent" "$(ls "$(LD q)"/cli-*.log | wc -l | tr -d ' '),$([ -e "$(PD q)/cli.log" ] && echo present || echo absent)"
-# doctor shows the log dir and the newest file per profile
-d=$(fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" "$AX" doctor </dev/null 2>/dev/null)
-eq doctor-logs "1" "$(echo "$d" | grep -c "^  logs: $(LD p)/, newest: $(basename "$(ls -t "$(LD p)"/*.log | head -n 1)")\$")"
-rm -rf "$(LD q)"
-d=$(fx env PATH="$SP" AGYX_REAL_AGY="$T/fake-agy" "$AX" doctor </dev/null 2>/dev/null)
-eq doctor-logs-none "1" "$(echo "$d" | grep -c "^  logs: $(LD q)/, newest: none yet\$")"
-
-echo "passed: $pass, failed: $fail"
+eq fresh-history-empty 0 "$(wc -c < "$fs/history.jsonl" | tr -d ' ')"
+eq fresh-id-valid 1 "$(grep -Ec '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$' "$fs/installation_id")"
+for e in antigravity-oauth-token settings.json jetski_state.pbtxt jetbox_summaries_proto.pb; do
+  (umask 077; printf dummy-private > "$one/$e")
+done
+private_stat=$(stamp_of "$one/antigravity-oauth-token" "$one/settings.json" "$one/jetski_state.pbtxt" "$one/jetbox_summaries_proto.pb")
+# Build real drift with recursive, hidden, spaced and differently-typed conflicts.
+rm "$one/conversations" "$one/brain" "$one/history.jsonl" "$one/conversation_summaries.db" "$one/installation_id"
+mkdir -p "$one/conversations/nested" "$fs/conversations/nested" "$one/brain" "$one/conversations/type-clash"
+printf profile-newer > "$one/conversations/nested/newer file"
+printf shared-older > "$fs/conversations/nested/newer file"
+printf profile-older > "$one/conversations/nested/older"
+printf shared-newer > "$fs/conversations/nested/older"
+printf shared-type > "$fs/conversations/type-clash"
+printf hidden > "$one/conversations/.hidden"
+printf profile-only > "$one/conversations/only"
+ln -s "$fr/outside-target" "$one/conversations/dangling-link"
+printf shared-tie > "$fs/conversations/tie"
+printf profile-tie > "$one/conversations/tie"
+touch -t 202001010000 "$fs/conversations/nested/newer file" "$one/conversations/nested/older"
+touch -t 202101010000 "$one/conversations/nested/newer file" "$fs/conversations/nested/older"
+touch -t 202201010000 "$one/conversations/type-clash"
+touch -t 202001010000 "$fs/conversations/type-clash" "$fs/conversations/tie" "$one/conversations/tie"
+printf 'common\nshared-last' > "$fs/history.jsonl"
+printf 'common\nprofile-only\nprofile-only\n' > "$one/history.jsonl"
+printf shared-db > "$fs/conversation_summaries.db"
+printf profile-db > "$one/conversation_summaries.db"
+printf profile-wal > "$one/conversation_summaries.db-wal"
+printf shared-id > "$fs/installation_id"
+printf profile-id > "$one/installation_id"
+printf 'n\n' > "$fr/no"; printf 'y\n' > "$fr/yes"
+err drift-no-tty fresh_run "$here/bin/agy" --profile one
+eq drift-no-tty-kept profile-only "$(cat "$one/conversations/only")"
+eq drift-no-tty-no-trash no "$([ -e "$fr/trash" ] && echo yes || echo no)"
+eq drift-doctor-still-reports 1 "$(fresh_run "$here/bin/agyx" doctor 2>/dev/null | grep -c 'antigravity-cli conversations: DRIFT')"
+eq drift-doctor-no-repair profile-only "$(cat "$one/conversations/only")"
+err drift-declined fresh_run AGYX_TTY="$fr/no" "$here/bin/agy" --profile one
+eq drift-declined-kept profile-db "$(cat "$one/conversation_summaries.db")"
+# A running native writer prevents repair even when consent is supplied.
+cat > "$fr/writer with spaces" <<'EOF'
+#!/bin/sh
+sleep 10 & child=$!
+trap 'kill "$child"; wait "$child" 2>/dev/null; exit' TERM
+exec 9< "$2"
+: > "$1"
+wait "$child"
+EOF
+chmod +x "$fr/writer with spaces"
+"$fr/writer with spaces" "$fr/ready" "$fs/conversation_summaries.db" & writer=$!
+i=0; while [ ! -f "$fr/ready" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+err drift-busy fresh_run AGYX_REAL_AGY="$fr/writer with spaces" AGYX_ASSUME_YES=1 "$here/bin/agy" --profile one
+eq drift-busy-diagnostic 1 "$(grep -c 'close agy before shared repair' "$T/err")"
+kill "$writer"; wait "$writer" 2>/dev/null
+eq drift-busy-kept profile-db "$(cat "$one/conversation_summaries.db")"
+fresh_run AGYX_TTY="$fr/yes" "$here/bin/agy" --profile two > "$fr/out" 2> "$fr/err"; rc=$?
+eq drift-repair-success 0 "$rc"
+eq drift-one-prompt 1 "$(grep -c 'Continue?' "$fr/err")"
+trash=$(find "$fr/trash" -type d -name 'agyx-shared-repair-*')
+eq repair-profile-newer profile-newer "$(cat "$fs/conversations/nested/newer file")"
+eq repair-shared-older-trashed shared-older "$(cat "$trash/one/conversations/nested/newer file")"
+eq repair-shared-newer shared-newer "$(cat "$fs/conversations/nested/older")"
+eq repair-profile-older-trashed profile-older "$(cat "$trash/one/conversations/nested/older")"
+eq repair-tie-shared shared-tie "$(cat "$fs/conversations/tie")"
+eq repair-tie-profile-trashed profile-tie "$(cat "$trash/one/conversations/tie")"
+eq repair-type-newer directory "$([ -d "$fs/conversations/type-clash" ] && echo directory)"
+eq repair-type-loser-trashed shared-type "$(cat "$trash/one/conversations/type-clash")"
+eq repair-hidden hidden "$(cat "$fs/conversations/.hidden")"
+eq repair-unique profile-only "$(cat "$fs/conversations/only")"
+eq repair-nested-link-not-followed "$fr/outside-target" "$(readlink "$fs/conversations/dangling-link")"
+eq repair-nested-link-target-untouched no "$([ -e "$fr/outside-target" ] && echo yes || echo no)"
+eq repair-history 'common shared-last profile-only ' "$(tr '\n' ' ' < "$fs/history.jsonl")"
+eq repair-history-original 'common profile-only profile-only ' "$(tr '\n' ' ' < "$trash/one/history.jsonl")"
+eq repair-db-shared-kept shared-db "$(cat "$fs/conversation_summaries.db")"
+eq repair-db-trashed profile-db "$(cat "$trash/one/conversation_summaries.db")"
+eq repair-db-wal-trashed profile-wal "$(cat "$trash/one/conversation_summaries.db-wal")"
+eq repair-id-shared-kept shared-id "$(cat "$fs/installation_id")"
+eq repair-id-trashed profile-id "$(cat "$trash/one/installation_id")"
+eq repair-private-stat-unchanged "$private_stat" "$(stamp_of "$one/antigravity-oauth-token" "$one/settings.json" "$one/jetski_state.pbtxt" "$one/jetbox_summaries_proto.pb")"
+for e in conversations brain history.jsonl conversation_summaries.db installation_id; do
+  eq "repair-link-$e" "$fs/$e" "$(readlink "$one/$e")"
+done
+fresh_run "$here/bin/agy" --profile one >/dev/null 2> "$fr/err"
+eq repair-idempotent '' "$(cat "$fr/err")"
+eq repair-idempotent-history 3 "$(wc -l < "$fs/history.jsonl" | tr -d ' ')"
+eq repair-idempotent-trash-count 1 "$(find "$fr/trash" -type d -name 'agyx-shared-repair-*' | wc -l | tr -d ' ')"
+eq repair-doctor-clean 0 "$(fresh_run "$here/bin/agyx" doctor 2>/dev/null | grep -c DRIFT)"
+# Empty shared history and two unadopted copies also repair without duplicate lines.
+rm "$two/history.jsonl"
+printf 'only-line\nonly-line\n' > "$two/history.jsonl"
+: > "$fs/history.jsonl"
+mkdir "$one/future-shared" "$two/future-shared"
+printf one > "$one/future-shared/one"
+printf two > "$two/future-shared/two"
+fresh_run AGYX_ASSUME_YES=1 "$here/bin/agy" --profile two >/dev/null 2> "$fr/err"; rc=$?
+eq repair-assume-yes 0 "$rc"
+eq repair-assume-no-prompt 0 "$(grep -c 'Continue?' "$fr/err")"
+eq repair-empty-shared-history only-line "$(cat "$fs/history.jsonl")"
+eq repair-unadopted-pair one,two "$(cat "$fs/future-shared/one"),$(cat "$fs/future-shared/two")"
+eq repair-unadopted-links yes "$([ -L "$one/future-shared" ] && [ "$one/future-shared" -ef "$two/future-shared" ] && echo yes)"
+# Adopt an older profile's sole known entry before creating an empty shared target.
+rm "$one/brain" "$two/brain"; rmdir "$fs/brain"
+mkdir "$one/brain"; printf prior > "$one/brain/prior"
+fresh_run AGYX_ASSUME_YES=1 "$here/bin/agy" --profile two >/dev/null 2> "$fr/err"
+eq seed-preserves-older-profile prior "$(cat "$fs/brain/prior")"
+eq seed-links-older-profile "$fs/brain" "$(readlink "$one/brain")"
+# Adopting an old DB keeps its WAL together and never overwrites an orphan shared WAL.
+rm "$one/conversation_summaries.db" "$two/conversation_summaries.db" "$fs/conversation_summaries.db"
+printf adopted-db > "$one/conversation_summaries.db"
+printf adopted-wal > "$one/conversation_summaries.db-wal"
+printf orphan-wal > "$fs/conversation_summaries.db-wal"
+err repair-orphan-sidecar fresh_run AGYX_ASSUME_YES=1 "$here/bin/agy" --profile two
+eq repair-orphan-source-intact adopted-db "$(cat "$one/conversation_summaries.db")"
+eq repair-orphan-target-intact orphan-wal "$(cat "$fs/conversation_summaries.db-wal")"
+rm "$fs/conversation_summaries.db-wal"
+fresh_run AGYX_ASSUME_YES=1 "$here/bin/agy" --profile two >/dev/null 2> "$fr/err"; rc=$?
+eq repair-adopt-db 0 "$rc"
+eq repair-adopt-db-value adopted-db "$(cat "$fs/conversation_summaries.db")"
+eq repair-adopt-db-wal adopted-wal "$(cat "$fs/conversation_summaries.db-wal")"
+eq repair-adopt-db-link "$fs/conversation_summaries.db" "$(readlink "$one/conversation_summaries.db")"
+rm "$fs/conversation_summaries.db"
+err seed-orphan-sidecar fresh_run "$here/bin/agy" --profile two
+eq seed-orphan-sidecar-preserved adopted-wal "$(cat "$fs/conversation_summaries.db-wal")"
+eq seed-orphan-no-fake-db no "$([ -e "$fs/conversation_summaries.db" ] && echo yes || echo no)"
+printf adopted-db > "$fs/conversation_summaries.db"
+# Repair refusal before shared dir exists creates neither ~/.gemini nor the prepare lock.
+mkdir -p "$T/preconsent/home" "$T/preconsent/data/profiles/p/antigravity-cli/brain"
+err repair-refusal-no-shared-dir env HOME="$T/preconsent/home" AGYX_DATA_DIR="$T/preconsent/data" AGYX_TTY="$fr/no" "$here/bin/agy" --profile p
+eq repair-refusal-zero-gemini absent "$([ -e "$T/preconsent/home/.gemini" ] && echo present || echo absent)"
+# Concurrent preparers wait for an active preparation, and still fail if a stale lock remains.
+mkdir "$frdata/.lock"
+err prepare-lock-busy fresh_run AGYX_LOCK_TRIES=2 "$here/bin/agy" --profile one
+(sleep 0.15; rmdir "$frdata/.lock") &
+wait_pid=$!
+fresh_run "$here/bin/agy" --profile one >/dev/null 2>"$fr/err"; rc=$?
+wait "$wait_pid"
+eq prepare-lock-waits 0 "$rc"
+p1='' p2='' p3=''
+fresh_run "$here/bin/agy" --profile one >/dev/null 2>"$fr/c1" & p1=$!
+fresh_run "$here/bin/agy" --profile two >/dev/null 2>"$fr/c2" & p2=$!
+fresh_run "$here/bin/agy" --profile one >/dev/null 2>"$fr/c3" & p3=$!
+rc1=0 rc2=0 rc3=0
+wait "$p1" || rc1=$?; wait "$p2" || rc2=$?; wait "$p3" || rc3=$?
+eq prepare-concurrent-burst "0:0:0" "$rc1:$rc2:$rc3"
+# First-run gate: read-only commands and refusal leave disk alone.
+fresh=$T/fresh
+for command in '--help' '--version' 'profile list' 'profile default' doctor; do
+  # shellcheck disable=SC2086 # fixed command words above
+  (AGYX_DATA_DIR=$fresh ax $command >/dev/null)
+  eq "readonly-$command" absent "$([ -e "$fresh" ] && echo present || echo absent)"
+done
+err first-nonterminal env AGYX_DATA_DIR="$fresh" "$here/bin/agyx" profile login p
+printf 'n\n' > "$T/no"
+err first-no env AGYX_DATA_DIR="$fresh" AGYX_TTY="$T/no" "$here/bin/agyx" profile login p
+printf 'y\n' > "$T/yes"
+(AGYX_DATA_DIR=$fresh AGYX_TTY=$T/yes ax profile login p >/dev/null 2>"$T/err")
+eq first-yes present "$([ -d "$fresh/profiles/p/antigravity-cli" ] && echo present)"
+eq no-whitelist absent "$([ -e "$RH/.config/agyx/symlinks" ] && echo present || echo absent)"
+# Legacy migration: refusal changes nothing, then one consent covers all profiles.
+legacy=$T/legacy
+mkdir -p "$legacy/bin"
+ln -s "$T/native one/agy" "$legacy/real-agy"
+ln -s "$here/bin/agy" "$legacy/bin/agy"
+for p in old oldtwo; do
+  mkdir -p "$legacy/profiles/$p/home/Library/Keychains" "$legacy/profiles/$p/log"
+  printf keychain > "$legacy/profiles/$p/home/Library/Keychains/login.keychain-db"
+  printf kept > "$legacy/profiles/$p/log/old.log"
+  printf old@example.com > "$legacy/profiles/$p/email"
+done
+mkdir -p "$RH/.config/agyx"
+printf whitelist > "$RH/.config/agyx/symlinks"
+# Replace only our fixture's default token file, never a real user's file.
+rm "$shared/antigravity-oauth-token"
+mkdir "$shared/antigravity-oauth-token"
+cat > "$shared/antigravity-oauth-token/README" <<'EOF'
+agyx keeps this directory here so the Antigravity CLI (agy) cannot write a token file at this path:
+all agyx profiles share this ~/.gemini, so such a file would be shared by every Google account.
+Logins live only in each profile's own keychain. Delete this directory only after uninstalling agyx.
+EOF
+: > "$SECLOG"
+(AGYX_DATA_DIR=$legacy ax --version >/dev/null)
+err migration-no-tty env AGYX_DATA_DIR="$legacy" "$here/bin/agyx" profile list
+err migration-no env AGYX_DATA_DIR="$legacy" AGYX_TTY="$T/no" "$here/bin/agyx" profile list
+eq migration-no-writes '' "$(cat "$SECLOG")"
+eq migration-refusal-keeps-013-entries yes "$([ -L "$legacy/real-agy" ] && [ -L "$legacy/bin/agy" ] && echo yes)"
+"$fr/writer with spaces" "$fr/migrate-ready" "$legacy/profiles/old/home/Library/Keychains/login.keychain-db" & writer=$!
+i=0; while [ ! -f "$fr/migrate-ready" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+err migration-busy env AGYX_DATA_DIR="$legacy" AGYX_ASSUME_YES=1 "$here/bin/agyx" profile list
+eq migration-busy-diagnostic 1 "$(grep -c 'close agy before migration' "$T/err")"
+eq migration-busy-no-keychain-deletes '' "$(cat "$SECLOG")"
+kill "$writer"; wait "$writer" 2>/dev/null
+(AGYX_DATA_DIR=$legacy AGYX_TTY=$T/yes ax profile list > "$T/list" 2> "$T/err")
+eq migration-all 2 "$(grep -c 'not logged in' "$T/list")"
+eq migration-prompt-once 1 "$(grep -c 'Continue?' "$T/err")"
+eq migration-keychains 2 "$(grep -c 'delete-keychain' "$SECLOG")"
+eq migration-explicit-home 2 "$(grep -c "^HOME=$legacy/profiles/.*home delete-keychain $legacy/profiles/.*home/Library/Keychains/login.keychain-db$" "$SECLOG")"
+eq migration-home-gone absent "$([ -d "$legacy/profiles/old/home" ] && echo present || echo absent)"
+eq migration-email-kept old@example.com "$(cat "$legacy/profiles/old/email")"
+eq migration-outer-log-trashed absent "$([ -e "$legacy/profiles/old/log" ] && echo present || echo absent)"
+eq migration-app-mode 700 "$(mode_of "$legacy/profiles/old/antigravity-cli")"
+eq migration-single-trash-root 1 "$(find "$AGYX_TRASH_DIR" -maxdepth 1 -type d -name 'agyx-migrate-*' | wc -l | tr -d ' ')"
+eq migration-trash 2 "$(find "$AGYX_TRASH_DIR" -name home -type d | wc -l | tr -d ' ')"
+eq migration-then-entry-updated "$here/bin/agy" "$(readlink "$legacy/agy")"
+eq migration-blocker-removed absent "$([ -e "$shared/antigravity-oauth-token" ] && echo present || echo absent)"
+eq migration-whitelist-removed absent "$([ -e "$RH/.config/agyx/symlinks" ] && echo present || echo absent)"
+eq migration-whitelist-trashed whitelist "$(cat "$(find "$AGYX_TRASH_DIR" -type f -name symlinks)")"
+(AGYX_DATA_DIR=$legacy ax profile list >/dev/null)
+eq migration-idempotent 2 "$(grep -c delete-keychain "$SECLOG")"
+# A failed keychain deletion must stop, not silently abandon the login in the Trash.
+mkdir -p "$legacy/profiles/fail/home/Library/Keychains"
+printf fail > "$legacy/profiles/fail/home/Library/Keychains/login.keychain-db"
+err migration-failure env AGYX_DATA_DIR="$legacy" AGYX_ASSUME_YES=1 FAKE_SEC_FAIL=1 "$here/bin/agyx" profile list
+eq migration-failure-kept present "$([ -d "$legacy/profiles/fail/home" ] && echo present)"
+(AGYX_DATA_DIR=$legacy AGYX_ASSUME_YES=1 ax profile list >/dev/null 2>&1)
+# Unknown blocker dirs and a plain-agy token are never removed/read.
+mkdir "$shared/antigravity-oauth-token"
+printf unknown > "$shared/antigravity-oauth-token/README"
+( . "$here/runtime/sync.sh"; R=$RH; agyx_remove_blocker )
+eq unknown-blocker-kept unknown "$(cat "$shared/antigravity-oauth-token/README")"
+rm "$shared/antigravity-oauth-token/README"; rmdir "$shared/antigravity-oauth-token"
+printf plain-agy > "$shared/antigravity-oauth-token"
+# Uninstall refuses an open profile DB, but never blocks an unrelated plain native agy process.
+"$fr/writer with spaces" "$fr/plain-ready" "$T/fake-agy" & plain_writer=$!
+i=0; while [ ! -f "$fr/plain-ready" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+mkdir -p "$T/uninst-plain/profiles/p/antigravity-cli"
+(AGYX_DATA_DIR=$T/uninst-plain AGYX_ASSUME_YES=1 ax uninstall >/dev/null 2>"$T/err"); rc=$?
+eq uninstall-ignores-plain-agy 0 "$rc"
+kill "$plain_writer"; wait "$plain_writer" 2>/dev/null
+"$fr/writer with spaces" "$fr/uninstall-ready" "$app/conversation_summaries.db" & writer=$!
+i=0; while [ ! -f "$fr/uninstall-ready" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+err uninstall-live-profile env AGYX_ASSUME_YES=1 "$here/bin/agyx" uninstall
+eq uninstall-live-profile-diagnostic 1 "$(grep -c 'agy is still running' "$T/err")"
+eq uninstall-live-profile-preserved yes "$([ -d "$DD/profiles/work" ] && echo yes)"
+kill "$writer"; wait "$writer" 2>/dev/null
+# Uninstall refusal, then Trash; shared state and plain agy are retained.
+err uninstall-no env AGYX_DATA_DIR="$legacy" AGYX_TTY="$T/no" "$here/bin/agyx" uninstall
+(AGYX_DATA_DIR=$legacy AGYX_ASSUME_YES=1 ax uninstall >/dev/null 2>"$T/err")
+eq uninstall-data-gone absent "$([ -e "$legacy" ] && echo present || echo absent)"
+eq uninstall-data-trash 1 "$(find "$AGYX_TRASH_DIR" -path '*/data/profiles/old/antigravity-cli' | wc -l | tr -d ' ')"
+eq uninstall-plain-token-kept plain-agy "$(cat "$shared/antigravity-oauth-token")"
+eq uninstall-shared-history-kept history "$(cat "$shared/history.jsonl")"
+# Existing helpers: stable Homebrew path, stale shim entry repair, non-agyx entry left alone.
+rm "$DD/agy"; ln -s "$T/gone/opt/agyx/libexec/bin/agy" "$DD/agy"
+launch >/dev/null
+eq repaired-entry "$here/bin/agy" "$(readlink "$DD/agy")"
+mkdir -p "$T/prefix/Cellar/agyx/0.1.3/bin" "$T/prefix/opt"
+printf x > "$T/prefix/Cellar/agyx/0.1.3/bin/agy"
+ln -s ../Cellar/agyx/0.1.3 "$T/prefix/opt/agyx"
+eq stable-path "$T/prefix/opt/agyx/bin/agy" "$(. "$here/runtime/sync.sh"; agyx_stable "$T/prefix/Cellar/agyx/0.1.3/bin/agy"; echo "$AGYX_STABLE")"
+# A Homebrew install of the beta formula agyx-beta behaves like agyx: Cellar paths map to its own
+# opt path, and agyx uninstall removes the formula it was installed as.
+mkdir -p "$T/binstub"
+printf '#!/bin/sh\necho "brew $*" >> "$BREWLOG"\n' > "$T/binstub/brew"
+chmod +x "$T/binstub/brew"
+export BREWLOG=$T/brew.log
+brewtest() { # $1 = Cellar dir (formula/version), $2 = opt name, $3 = formula brew must uninstall
+  d=$T/prefix/Cellar/$1
+  mkdir -p "$d/libexec/bin" "$d/libexec/runtime" "$T/prefix/opt" "$T/bdata"
+  cp "$here/bin/agyx" "$here/bin/agy" "$d/libexec/bin/"
+  cp "$here/runtime/"*.sh "$d/libexec/runtime/"
+  ln -sfn "../Cellar/$1" "$T/prefix/opt/$2"
+  eq "stable-$2-path" "$T/prefix/opt/$2/libexec/bin/agy" "$(. "$here/runtime/sync.sh"; agyx_stable "$d/libexec/bin/agy"; echo "$AGYX_STABLE")"
+  (AGYX_DATA_DIR=$T/bdata AGYX_ASSUME_YES=1 PATH="$T/binstub:$PATH" "$d/libexec/bin/agyx" uninstall >/dev/null 2>"$T/err-$2")
+  eq "uninstall-$2-formula" "brew uninstall $3" "$(tail -n 1 "$BREWLOG")"
+  eq "uninstall-$2-hint" "1" "$(grep -c "(brew uninstall $3)" "$T/err-$2")"
+}
+: > "$BREWLOG"
+brewtest agyx/0.2.0 agyx agyx
+brewtest agyx-beta/0.2.0-beta.9 agyx-beta agyx-beta
+# Linux/XDG trash base fallback when AGYX_TRASH_DIR is unset and ~/.Trash does not exist.
+eq xdg-trash-fallback "$T/xdg-data/Trash/files" "$(unset AGYX_TRASH_DIR; XDG_DATA_HOME=$T/xdg-data R=$T/linux-home; . "$here/runtime/sync.sh"; AGYX_OS=Linux; agyx_trash_base)"
+# curl|sh style prefix install: bin+runtime under ~/.local/lib/agyx, PATH link, uninstall removes both.
+IP=$T/rh-install
+mkdir -p "$IP"
+(HOME=$IP sh "$here/scripts/install.sh" --from "$here" --prefix "$IP/.local/lib/agyx" --bin-dir "$IP/.local/bin" >/dev/null)
+eq install-prefix-marker "$(sed -n 's/^AGYX_VERSION=\([^ #]*\).*/\1/p' "$here/runtime/sync.sh")" "$(cat "$IP/.local/lib/agyx/.agyx-prefix")"
+eq install-prefix-link "$IP/.local/lib/agyx/bin/agyx" "$(readlink "$IP/.local/bin/agyx")"
+eq install-prefix-version "agyx $(cat "$IP/.local/lib/agyx/.agyx-prefix")" "$(HOME=$IP "$IP/.local/bin/agyx" --version | head -n 1)"
+mkdir -p "$IP/.local/share/agyx/profiles/work/antigravity-cli"
+(HOME=$IP AGYX_ASSUME_YES=1 "$IP/.local/bin/agyx" uninstall >/dev/null 2>"$T/err-prefix")
+eq uninstall-prefix-program absent "$([ -e "$IP/.local/lib/agyx" ] && echo present || echo absent)"
+eq uninstall-prefix-link absent "$([ -e "$IP/.local/bin/agyx" ] && echo present || echo absent)"
+eq uninstall-prefix-data-trashed 1 "$(find "$AGYX_TRASH_DIR" -path '*/data/profiles/work/antigravity-cli' | wc -l | tr -d ' ')"
+printf 'passed: %s, failed: %s\n' "$pass" "$fail"
 [ "$fail" = 0 ]
