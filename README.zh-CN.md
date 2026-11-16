@@ -39,24 +39,11 @@ agyx --profile personal -p "hi"    # 指定 profile 运行
 agyx --profile personal -c         # 换另一个账号无缝续接最近一次对话
 AGYX_PROFILE=work agyx models      # 通过环境变量指定 profile
 
-agyx setup t3code                  # 交互：把各 profile 写入 T3 Code
-agyx setup t3code -y               # 非交互：直接写入（脚本用）
 agyx doctor                        # 检查安装状态、目录权限与软链
 agyx uninstall                     # 将数据移入废纸篓并卸载 agyx
 ```
 
-选择优先级：前置 `--profile NAME` > `AGYX_PROFILE` > 默认 profile。名称需匹配 `[a-z][a-z0-9_-]{0,31}`（`profile`、`doctor`、`setup`、`uninstall` 为保留字），其余参数原样透传给 `agy`。`agyx profile usage` 跑的是 agy 的 `/usage`。
-
-### 接入客户端与 IDE（如 T3 Code）
-
-```sh
-agyx setup t3code       # 终端里交互确认
-agyx setup t3code -y    # 非交互（或 AGYX_ASSUME_YES=1）
-```
-
-要求已有 `~/.t3/userdata/settings.json`（先打开过一次 T3 Code）。校验通过后，把每个 profile 写成 Antigravity instance：`binaryPath` 指向 **`~/.local/share/agyx/agy`**（绝对路径），并设置 `AGYX_PROFILE=<name>`。改完后重启 T3 Code。
-
-手动配置时同样指向该入口（须用绝对路径；不要写 `~`），并为每个实例设置环境变量 `AGYX_PROFILE=<name>`（不配则走默认 profile）。
+选择优先级：前置 `--profile NAME` > `AGYX_PROFILE` > 默认 profile。名称需匹配 `[a-z][a-z0-9_-]{0,31}`（`profile`、`doctor`、`uninstall` 为保留字），其余参数原样透传给 `agy`。`agyx profile usage` 跑的是 agy 的 `/usage`。
 
 ## 工作原理与路径
 

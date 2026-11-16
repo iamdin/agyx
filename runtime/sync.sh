@@ -16,7 +16,7 @@ agyx_valid_name() {
 
 # Management subcommands of bin/agyx; they are also the reserved profile names (the only list).
 agyx_subcommand() {
-  case ${1-} in doctor|profile|setup|uninstall) return 0 ;; esac
+  case ${1-} in doctor|profile|uninstall) return 0 ;; esac
   return 1
 }
 

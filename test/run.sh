@@ -99,7 +99,7 @@ fi
 eq desktop-uses-bridge agyx "$(DBUS_SESSION_BUS_ADDRESS='unix:path=/tmp/bus' FIELD=WSL_INTEROP field)"
 touch "$T/fake-dockerenv"
 eq container-zero-bridge 'unset|unset|unset' "$(AGYX_DOCKERENV="$T/fake-dockerenv" launch | awk -F= '/^(WSL_INTEROP|ZDOTDIR|BASH_ENV)=/{printf "%s|", $2}' | sed 's/|$//')"
-for bad in Work 1a a/b doctor profile setup uninstall ''; do err "profile-$bad" launch --profile "$bad"; done
+for bad in Work 1a a/b doctor profile uninstall ''; do err "profile-$bad" launch --profile "$bad"; done
 err missing launch --profile
 err duplicate launch --profile work --profile personal
 err missing-dir launch --profile absent
@@ -418,31 +418,6 @@ eq duplicate-warning 1 "$(ax profile list | grep -c '^WARNING: profiles')"
 (FAKE_LOGIN=1 FAKE_EMAIL='' ax profile login next >/dev/null 2>&1)
 eq no-stale-login-email 1 "$(ax profile list | grep -c '^next .*logged in, email unknown')"
 eq stale-email 1 "$(ax profile list | grep -c '^personal .*not logged in')"
-# agyx setup t3code requires an existing valid settings.json, then upserts providers.
-t3=$RH/.t3/userdata/settings.json
-mkdir -p "$RH/.t3/userdata"
-entry=$(cd "$DD" && pwd -P)/agy
-err t3code-missing-settings env HOME="$RH" AGYX_DATA_DIR="$DD" AGYX_ASSUME_YES=1 "$here/bin/agyx" setup t3code -y
-printf 'not-json\n' > "$t3"
-err t3code-invalid-json env HOME="$RH" AGYX_DATA_DIR="$DD" AGYX_ASSUME_YES=1 "$here/bin/agyx" setup t3code -y
-printf '%s\n' "{\"keep\":true,\"providerInstances\":{\"codex_x\":{\"driver\":\"codex\"},\"agy_stale\":{\"driver\":\"antigravity\",\"environment\":[{\"name\":\"AGYX_PROFILE\",\"value\":\"gone\"}],\"config\":{\"binaryPath\":\"$entry\"}}}}" > "$t3"
-(AGYX_ASSUME_YES=1 ax setup t3code -y >/dev/null)
-eq t3code-kept-foreign 1 "$(python3 -c "import json; d=json.load(open('$t3')); print(1 if d.get('keep') and 'codex_x' in d['providerInstances'] else 0)")"
-eq t3code-removed-stale 1 "$(python3 -c "import json; d=json.load(open('$t3')); print(0 if 'agy_stale' in d['providerInstances'] else 1)")"
-eq t3code-upsert-work 1 "$(python3 -c "import json; i=json.load(open('$t3'))['providerInstances']['agy_work']; print(1 if i['config']['binaryPath']=='$entry' and i['environment'][0]['value']=='work' else 0)")"
-eq t3code-upsert-next 1 "$(python3 -c "import json; print(1 if 'agy_next' in json.load(open('$t3'))['providerInstances'] else 0)")"
-err t3code-no-tty env HOME="$RH" AGYX_DATA_DIR="$DD" "$here/bin/agyx" setup t3code
-printf 'y\n' > "$T/t3-yes"
-(AGYX_TTY=$T/t3-yes ax setup t3code >/dev/null)
-eq t3code-interactive-yes 1 "$(python3 -c "import json; print(1 if 'agy_work' in json.load(open('$t3'))['providerInstances'] else 0)")"
-printf 'n\n' > "$T/t3-no"
-before_sum=$(cksum < "$t3")
-err t3code-interactive-no env HOME="$RH" AGYX_DATA_DIR="$DD" AGYX_TTY=$T/t3-no "$here/bin/agyx" setup t3code
-eq t3code-cancelled-unchanged "$before_sum" "$(cksum < "$t3")"
-err t3code-args ax setup t3code extra
-err t3code-yes-and-extra ax setup t3code -y extra
-err setup-missing ax setup
-err setup-unknown ax setup other
 # Doctor never reads token contents (deliberately not JSON), reports modes, drift and logs.
 printf collision-shared > "$shared/collision"
 printf collision-profile > "$app/collision"

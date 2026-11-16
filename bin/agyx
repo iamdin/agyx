@@ -35,7 +35,6 @@ usage="usage: agyx [--profile NAME] [agy args...]   launch agy as a profile
        agyx profile default [NAME]  show or set the default profile
        agyx profile list            list profiles and their Google accounts
        agyx profile usage [NAME]    show that profile's quota (default profile if omitted)
-       agyx setup t3code [-y|--yes] sync profiles into T3 Code settings.json
        agyx doctor                  check the installation
        agyx uninstall               remove agyx's data and configuration
        any other arguments go to agy; agy's own help: agyx --profile NAME --help"
@@ -193,7 +192,7 @@ case $cmd in
         *) echo "  agyx itself   (delete $(agyx_tilde "$me") yourself)" ;;
       esac
       echo "Kept: ~/.gemini (shared settings, history and conversations) and plain agy."
-      [ -d "$data" ] && echo "Apps set up with $(agyx_tilde "$data")/agy (for example T3 Code) will stop working."
+      [ -d "$data" ] && echo "Apps set up with $(agyx_tilde "$data")/agy will stop working."
     } >&2
     agyx_ask n 'Remove? [y/N] ' || { echo >&2; die "nothing was removed."; }
     tbase=$(agyx_trash_base)
@@ -214,158 +213,6 @@ case $cmd in
         echo "agyx: removed the install $(agyx_tilde "$prefix")${plink:+ and $(agyx_tilde "$plink")}"
         ;;
       *) echo "agyx: to finish, delete $me yourself" ;;
-    esac
-    ;;
-  setup)
-    sub=${1-}; [ $# -gt 0 ] && shift
-    case $sub in
-      t3code)
-        yes=0
-        while [ $# -gt 0 ]; do
-          case $1 in
-            -y|--yes) yes=1; shift ;;
-            -h|--help) echo "usage: agyx setup t3code [-y|--yes]
-
-Interactive (default): show the plan and ask before writing ~/.t3/userdata/settings.json.
-Non-interactive: pass -y/--yes, or set AGYX_ASSUME_YES=1 (required when there is no TTY).
-
-Requires an existing, valid T3 Code settings.json (open T3 Code once first).
-Each profile becomes providerInstances.agy_<name> with binaryPath=<agyx entry>
-and AGYX_PROFILE=<name>. Other providers are kept; stale agyx instances are removed."; exit 0 ;;
-            *) bad "setup t3code: unknown argument: $1 (use -y/--yes)" ;;
-          esac
-        done
-        [ -d "$data" ] || notyet
-        pl=$(names)
-        [ -n "$pl" ] || die "no profiles yet; run: agyx profile login NAME"
-        agyx_gate; repair
-        entry=$data/agy
-        [ -e "$entry" ] || die "agy entry missing: $entry (run: agyx doctor)"
-        # Absolute path: T3 Code does not expand ~
-        entry=$(cd "${entry%/*}" && pwd -P)/${entry##*/} || die "cannot resolve agy entry"
-        settings=$rh/.t3/userdata/settings.json
-        [ -f "$settings" ] || die "T3 Code settings not found: $(agyx_tilde "$settings") (open T3 Code once so it creates settings.json, then retry)"
-        [ ! -L "$settings" ] || die "T3 Code settings must be a regular file, not a symlink: $(agyx_tilde "$settings")"
-        command -v python3 >/dev/null 2>&1 || die "setup t3code needs python3 to edit JSON"
-        # Validate JSON before prompting or writing.
-        python3 - "$settings" <<'PY' || die "T3 Code settings failed validation; nothing was changed"
-import json, sys
-from pathlib import Path
-p = Path(sys.argv[1])
-try:
-    data = json.loads(p.read_text(encoding="utf-8"))
-except json.JSONDecodeError as e:
-    sys.stderr.write(f"agyx: invalid JSON in {p}: {e}\n")
-    sys.exit(1)
-if not isinstance(data, dict):
-    sys.stderr.write(f"agyx: {p} must be a JSON object\n")
-    sys.exit(1)
-inst = data.get("providerInstances")
-if inst is not None and not isinstance(inst, dict):
-    sys.stderr.write(f"agyx: providerInstances in {p} must be an object\n")
-    sys.exit(1)
-PY
-        echo "agyx will upsert T3 Code Antigravity instances for profiles:$pl" >&2
-        echo "  settings: $(agyx_tilde "$settings")" >&2
-        echo "  binaryPath: $entry" >&2
-        echo "  each instance: AGYX_PROFILE=<name>  id=agy_<name>" >&2
-        if [ "$yes" = 1 ] || [ "${AGYX_ASSUME_YES-}" = 1 ]; then
-          :
-        elif agyx_has_tty; then
-          agyx_ask y 'Update T3 Code settings? [Y/n] ' || { echo >&2; die "nothing was changed."; }
-        else
-          die "setup t3code needs a terminal to ask, or run non-interactively: agyx setup t3code -y (or AGYX_ASSUME_YES=1); nothing was changed."
-        fi
-        # shellcheck disable=SC2086 # $pl is a validated profile-name list from names()
-        python3 - "$settings" "$entry" $pl <<'PY' || die "failed to update T3 Code settings"
-import json, os, sys, tempfile
-from pathlib import Path
-
-settings_path = Path(sys.argv[1])
-entry = sys.argv[2]
-profiles = sys.argv[3:]
-wanted = {f"agy_{name}": name for name in profiles}
-
-if not settings_path.is_file() or settings_path.is_symlink():
-    sys.stderr.write(f"agyx: T3 Code settings missing or not a regular file: {settings_path}\n")
-    sys.exit(1)
-try:
-    data = json.loads(settings_path.read_text(encoding="utf-8"))
-except json.JSONDecodeError as e:
-    sys.stderr.write(f"agyx: invalid JSON in {settings_path}: {e}\n")
-    sys.exit(1)
-if not isinstance(data, dict):
-    sys.stderr.write(f"agyx: {settings_path} must be a JSON object\n")
-    sys.exit(1)
-
-instances = data.get("providerInstances")
-if instances is None:
-    instances = {}
-elif not isinstance(instances, dict):
-    sys.stderr.write(f"agyx: providerInstances in {settings_path} must be an object\n")
-    sys.exit(1)
-
-def is_agyx_managed(iid, inst):
-    if not isinstance(inst, dict):
-        return False
-    if iid in wanted:
-        return True
-    if inst.get("driver") != "antigravity":
-        return False
-    cfg = inst.get("config") or {}
-    if not isinstance(cfg, dict) or cfg.get("binaryPath") != entry:
-        return False
-    env = inst.get("environment") or []
-    if not isinstance(env, list):
-        return False
-    for item in env:
-        if isinstance(item, dict) and item.get("name") == "AGYX_PROFILE":
-            return True
-    return False
-
-removed = []
-for iid, inst in list(instances.items()):
-    if is_agyx_managed(iid, inst) and iid not in wanted:
-        del instances[iid]
-        removed.append(iid)
-
-upserted = []
-for iid, name in wanted.items():
-    instances[iid] = {
-        "driver": "antigravity",
-        "displayName": f"agy {name}",
-        "environment": [
-            {"name": "AGYX_PROFILE", "value": name, "sensitive": False}
-        ],
-        "enabled": True,
-        "config": {"binaryPath": entry},
-    }
-    upserted.append(iid)
-
-data["providerInstances"] = instances
-text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-fd, tmp = tempfile.mkstemp(prefix="agyx-t3code-", suffix=".json", dir=str(settings_path.parent))
-try:
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, settings_path)
-except Exception:
-    try:
-        os.unlink(tmp)
-    except OSError:
-        pass
-    raise
-
-print(f"agyx: updated {settings_path}")
-print(f"  upserted: {', '.join(upserted) if upserted else '(none)'}")
-if removed:
-    print(f"  removed:  {', '.join(removed)}")
-print("  restart T3 Code to reload providers")
-PY
-        ;;
-      *) bad "setup needs a subcommand: t3code" ;;
     esac
     ;;
   doctor)

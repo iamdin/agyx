@@ -40,24 +40,11 @@ agyx --profile personal -p "hi"    # launch a specific profile
 agyx --profile personal -c         # continue the latest conversation under another account
 AGYX_PROFILE=work agyx models      # select profile via environment variable
 
-agyx setup t3code                  # interactive: sync profiles into T3 Code
-agyx setup t3code -y               # non-interactive sync (for scripts)
 agyx doctor                        # check installation, permissions, and links
 agyx uninstall                     # move agyx data to Trash and uninstall
 ```
 
-Profile precedence: leading `--profile NAME` > `AGYX_PROFILE` > default. Profile names match `[a-z][a-z0-9_-]{0,31}` (`profile`, `doctor`, `setup`, and `uninstall` are reserved). Any other arguments pass straight through to `agy`. `agyx profile usage` runs agy's `/usage`.
-
-### Apps and IDEs (e.g. T3 Code)
-
-```sh
-agyx setup t3code       # interactive confirm
-agyx setup t3code -y    # non-interactive (or AGYX_ASSUME_YES=1)
-```
-
-Requires an existing `~/.t3/userdata/settings.json` (open T3 Code once first). Validates that file, then upserts one Antigravity provider instance per profile: `binaryPath` is the absolute path of **`~/.local/share/agyx/agy`**, with `AGYX_PROFILE=<name>`. Restart T3 Code afterwards.
-
-To configure manually, point the app at that same entry (absolute path; do not use `~`) and set `AGYX_PROFILE=<name>` per instance (or omit it to use the default profile).
+Profile precedence: leading `--profile NAME` > `AGYX_PROFILE` > default. Profile names match `[a-z][a-z0-9_-]{0,31}` (`profile`, `doctor`, and `uninstall` are reserved). Any other arguments pass straight through to `agy`. `agyx profile usage` runs agy's `/usage`.
 
 ## How it works & paths
 
