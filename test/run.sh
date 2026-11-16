@@ -107,6 +107,15 @@ err env-invalid env AGYX_PROFILE=BAD "$here/bin/agy"
 mv "$DD/default" "$T/default"
 err no-default launch
 mv "$T/default" "$DD/default"
+# agyx profile usage [NAME] is agy's /usage for the default profile, or the named one.
+out=$(ax profile usage)
+eq usage-default-profile work "$(printf '%s\n' "$out" | sed -n 's/^PROFILE=//p')"
+eq usage-slash /usage "$(printf '%s\n' "$out" | sed -n 's/^ARG=//p' | tail -n 1)"
+eq usage-print-flag -p "$(printf '%s\n' "$out" | sed -n 's/^ARG=//p' | tail -n 2 | head -n 1)"
+eq usage-named personal "$(ax profile usage personal | sed -n 's/^PROFILE=//p')"
+eq usage-env personal "$(AGYX_PROFILE=personal ax profile usage | sed -n 's/^PROFILE=//p')"
+err usage-extra ax profile usage personal extra
+err usage-missing ax profile usage absent
 # A single entry, uncached PATH discovery and the official GUI fallback.
 eq single-entry "$here/bin/agy" "$(readlink "$DD/agy")"
 eq no-real-cache no "$([ -e "$DD/real-agy" ] || [ -L "$DD/real-agy" ] && echo yes || echo no)"

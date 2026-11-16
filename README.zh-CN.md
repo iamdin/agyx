@@ -31,6 +31,8 @@ agyx profile login work            # 创建 profile 并登录（首个登录自�
 agyx profile login personal
 agyx profile default work          # 查看或切换默认 profile
 agyx profile list                  # 查看所有 profile 及其登录账号
+agyx profile usage                 # 查看默认 profile 的用量额度
+agyx profile usage personal        # 查看指定 profile 的用量额度
 
 agyx                               # 启动默认 profile
 agyx --profile personal -p "hi"    # 指定 profile 运行
@@ -43,7 +45,7 @@ agyx doctor                        # 检查安装状态、目录权限与软链
 agyx uninstall                     # 将数据移入废纸篓并卸载 agyx
 ```
 
-选择优先级：前置 `--profile NAME` > `AGYX_PROFILE` > 默认 profile。名称需匹配 `[a-z][a-z0-9_-]{0,31}`（`profile`、`doctor`、`setup`、`uninstall` 为保留字），其余参数原样透传给 `agy`。
+选择优先级：前置 `--profile NAME` > `AGYX_PROFILE` > 默认 profile。名称需匹配 `[a-z][a-z0-9_-]{0,31}`（`profile`、`doctor`、`setup`、`uninstall` 为保留字），其余参数原样透传给 `agy`。`agyx profile usage` 跑的是 agy 的 `/usage`。
 
 ### 接入客户端与 IDE（如 T3 Code）
 

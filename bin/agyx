@@ -34,6 +34,7 @@ usage="usage: agyx [--profile NAME] [agy args...]   launch agy as a profile
        agyx profile login NAME      create profile NAME and sign in with agy's own login
        agyx profile default [NAME]  show or set the default profile
        agyx profile list            list profiles and their Google accounts
+       agyx profile usage [NAME]    show that profile's quota (default profile if omitted)
        agyx setup t3code [-y|--yes] sync profiles into T3 Code settings.json
        agyx doctor                  check the installation
        agyx uninstall               remove agyx's data and configuration
@@ -141,7 +142,13 @@ case $cmd in
         done
         dup_warning
         ;;
-      *) bad "profile needs a subcommand: list | login NAME | default [NAME]" ;;
+      usage)
+        [ $# -le 1 ] || bad "profile usage takes at most one profile name"
+        if [ $# -eq 1 ]; then exists "$1"; set -- --profile "$1"; else set --; fi
+        unset AGYX_RUNTIME
+        exec "$shim" "$@" -p /usage
+        ;;
+      *) bad "profile needs a subcommand: list | login NAME | default [NAME] | usage [NAME]" ;;
     esac
     ;;
   uninstall)

@@ -32,6 +32,8 @@ agyx profile login work            # create profile and sign in (first login bec
 agyx profile login personal
 agyx profile default work          # show or set the default profile
 agyx profile list                  # list profiles and accounts
+agyx profile usage                 # quota for the default profile
+agyx profile usage personal        # quota for one profile
 
 agyx                               # launch default profile
 agyx --profile personal -p "hi"    # launch a specific profile
@@ -44,7 +46,7 @@ agyx doctor                        # check installation, permissions, and links
 agyx uninstall                     # move agyx data to Trash and uninstall
 ```
 
-Profile precedence: leading `--profile NAME` > `AGYX_PROFILE` > default. Profile names match `[a-z][a-z0-9_-]{0,31}` (`profile`, `doctor`, `setup`, and `uninstall` are reserved). Any other arguments pass straight through to `agy`.
+Profile precedence: leading `--profile NAME` > `AGYX_PROFILE` > default. Profile names match `[a-z][a-z0-9_-]{0,31}` (`profile`, `doctor`, `setup`, and `uninstall` are reserved). Any other arguments pass straight through to `agy`. `agyx profile usage` runs agy's `/usage`.
 
 ### Apps and IDEs (e.g. T3 Code)
 
