@@ -33,6 +33,8 @@ agyx profile default work          # 查看或切换默认 profile
 agyx profile list                  # 查看所有 profile 及其登录账号
 agyx profile usage                 # 查看默认 profile 的用量额度
 agyx profile usage personal        # 查看指定 profile 的用量额度
+agyx profile usage --all --json    # 并行查询所有 profile 的额度，输出 JSON
+agyx profile current               # 查看启动时会用哪个 profile
 
 agyx                               # 启动默认 profile
 agyx --profile personal -p "hi"    # 指定 profile 运行
@@ -45,10 +47,18 @@ agyx uninstall                     # 将数据移入废纸篓并卸载 agyx
 
 选择优先级：前置 `--profile NAME` > `AGYX_PROFILE` > 默认 profile。名称需匹配 `[a-z][a-z0-9_-]{0,31}`（`profile`、`doctor`、`uninstall` 为保留字），其余参数原样透传给 `agy`。`agyx profile usage` 跑的是 agy 的 `/usage`。
 
+### 给 AI agent 和脚本用
+
+- `profile list | current | default | usage` 和 `doctor` 支持 `--json`，stdout 只输出一个 JSON；失败时输出 `{"ok":false,"error":{"code","message","hint"}}`。不加 `--json` 时 stdout 只放数据，提示一律走 stderr。
+- 退出码：`0` 成功，`1` 出错（或 `doctor` 发现问题），`2` 用法错误，`3` 未初始化 / 没有或不存在该 profile，`4` 未登录，`5` 需要人来操作（终端或浏览器登录）。
+- 没有终端时绝不等待输入：需要确认的操作直接以 `5` 退出，除非加 `--yes`（或 `AGYX_ASSUME_YES=1`）。`agyx profile login` 始终需要人来完成。
+- `agyx profile usage --all --json` 并行查询所有已登录 profile（约 10 秒）：`[{"profile","ok","limits":[{"group","window":"5h|weekly","remaining","resets_at"}]}]`。
+- 每个子命令都有 `--help`，写明 JSON 结构和退出码，例如 `agyx profile usage --help`。
+
 ## 工作原理与路径
 
 - **数据目录（`${AGYX_DATA_DIR:-~/.local/share/agyx}`）**：首次写入前询问一次确认（脚本可设 `AGYX_ASSUME_YES=1` 跳过），仅存放 `agy` 入口链接、`default` 和 `profiles/<name>/`。
-- **共享与私有边界**：对话、`history.jsonl`、`conversation_summaries.db`、`brain`、`skills`、`mcp` 等软链至 `~/.gemini/antigravity-cli/` 跨账号共享；Token、`settings.json`、`cache/` 及原生 `log/` 按账号私有隔离。若共享项发生冲突（`DRIFT`），下次启动会询问确认后自动合并，被替换副本移入系统废纸篓。
+- **共享与私有边界**：对话、`history.jsonl`、`conversation_summaries.db`、`brain`、`skills`、`mcp` 等软链至 `~/.gemini/antigravity-cli/` 跨账号共享；Token、`settings.json`、`cache/`、`daemon/` 及原生 `log/` 按账号私有隔离。若共享项发生冲突（`DRIFT`），下次启动会询问确认后自动合并，被替换副本移入系统废纸篓。
 - **分平台零侵入隔离**：直接通过 `exec` 加 `--app_data_dir` 启动原生 `agy`。无头 Linux、容器及所有 SSH 会话直接使用原生文件存储（零额外环境变量）；带系统钥匙串的桌面会话（本地 macOS、Linux 桌面）注入 `WSL_INTEROP=agyx` 并在首层 Bash/Zsh 启动时自动清除还原。
 
 全程不修改任何 Shell 配置文件、`PATH` 或系统登录钥匙串。原生 `agy` 每次从 `PATH` 或 `~/.local/bin/agy` 动态查找（可用 `AGYX_REAL_AGY=/path/to/agy` 覆盖）。

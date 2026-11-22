@@ -2,7 +2,7 @@
 # shellcheck disable=SC2154,SC2034,SC3013 # R/P/data/AGYX_* set by callers; -ef/-nt are POSIX.1-2024
 # R = real HOME; P = profile app directory. Never read or copy a token.
 AGYX_VERSION=0.2.1 # the one place the version lives (the formula's url tag must match)
-AGYX_SHARED_DIRS='annotations bin brain builtin conversations implicit presence sidecar_data'
+AGYX_SHARED_DIRS='annotations bin brain builtin conversations implicit mcp presence sidecar_data skills'
 AGYX_SHARED_FILES='conversation_summaries.db history.jsonl installation_id'
 if [ -d /System/Library ]; then AGYX_OS=Darwin
 elif [ -d /proc ]; then AGYX_OS=Linux
@@ -96,10 +96,10 @@ agyx_private_file() {
 }
 
 # All per-account entries (never linked from ~/.gemini/antigravity-cli):
-# cache holds default_project_id.txt; log + cli.log are managed & pruned by native agy per profile.
+# cache holds default_project_id.txt; daemon holds remote-control discovery/tokens; log + cli.log are managed & pruned by native agy per profile.
 agyx_private() {
   agyx_private_file "$1" && return 0
-  case $1 in cache|crashes|log|cli.log|updater|last_check.timestamp) return 0 ;; esac
+  case $1 in cache|crashes|daemon|log|cli.log|updater|last_check.timestamp) return 0 ;; esac
   return 1
 }
 
@@ -109,7 +109,7 @@ agyx_sidecar() {
 }
 
 agyx_is_known_shared() {
-  case $1 in annotations|bin|brain|builtin|conversations|implicit|presence|sidecar_data|conversation_summaries.db|history.jsonl|installation_id) return 0 ;; esac
+  case $1 in annotations|bin|brain|builtin|conversations|implicit|mcp|presence|sidecar_data|skills|conversation_summaries.db|history.jsonl|installation_id) return 0 ;; esac
   return 1
 }
 
@@ -216,7 +216,7 @@ agyx_confirm_repair() {
   [ "${AGYX_ASSUME_YES-}" = 1 ] && return 0
   agyx_has_tty || {
     echo "agyx: shared entries need repair; run once in a terminal (or set AGYX_ASSUME_YES=1); inspect agyx doctor; nothing repaired" >&2
-    return 1
+    return 5
   }
   {
     echo "agyx will repair shared entries for all profiles. Close all agy sessions first."
@@ -281,7 +281,7 @@ agyx_sync_app() (
   umask 077
   _shared=$R/.gemini/antigravity-cli _consented=0
   if agyx_needs_repair; then
-    agyx_confirm_repair || return 1
+    agyx_confirm_repair || return $?
     _consented=1
   elif [ ! -e "$data/.lock" ] && agyx_is_synced; then
     return 0
@@ -531,7 +531,7 @@ agyx_gate() {
   [ -d "$data" ] && return 0
   agyx_find_real || agyx_missing_agy
   if [ "${AGYX_ASSUME_YES-}" != 1 ]; then
-    agyx_has_tty || die "agyx is not set up yet. Run agyx once in a terminal to set it up (or set AGYX_ASSUME_YES=1)."
+    agyx_has_tty || { echo "agyx: agyx is not set up yet. Run agyx once in a terminal to set it up (or set AGYX_ASSUME_YES=1)." >&2; exit 5; }
     {
       echo "agyx will set up:"
       echo "  $(agyx_tilde "$data")/  profiles (private app settings and file login per account)"

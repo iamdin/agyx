@@ -31,13 +31,18 @@ agyx_stable "$shim"
 AGYX_SHIM=$AGYX_STABLE # the entry link must survive a Homebrew upgrade
 
 usage="usage: agyx [--profile NAME] [agy args...]   launch agy as a profile
-       agyx profile login NAME      create profile NAME and sign in with agy's own login
-       agyx profile default [NAME]  show or set the default profile
-       agyx profile list            list profiles and their Google accounts
-       agyx profile usage [NAME]    show that profile's quota (default profile if omitted)
-       agyx doctor                  check the installation
-       agyx uninstall               remove agyx's data and configuration
-       any other arguments go to agy; agy's own help: agyx --profile NAME --help"
+       agyx profile login NAME        create profile NAME and sign in (needs a terminal)
+       agyx profile default [NAME]    show or set the default profile
+       agyx profile current           the profile a launch would use, and why
+       agyx profile list              list profiles and their Google accounts
+       agyx profile usage [NAME|--all] show quota (default profile if omitted)
+       agyx doctor                    check the installation
+       agyx uninstall                 remove agyx's data and configuration
+       --json   machine-readable output (profile default|current|list|usage, doctor)
+       --yes    answer yes to confirmations (same as AGYX_ASSUME_YES=1)
+       exit: 0 ok, 1 error, 2 usage, 3 not set up / no profile, 4 not logged in, 5 needs a human
+       any other arguments go to agy; agy's own help: agyx --profile NAME --help
+       per-command help: agyx profile usage --help"
 
 # Help and version are strictly read-only: never touch disk.
 if [ $# -eq 1 ]; then
@@ -60,16 +65,28 @@ fi
 tok=antigravity-cli/antigravity-oauth-token
 sec=${AGYX_SECURITY:-/usr/bin/security} # AGYX_SECURITY is only for tests
 repair() { agyx_ensure_entry || die "cannot prepare app entry"; }
-if [ "${1-}" != uninstall ] && [ -d "$data" ]; then
-  repair
-fi
-notyet() { echo "agyx is not set up yet; run agyx once in a terminal to set it up (or set AGYX_ASSUME_YES=1)"; exit 0; }
+# JSON string, or null for an empty value. Names are validated and emails have no spaces.
+jstr() { if [ -z "$1" ]; then printf null; else printf '"%s"' "$(printf '%s' "$1" | sed 's/[\\"]/\\&/g')"; fi; }
+jbool() { if "$@"; then printf true; else printf false; fi; }
+# fail EXIT CODE MESSAGE [HINT]: stderr for people; with --json also an error object on stdout.
+fail() {
+  echo "agyx: $3" >&2
+  [ -z "${4-}" ] || echo "hint: $4" >&2
+  [ "${json-0}" != 1 ] || printf '{"ok":false,"error":{"code":%s,"message":%s,"hint":%s}}\n' "$(jstr "$2")" "$(jstr "$3")" "$(jstr "${4-}")"
+  exit "$1"
+}
+die() { fail 1 error "$*"; }
+notyet() { fail 3 not_set_up "agyx is not set up yet" "run agyx once in a terminal (or set AGYX_ASSUME_YES=1)"; }
 
 need() {
   agyx_valid_name "${1-}" || bad "invalid profile name: ${1-}"
   ! agyx_subcommand "$1" || bad "profile name is reserved: $1"
 }
-exists() { need "${1-}"; [ -d "$data/profiles/$1/antigravity-cli" ] || bad "no such profile: $1"; }
+exists() {
+  need "${1-}"
+  [ ! -L "$data/profiles/$1" ] && [ ! -L "$data/profiles/$1/antigravity-cli" ] || fail 1 symlink_profile "profile '$1' must not be a symlink"
+  [ -d "$data/profiles/$1/antigravity-cli" ] || fail 3 no_such_profile "profile '$1' does not exist" "agyx profile login $1"
+}
 names() { for d in "$data"/profiles/*/; do [ -d "$d" ] && basename "$d"; done; }
 dflt() { [ -f "$data/default" ] && cat "$data/default"; }
 # Saved email only: never open the token, even for metadata.
@@ -91,9 +108,71 @@ dup_warning() {
     END { for (e in c) if (c[e] > 1) print "WARNING: profiles" p[e] " are logged in to the same Google account (" e ")" }'
 }
 
-bad() { echo "agyx: $*" >&2; echo "$usage" >&2; exit 2; }
+bad() { [ "${json-0}" != 1 ] || fail 2 usage "$*"; echo "agyx: $*" >&2; echo "$usage" >&2; exit 2; }
+# The profile a launch would pick without --profile: AGYX_PROFILE, then the saved default.
+resolve() {
+  rname=${AGYX_PROFILE-} rsrc=env
+  [ -n "$rname" ] || { rname=$(dflt); rsrc=default; }
+  [ -n "$rname" ] || fail 3 no_profile "no profile selected" "agyx profile default NAME (or set AGYX_PROFILE)"
+  if ! agyx_valid_name "$rname" || agyx_subcommand "$rname"; then
+    fail 2 invalid_profile "invalid profile name: $rname"
+  fi
+  [ ! -L "$data/profiles/$rname" ] && [ ! -L "$data/profiles/$rname/antigravity-cli" ] || fail 1 symlink_profile "profile '$rname' must not be a symlink"
+  [ -d "$data/profiles/$rname/antigravity-cli" ] || fail 3 no_such_profile "profile '$rname' does not exist" "agyx profile login $rname"
+}
+help_for() {
+  case $1 in
+    login) echo "usage: agyx profile login NAME
+Create profile NAME and run agy's own sign-in (browser). A person must do this step.
+exit: 0 signed in, 2 bad name, 5 no terminal" ;;
+    default) echo "usage: agyx profile default [NAME] [--json]
+Without NAME, print the default profile. With NAME, set it.
+json: {\"default\":\"work\"}
+exit: 0 ok, 3 no default / no such profile" ;;
+    current) echo "usage: agyx profile current [--json]
+Print the profile a launch without --profile would use (AGYX_PROFILE, then the default).
+json: {\"name\":\"work\",\"source\":\"env|default\",\"email\":\"a@b.c\",\"logged_in\":true}
+exit: 0 ok, 3 none selected or it does not exist" ;;
+    list) echo "usage: agyx profile list [--json]
+List profiles. An empty list is not an error (stdout empty, hint on stderr).
+json: {\"default\":\"work\",\"profiles\":[{\"name\":\"work\",\"email\":\"a@b.c\",\"logged_in\":true,\"default\":true}]}
+exit: 0" ;;
+    usage) echo "usage: agyx profile usage [NAME|--all] [--json]
+Quota via agy's /usage: the current profile, NAME, or every logged-in profile in parallel (--all).
+text: one line per limit: [PROFILE<TAB>]GROUP<TAB>LABEL<TAB>REMAINING%<TAB>RESET (PROFILE column only with --all)
+json: [{\"profile\":\"work\",\"ok\":true,\"limits\":[{\"group\":\"Gemini Models\",\"window\":\"5h|weekly\",\"remaining\":92,\"resets_at\":\"2026-11-16T16:11:52Z\"}]}]
+       a profile that could not be read: {\"profile\":\"x\",\"ok\":false,\"error\":\"not_logged_in|...\"}
+exit: 0 ok, 1 an agy run failed, 3 no such profile, 4 not logged in (single profile)" ;;
+    doctor) echo "usage: agyx doctor [--json]
+Check the installation, profiles, permissions, shared links and token storage.
+json: {\"ok\":false,\"issues\":[\"...\"],\"report\":[\"...\"]}
+exit: 0 healthy, 1 issues found, 3 not set up" ;;
+    uninstall) echo "usage: agyx uninstall [--yes]
+Move agyx's data to the Trash and remove agyx. Asks first; without a terminal needs --yes.
+exit: 0 removed, 1 refused or failed, 5 no terminal and no --yes" ;;
+    *) echo "$usage" ;;
+  esac
+}
 
 cmd=${1-}; [ $# -gt 0 ] && shift
+# Our own flags may appear anywhere after the subcommand.
+json=0 want_help=0 n=$#
+while [ "$n" -gt 0 ]; do
+  a=$1; shift; n=$((n - 1))
+  case $a in
+    --json) json=1 ;;
+    --yes|-y) AGYX_ASSUME_YES=1; export AGYX_ASSUME_YES ;;
+    --help|-h) want_help=1 ;;
+    *) set -- "$@" "$a" ;;
+  esac
+done
+if [ "$want_help" = 1 ]; then
+  if [ "$cmd" = profile ]; then help_for "${1-}"; else help_for "$cmd"; fi
+  exit 0
+fi
+if [ "$cmd" != uninstall ] && [ -d "$data" ]; then
+  repair
+fi
 case $cmd in
   profile)
     sub=${1-}; [ $# -gt 0 ] && shift
@@ -101,6 +180,7 @@ case $cmd in
       login)
         [ $# -eq 1 ] || bad "profile login needs exactly one profile name"
         need "${1-}"
+        agyx_has_tty || fail 5 needs_terminal "profile login runs agy's interactive sign-in and needs a terminal" "ask the user to run: agyx profile login $1"
         agyx_gate; repair
         [ ! -L "$data/profiles/$1" ] && [ ! -L "$data/profiles/$1/antigravity-cli" ] || die "profile must not be a symlink"
         (umask 077; mkdir -p "$data/profiles/$1/antigravity-cli") || die "cannot create profile"
@@ -108,9 +188,12 @@ case $cmd in
           echo "agyx: profile '$1' is already logged in ($(status "$1")). Starting agy in it anyway; sign in again from there only if you want to change the account." >&2
         fi
         login_log=$(mktemp "${TMPDIR:-/tmp}/agyx-login-XXXXXX") || die "cannot create temporary login log"
+        trap 'rm -f "$login_log"' EXIT
+        trap 'rm -f "$login_log"; exit 143' TERM
+        trap 'rm -f "$login_log"; exit 129' HUP
         trap : INT
         (unset AGYX_RUNTIME; "$shim" --profile "$1" --log-file "$login_log"); rc=$?
-        trap - INT
+        trap 'rm -f "$login_log"; exit 130' INT
         [ ! -s "$login_log" ] || agyx_check_storage "$login_log"
         if logged_in "$1"; then
           e=$(agyx_email_file "$login_log")
@@ -120,40 +203,117 @@ case $cmd in
         rm -f "$login_log"
         if logged_in "$1" && [ -z "$(dflt)" ]; then
           printf '%s\n' "$1" > "$data/default" &&
-            echo "agyx: '$1' is now the default profile (change it with: agyx profile default NAME)"
+            echo "agyx: '$1' is now the default profile (change it with: agyx profile default NAME)" >&2
         fi
         exit "$rc"
         ;;
       default)
         [ $# -le 1 ] || bad "profile default takes at most one profile name"
-        if [ $# -eq 0 ]; then [ -d "$data" ] || notyet; d=$(dflt); echo "${d:-none}"; exit 0; fi
-        need "$1"; agyx_gate; repair; exists "$1"
-        printf '%s\n' "$1" > "$data/default"
+        if [ $# -eq 0 ]; then
+          [ -d "$data" ] || notyet
+          d=$(dflt)
+          [ -n "$d" ] || fail 3 no_default "no default profile" "agyx profile default NAME"
+          if [ "$json" = 1 ]; then printf '{"default":%s}\n' "$(jstr "$d")"; else echo "$d"; fi
+          exit 0
+        fi
+        need "$1"
+        [ -d "$data" ] || notyet
+        exists "$1"
+        printf '%s\n' "$1" > "$data/default" || die "cannot write $data/default"
+        [ "$json" != 1 ] || printf '{"default":%s}\n' "$(jstr "$1")"
         ;;
       list)
         [ $# -eq 0 ] || bad "profile list takes no arguments"
+        d=''; [ ! -d "$data" ] || d=$(dflt)
+        all=''; [ ! -d "$data" ] || all=$(names)
+        [ -n "$all" ] || echo "agyx: no profiles yet; run: agyx profile login NAME" >&2
+        if [ "$json" = 1 ]; then
+          printf '{"default":%s,"profiles":[' "$(jstr "$d")"; sep=''
+          for n in $all; do
+            printf '%s{"name":%s,"email":%s,"logged_in":%s,"default":%s}' "$sep" "$(jstr "$n")" "$(jstr "$(email_of "$n")")" "$(jbool logged_in "$n")" "$(jbool [ "$n" = "$d" ])"
+            sep=,
+          done
+          printf ']}\n'
+        else
+          for n in $all; do
+            s=$(status "$n"); [ "$n" = "$d" ] && s="$s  (default)"
+            printf '%-12s %s\n' "$n" "$s"
+          done
+        fi
+        [ -z "$all" ] || dup_warning >&2
+        ;;
+      current)
+        [ $# -eq 0 ] || bad "profile current takes no arguments"
         [ -d "$data" ] || notyet
-        if [ -z "$(names)" ]; then echo "no profiles yet; run: agyx profile login NAME"; exit 0; fi
-        d=$(dflt)
-        for n in $(names); do
-          s=$(status "$n"); [ "$n" = "$d" ] && s="$s  (default)"
-          printf '%-12s %s\n' "$n" "$s"
-        done
-        dup_warning
+        resolve
+        if [ "$json" = 1 ]; then
+          printf '{"name":%s,"source":%s,"email":%s,"logged_in":%s}\n' "$(jstr "$rname")" "$(jstr "$rsrc")" "$(jstr "$(email_of "$rname")")" "$(jbool logged_in "$rname")"
+        else
+          echo "$rname"
+        fi
         ;;
       usage)
-        [ $# -le 1 ] || bad "profile usage takes at most one profile name"
-        if [ $# -eq 1 ]; then exists "$1"; set -- --profile "$1"; else set --; fi
-        unset AGYX_RUNTIME
-        exec "$shim" "$@" -p /usage
+        all=0; [ "${1-}" != --all ] || { all=1; shift; }
+        [ $# -le $((1 - all)) ] || bad "profile usage takes one profile name or --all"
+        [ -d "$data" ] || notyet
+        if [ "$all" = 1 ]; then
+          picked=$(names)
+          [ -n "$picked" ] || fail 3 no_profile "no profiles yet" "agyx profile login NAME"
+        else
+          if [ $# -eq 1 ]; then exists "$1"; rname=$1; else resolve; fi
+          logged_in "$rname" || fail 4 not_logged_in "profile '$rname' is not logged in" "ask the user to run: agyx profile login $rname"
+          picked=$rname
+          if [ "$json" = 0 ]; then unset AGYX_RUNTIME; exec "$shim" --profile "$rname" -p /usage; fi
+        fi
+        # ponytail: one full agy start per profile (~10 s), run in parallel; a direct quota API would be faster but private.
+        ut=$(mktemp -d "${TMPDIR:-/tmp}/agyx-usage-XXXXXX") || die "cannot create temporary directory"
+        trap 'rm -rf "$ut"' EXIT
+        trap 'rm -rf "$ut"; exit 130' INT
+        trap 'rm -rf "$ut"; exit 143' TERM
+        trap 'rm -rf "$ut"; exit 129' HUP
+        for n in $picked; do
+          logged_in "$n" || continue
+          (unset AGYX_RUNTIME; "$shim" --profile "$n" -p /usage </dev/null >"$ut/$n.out" 2>"$ut/$n.err"; echo $? >"$ut/$n.rc") &
+        done
+        wait
+        rc=0
+        [ "$json" = 0 ] || printf '['
+        sep=''
+        for n in $picked; do
+          if ! logged_in "$n"; then
+            if [ "$json" = 1 ]; then printf '%s{"profile":%s,"ok":false,"error":"not_logged_in"}' "$sep" "$(jstr "$n")"
+            else echo "agyx: $n: not logged in" >&2; fi
+          elif [ "$(cat "$ut/$n.rc")" != 0 ]; then
+            rc=1; e=$(cat "$ut/$n.err" "$ut/$n.out" | grep -v '^$' | head -n 1)
+            if [ "$json" = 1 ]; then printf '%s{"profile":%s,"ok":false,"error":%s}' "$sep" "$(jstr "$n")" "$(jstr "${e:-agy exited with status $(cat "$ut/$n.rc")}")"
+            else echo "agyx: $n: usage failed: ${e:-agy exited with status $(cat "$ut/$n.rc")}" >&2; fi
+          elif ! awk -F '\t' 'NF == 4 && $3 ~ /^[0-9]+%$/ { ok = 1; exit } END { exit !ok }' "$ut/$n.out"; then
+            rc=1; e=$(cat "$ut/$n.err" "$ut/$n.out" | grep -v '^$' | head -n 1)
+            if [ "$json" = 1 ]; then printf '%s{"profile":%s,"ok":false,"error":%s}' "$sep" "$(jstr "$n")" "$(jstr "${e:-unrecognized /usage output}")"
+            else echo "agyx: $n: usage failed: ${e:-unrecognized /usage output}" >&2; fi
+          elif [ "$json" = 1 ]; then
+            printf '%s{"profile":%s,"ok":true,"limits":[' "$sep" "$(jstr "$n")"
+            awk -F '\t' 'function j(s) { gsub(/[\\"]/, "\\\\&", s); return "\"" s "\"" }
+              NF == 4 && $3 ~ /^[0-9]+%$/ {
+                w = $2; if (w ~ /^Five Hour/) w = "5h"; else if (w ~ /^Weekly/) w = "weekly"
+                printf "%s{\"group\":%s,\"window\":%s,\"remaining\":%d,\"resets_at\":%s}", s, j($1), j(w), $3 + 0, j($4); s = ","
+              }' "$ut/$n.out"
+            printf ']}'
+          else
+            awk -F '\t' -v p="$n" 'NF == 4 && $3 ~ /^[0-9]+%$/ { print p "\t" $0 }' "$ut/$n.out"
+          fi
+          sep=,
+        done
+        [ "$json" = 0 ] || printf ']\n'
+        exit "$rc"
         ;;
-      *) bad "profile needs a subcommand: list | login NAME | default [NAME] | usage [NAME]" ;;
+      *) bad "profile needs a subcommand: list | current | login NAME | default [NAME] | usage [NAME|--all]" ;;
     esac
     ;;
   uninstall)
     [ $# -eq 0 ] || bad "uninstall takes no arguments"
     if [ "${AGYX_ASSUME_YES-}" != 1 ] && ! agyx_has_tty; then
-      die "uninstall needs a terminal to ask (or set AGYX_ASSUME_YES=1); nothing was removed."
+      fail 5 needs_terminal "uninstall needs a terminal to ask; nothing was removed" "agyx uninstall --yes"
     fi
     # Only check open files inside agyx's own data/profile paths (never block plain native agy).
     set -- "$data/agy"
@@ -217,8 +377,9 @@ case $cmd in
     ;;
   doctor)
     [ $# -eq 0 ] || bad "doctor takes no arguments"
-    echo "agyx version: $AGYX_VERSION"
     [ -d "$data" ] || notyet
+    doctor_report() {
+    echo "agyx version: $AGYX_VERSION"
     # shellcheck disable=SC2154 # real is set by agyx_find_real
     if agyx_find_real; then
       echo "real agy: $real${AGYX_REAL_AGY:+ (from AGYX_REAL_AGY)}"
@@ -269,5 +430,22 @@ case $cmd in
       echo "  logs: $(agyx_tilde "$P/log")/, newest: ${nl:-none yet}"
     done
     dup_warning
+    }
+    de=$(mktemp "${TMPDIR:-/tmp}/agyx-doctor-XXXXXX") || die "cannot create temporary file"
+    trap 'rm -f "$de"' EXIT
+    trap 'rm -f "$de"; exit 130' INT
+    trap 'rm -f "$de"; exit 143' TERM
+    trap 'rm -f "$de"; exit 129' HUP
+    dout=$(doctor_report 2>"$de"); derr=$(cat "$de"); rm -f "$de"
+    # ponytail: issues are found by the report's own markers; a check registry if this list grows.
+    issues=$(printf '%s\n%s\n' "$dout" "$derr" | grep -E 'WARNING|NOT FOUND|MISSING|NOT confirmed|DRIFT|does NOT')
+    if [ "$json" = 1 ]; then
+      jarr() { awk 'function j(s) { gsub(/[\\"]/, "\\\\&", s); gsub(/\t/, " ", s); return "\"" s "\"" } NF { printf "%s%s", c, j($0); c = "," }'; }
+      printf '{"ok":%s,"issues":[%s],"report":[%s]}\n' "$(jbool [ -z "$issues" ])" "$(printf '%s\n' "$issues" | jarr)" "$(printf '%s\n%s\n' "$dout" "$derr" | jarr)"
+    else
+      printf '%s\n' "$dout"
+      [ -z "$derr" ] || printf '%s\n' "$derr" >&2
+    fi
+    [ -z "$issues" ] || exit 1
     ;;
 esac

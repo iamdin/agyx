@@ -6,13 +6,13 @@ here=$(cd "$(dirname "$0")/.." && pwd -P)
 T=$(mktemp -d) || exit 1
 T=$(cd "$T" && pwd -P)
 trap 'rm -rf "$T"' EXIT
-export HOME=$T/home AGYX_DATA_DIR=$T/data AGYX_TRASH_DIR=$T/trash
+export HOME=$T/home AGYX_DATA_DIR=$T/data AGYX_TRASH_DIR=$T/trash TMPDIR=$T/tmp
 export SECLOG=$T/security.log AGYX_SECURITY=$T/security AGYX_REAL_AGY=$T/fake-agy AGYX_DOCKERENV=$T/no-docker DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/fake-bus
 unset AGYX_PROFILE AGY_PROFILE AGYX_REAL_HOME WSL_DISTRO_NAME WSL_INTEROP SSH_CLIENT SSH_CONNECTION SSH_TTY ZDOTDIR BASH_ENV XDG_CONFIG_HOME XDG_DATA_HOME XDG_RUNTIME_DIR
 unset AGYX_ASSUME_YES AGYX_TTY AGYX_ORIG_WSL_INTEROP AGYX_ORIG_ZDOTDIR AGYX_ORIG_BASH_ENV
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
-mkdir -p "$HOME" "$AGYX_DATA_DIR/profiles/work/antigravity-cli" "$AGYX_DATA_DIR/profiles/personal/antigravity-cli" "$AGYX_TRASH_DIR"
+mkdir -p "$HOME" "$TMPDIR" "$AGYX_DATA_DIR/profiles/work/antigravity-cli" "$AGYX_DATA_DIR/profiles/personal/antigravity-cli" "$AGYX_TRASH_DIR"
 RH=$HOME DD=$AGYX_DATA_DIR
 cat > "$T/fake-agy" <<'EOF'
 #!/bin/sh
@@ -106,8 +106,18 @@ err missing-dir launch --profile absent
 err env-invalid env AGYX_PROFILE=BAD "$here/bin/agy"
 mv "$DD/default" "$T/default"
 err no-default launch
+eq launch-no-default-code 3 "$(launch >/dev/null 2>&1; echo $?)"
 mv "$T/default" "$DD/default"
-# agyx profile usage [NAME] is agy's /usage for the default profile, or the named one.
+eq launch-bad-profile-code 2 "$(launch --profile BAD >/dev/null 2>&1; echo $?)"
+eq launch-forbidden-flag-code 2 "$(launch --app_data_dir=x >/dev/null 2>&1; echo $?)"
+eq launch-absent-profile-code 3 "$(launch --profile absent >/dev/null 2>&1; echo $?)"
+ln -s "$DD/profiles/work" "$DD/profiles/sym"
+eq launch-symlink-code 1 "$(launch --profile sym >/dev/null 2>&1; echo $?)"
+rm "$DD/profiles/sym"
+# agyx profile usage [NAME] is agy's /usage for the current profile, or the named one; it needs a login.
+err usage-not-logged-in ax profile usage
+eq usage-not-logged-in-code 4 "$(ax profile usage >/dev/null 2>&1; echo $?)"
+for p in work personal; do (umask 077; : > "$DD/profiles/$p/antigravity-cli/antigravity-oauth-token"); done
 out=$(ax profile usage)
 eq usage-default-profile work "$(printf '%s\n' "$out" | sed -n 's/^PROFILE=//p')"
 eq usage-slash /usage "$(printf '%s\n' "$out" | sed -n 's/^ARG=//p' | tail -n 1)"
@@ -116,6 +126,55 @@ eq usage-named personal "$(ax profile usage personal | sed -n 's/^PROFILE=//p')"
 eq usage-env personal "$(AGYX_PROFILE=personal ax profile usage | sed -n 's/^PROFILE=//p')"
 err usage-extra ax profile usage personal extra
 err usage-missing ax profile usage absent
+err usage-all-and-name ax profile usage --all personal
+# --all / --json run every logged-in profile in parallel and parse agy's TSV.
+tsv='printf "Gemini Models\tFive Hour Limit Remaining\t92%%\t2026-11-16T16:11:52Z\nnoise\nClaude and GPT models\tWeekly Limit Remaining\t43%%\t2026-11-19T07:21:07Z\n"'
+out=$(FAKE_RUN=$tsv ax profile usage --all)
+eq usage-all-lines 4 "$(printf '%s\n' "$out" | grep -c .)"
+eq usage-all-prefix 'personal|work' "$(printf '%s\n' "$out" | cut -f 1 | sort -u | paste -sd '|' -)"
+out=$(FAKE_RUN=$tsv ax profile usage --json)
+eq usage-json '[{"profile":"work","ok":true,"limits":[{"group":"Gemini Models","window":"5h","remaining":92,"resets_at":"2026-11-16T16:11:52Z"},{"group":"Claude and GPT models","window":"weekly","remaining":43,"resets_at":"2026-11-19T07:21:07Z"}]}]' "$out"
+mkdir -p "$DD/profiles/zeta/antigravity-cli"
+out=$(FAKE_RUN='echo boom >&2; exit 3' ax profile usage --all --json); rc=$?
+eq usage-all-failure-code 1 "$rc"
+eq usage-all-failure-json 1 "$(printf '%s' "$out" | grep -c '{"profile":"work","ok":false,"error":"boom"}')"
+eq usage-all-not-logged-in 1 "$(printf '%s' "$out" | grep -c '{"profile":"zeta","ok":false,"error":"not_logged_in"}')"
+out=$(FAKE_RUN='printf "unexpected banner\n"' ax profile usage --json); rc=$?
+eq usage-unrecognized-code 1 "$rc"
+eq usage-unrecognized-json '[{"profile":"work","ok":false,"error":"unexpected banner"}]' "$out"
+out=$(FAKE_RUN=':' ax profile usage --json); rc=$?
+eq usage-empty-code 1 "$rc"
+eq usage-empty-json '[{"profile":"work","ok":false,"error":"unrecognized /usage output"}]' "$out"
+rm -rf "$DD/profiles/zeta"
+for p in work personal; do rm "$DD/profiles/$p/antigravity-cli/antigravity-oauth-token"; done
+# Machine-readable profile state, exit codes, help.
+eq list-json '{"default":"work","profiles":[{"name":"personal","email":null,"logged_in":false,"default":false},{"name":"work","email":null,"logged_in":false,"default":true}]}' "$(ax profile list --json)"
+eq current-default 'work' "$(ax profile current)"
+eq current-json '{"name":"personal","source":"env","email":null,"logged_in":false}' "$(AGYX_PROFILE=personal ax profile current --json)"
+eq current-missing-code 3 "$(AGYX_PROFILE=absent ax profile current >/dev/null 2>&1; echo $?)"
+eq current-missing-json-code no_such_profile "$(AGYX_PROFILE=absent ax profile current --json 2>/dev/null | sed -n 's/.*"code":"\([a-z_]*\)".*/\1/p')"
+eq default-json '{"default":"work"}' "$(ax profile default --json)"
+eq default-set-json '{"default":"personal"}' "$(ax profile default personal --json)"
+eq default-set-file personal "$(cat "$DD/default")"
+ax profile default work >/dev/null
+eq default-notyet-code 3 "$(AGYX_DATA_DIR="$T/uninit-default" ax profile default work >/dev/null 2>&1; echo $?)"
+eq default-notyet-json-code not_set_up "$(AGYX_DATA_DIR="$T/uninit-default" ax profile default work --json 2>/dev/null | sed -n 's/.*"code":"\([a-z_]*\)".*/\1/p')"
+eq default-notyet-no-dir absent "$([ -e "$T/uninit-default" ] && echo present || echo absent)"
+eq usage-absent-code 3 "$(ax profile usage absent >/dev/null 2>&1; echo $?)"
+eq usage-absent-json-code no_such_profile "$(ax profile usage absent --json 2>/dev/null | sed -n 's/.*"code":"\([a-z_]*\)".*/\1/p')"
+eq default-absent-code 3 "$(ax profile default absent >/dev/null 2>&1; echo $?)"
+eq default-absent-json-code no_such_profile "$(ax profile default absent --json 2>/dev/null | sed -n 's/.*"code":"\([a-z_]*\)".*/\1/p')"
+eq usage-bad-name-code 2 "$(ax profile usage BAD >/dev/null 2>&1; echo $?)"
+ln -s "$DD/profiles/work" "$DD/profiles/symprof"
+eq default-symlink-code 1 "$(ax profile default symprof >/dev/null 2>&1; echo $?)"
+eq current-symlink-code 1 "$(AGYX_PROFILE=symprof ax profile current >/dev/null 2>&1; echo $?)"
+eq usage-symlink-code 1 "$(ax profile usage symprof >/dev/null 2>&1; echo $?)"
+eq usage-symlink-json-code symlink_profile "$(ax profile usage symprof --json 2>/dev/null | sed -n 's/.*"code":"\([a-z_]*\)".*/\1/p')"
+rm "$DD/profiles/symprof"
+eq help-usage 1 "$(ax profile usage --help | grep -c '^usage: agyx profile usage')"
+eq help-doctor 1 "$(ax doctor -h | grep -c '^usage: agyx doctor')"
+eq login-needs-terminal 5 "$(ax profile login someone >/dev/null 2>&1; echo $?)"
+eq login-needs-terminal-no-profile absent "$([ -e "$DD/profiles/someone" ] && echo present || echo absent)"
 # A single entry, uncached PATH discovery and the official GUI fallback.
 eq single-entry "$here/bin/agy" "$(readlink "$DD/agy")"
 eq no-real-cache no "$([ -e "$DD/real-agy" ] || [ -L "$DD/real-agy" ] && echo yes || echo no)"
@@ -163,6 +222,11 @@ ln -s "$here/bin/agy" "$DD/bin/agy"
 ax --version >/dev/null
 ax --help >/dev/null
 eq help-version-readonly yes "$([ -L "$DD/real-agy" ] && [ -L "$DD/bin/agy" ] && [ -f "$DD/.verified" ] && [ -d "$DD/profiles/work/log" ] && echo yes)"
+rm "$DD/agy"
+ax profile usage --help >/dev/null
+ax doctor -h >/dev/null
+eq subcommand-help-readonly absent "$([ -e "$DD/agy" ] || [ -L "$DD/agy" ] && echo present || echo absent)"
+ln -s "$here/bin/agy" "$DD/agy"
 # Unrelated leftover files under the data dir are left alone; only <data>/agy is managed.
 printf unrelated-cache > "$DD/real-agy"
 launch >/dev/null
@@ -179,7 +243,7 @@ eq cyclic-entry-not-overwritten "$DD/agy" "$(readlink "$DD/agy")"
 rm "$DD/agy"; ln -s "$here/bin/agy" "$DD/agy"
 err official-missing env HOME="$T/no-native-home" AGYX_DATA_DIR="$T/no-native-data" AGYX_REAL_AGY='' "$here/bin/agyx" profile login p
 eq missing-native-no-setup no "$([ -e "$T/no-native-data" ] && echo yes || echo no)"
-(env AGYX_DATA_DIR="$T/gui-data" AGYX_REAL_AGY='' AGYX_ASSUME_YES=1 FAKE_LOGIN=1 "$here/bin/agyx" profile login p >/dev/null)
+(env AGYX_DATA_DIR="$T/gui-data" AGYX_REAL_AGY='' AGYX_ASSUME_YES=1 AGYX_TTY=/dev/null FAKE_LOGIN=1 "$here/bin/agyx" profile login p >/dev/null 2>&1)
 eq gui-first-setup-entry "$here/bin/agy" "$(readlink "$T/gui-data/agy")"
 # The app flag precedes all subcommands; agyx never injects --log-file (native agy manages logs).
 for cmd in interactive -p acp mcp login logout models agent agents plugins plugin remote-control mic-serve install help changelog update --help -h --version; do
@@ -309,6 +373,17 @@ printf work-proj > "$app/cache/default_project_id.txt"
 launch >/dev/null
 eq private-cache-not-adopted shared-proj "$(cat "$shared/cache/default_project_id.txt")"
 eq private-cache-kept work-proj "$(cat "$app/cache/default_project_id.txt")"
+mkdir -p "$shared/daemon"
+printf shared-daemon > "$shared/daemon/info.json"
+ln -s "$shared/daemon" "$app/daemon"
+launch >/dev/null
+eq former-shared-daemon-detached no "$([ -L "$app/daemon" ] && echo yes || echo no)"
+mkdir -p "$app/daemon"
+printf work-daemon > "$app/daemon/info.json"
+launch >/dev/null
+eq private-daemon-not-adopted shared-daemon "$(cat "$shared/daemon/info.json")"
+eq private-daemon-kept work-daemon "$(cat "$app/daemon/info.json")"
+eq doctor-daemon-no-drift 0 "$(ax doctor 2>/dev/null | grep -c 'antigravity-cli daemon: DRIFT')"
 printf newly-created > "$app/future-entry"
 printf future-db > "$app/future.db"
 printf future-wal > "$app/future.db-wal"
@@ -333,7 +408,7 @@ launch >/dev/null
 eq own-settings own "$(cat "$app/settings.json")"
 ln -s "$app" "$DD/profiles/alias"
 err profile-dir-symlink launch --profile alias
-err profile-login-symlink ax profile login alias
+err profile-login-symlink env AGYX_TTY=/dev/null "$here/bin/agyx" profile login alias
 rm "$DD/profiles/alias"
 # Direct exec + doctor binary check + native log storage guards preserve PID, stdin, exit status and INT/TERM/HUP.
 cat > "$T/unmarked-agy" <<'EOF'
@@ -357,7 +432,7 @@ eq storage-recent-log-warning 1 "$(grep -c 'WARNING: file-based token storage NO
 launch >/dev/null 2>"$T/err"
 launch >/dev/null 2>"$T/err"
 eq storage-wsl-clears-warning '' "$(cat "$T/err")"
-(FAKE_LOGIN=1 FAKE_STORAGE=keychain ax profile login badstore >/dev/null 2>"$T/err")
+(FAKE_LOGIN=1 FAKE_STORAGE=keychain AGYX_TTY=/dev/null ax profile login badstore >/dev/null 2>"$T/err")
 eq storage-login-immediate-warning 1 "$(grep -c 'WARNING: file-based token storage NOT confirmed' "$T/err")"
 eq storage-login-temp-cleaned 0 "$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'agyx-login-*' 2>/dev/null | wc -l | tr -d ' ')"
 rm -rf "$DD/profiles/badstore"
@@ -397,7 +472,7 @@ printf 'Using file-based token storage because SSH environment detected\n' >> "$
 ax doctor >/dev/null 2>"$T/err"
 eq doctor-storage-confirmed 0 "$(grep -c 'NOT confirmed in .*work/antigravity-cli/log/' "$T/err")"
 # Token existence only; no parser needed, email comes from own launch log.
-(FAKE_LOGIN=1 ax profile login new >/dev/null)
+(FAKE_LOGIN=1 AGYX_TTY=/dev/null ax profile login new >/dev/null)
 eq login-default-unchanged work "$(cat "$DD/default")"
 eq login-email own@example.com "$(cat "$DD/profiles/new/email")"
 eq token-mode 600 "$(mode_of "$DD/profiles/new/antigravity-cli/antigravity-oauth-token")"
@@ -412,10 +487,10 @@ chmod 700 "$DD/profiles/new" "$DD/profiles/new/antigravity-cli"
 eq doctor-private-dirs-clean 0 "$(ax doctor 2>/dev/null | grep -c "permissions: WARNING $DD/profiles/new")"
 eq list-login 1 "$(ax profile list | grep -c '^new .*own@example.com')"
 rm "$DD/default"
-(FAKE_LOGIN=1 ax profile login next >/dev/null)
+(FAKE_LOGIN=1 AGYX_TTY=/dev/null ax profile login next >/dev/null 2>&1)
 eq first-default next "$(cat "$DD/default")"
-eq duplicate-warning 1 "$(ax profile list | grep -c '^WARNING: profiles')"
-(FAKE_LOGIN=1 FAKE_EMAIL='' ax profile login next >/dev/null 2>&1)
+eq duplicate-warning 1 "$(ax profile list 2>&1 >/dev/null | grep -c '^WARNING: profiles')"
+(FAKE_LOGIN=1 FAKE_EMAIL='' AGYX_TTY=/dev/null ax profile login next >/dev/null 2>&1)
 eq no-stale-login-email 1 "$(ax profile list | grep -c '^next .*logged in, email unknown')"
 eq stale-email 1 "$(ax profile list | grep -c '^personal .*not logged in')"
 # Doctor never reads token contents (deliberately not JSON), reports modes, drift and logs.
@@ -431,6 +506,10 @@ eq doctor-link 1 "$(printf '%s\n' "$out" | grep -c 'antigravity-cli broken: WARN
 eq doctor-keychain-info 1 "$(printf '%s\n' "$out" | grep -c '^keychain: INFO plain agy')"
 eq doctor-no-secret 0 "$(grep -Ec ' -[wg]( |$)' "$SECLOG")"
 eq doctor-no-token-content 0 "$(printf '%s\n' "$out" | grep -c invalid-json)"
+eq doctor-issues-code 1 "$(ax doctor >/dev/null 2>&1; echo $?)"
+out=$(ax doctor --json 2>/dev/null)
+eq doctor-json-shape 1 "$(printf '%s' "$out" | grep -c '^{"ok":false,"issues":\[".*"\],"report":\[".*"\]}$')"
+eq doctor-json-has-issue 1 "$(printf '%s' "$out" | grep -c 'token: WARNING mode 644')"
 rm "$app/collision"
 # Fresh profiles share every known entry before either fake native process writes.
 fr=$T/shared-repair frhome=$T/shared-repair/home frdata=$T/shared-repair/data
@@ -476,6 +555,7 @@ printf shared-id > "$fs/installation_id"
 printf profile-id > "$one/installation_id"
 printf 'n\n' > "$fr/no"; printf 'y\n' > "$fr/yes"
 err drift-no-tty fresh_run "$here/bin/agy" --profile one
+eq drift-no-tty-code 5 "$(fresh_run "$here/bin/agy" --profile one >/dev/null 2>&1; echo $?)"
 eq drift-no-tty-kept profile-only "$(cat "$one/conversations/only")"
 eq drift-no-tty-no-trash no "$([ -e "$fr/trash" ] && echo yes || echo no)"
 eq drift-doctor-still-reports 1 "$(fresh_run "$here/bin/agyx" doctor 2>/dev/null | grep -c 'antigravity-cli conversations: DRIFT')"
@@ -575,6 +655,7 @@ eq repair-refusal-zero-gemini absent "$([ -e "$T/preconsent/home/.gemini" ] && e
 # Concurrent preparers wait for an active preparation, and still fail if a stale lock remains.
 mkdir "$frdata/.lock"
 err prepare-lock-busy fresh_run AGYX_LOCK_TRIES=2 "$here/bin/agy" --profile one
+eq prepare-lock-busy-code 1 "$(fresh_run AGYX_LOCK_TRIES=2 "$here/bin/agy" --profile one >/dev/null 2>&1; echo $?)"
 (sleep 0.15; rmdir "$frdata/.lock") &
 wait_pid=$!
 fresh_run "$here/bin/agy" --profile one >/dev/null 2>"$fr/err"; rc=$?
@@ -591,10 +672,14 @@ eq prepare-concurrent-burst "0:0:0" "$rc1:$rc2:$rc3"
 fresh=$T/fresh
 for command in '--help' '--version' 'profile list' 'profile default' doctor; do
   # shellcheck disable=SC2086 # fixed command words above
-  (AGYX_DATA_DIR=$fresh ax $command >/dev/null)
+  (AGYX_DATA_DIR=$fresh ax $command >/dev/null 2>&1)
   eq "readonly-$command" absent "$([ -e "$fresh" ] && echo present || echo absent)"
 done
 err first-nonterminal env AGYX_DATA_DIR="$fresh" "$here/bin/agyx" profile login p
+eq notyet-code 3 "$(AGYX_DATA_DIR=$fresh ax doctor >/dev/null 2>&1; echo $?)"
+eq notyet-list-empty-ok 0 "$(AGYX_DATA_DIR=$fresh ax profile list >/dev/null 2>&1; echo $?)"
+eq notyet-list-json '{"default":null,"profiles":[]}' "$(AGYX_DATA_DIR=$fresh ax profile list --json 2>/dev/null)"
+eq gate-nonterminal-code 5 "$(env AGYX_DATA_DIR="$fresh" "$here/bin/agy" >/dev/null 2>&1; echo $?)"
 printf 'n\n' > "$T/no"
 err first-no env AGYX_DATA_DIR="$fresh" AGYX_TTY="$T/no" "$here/bin/agyx" profile login p
 printf 'y\n' > "$T/yes"

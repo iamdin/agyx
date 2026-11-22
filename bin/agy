@@ -1,6 +1,8 @@
 #!/bin/sh
 # agyx shim: run agy with real HOME and a private file login.
-die() { echo "agyx: $*" >&2; exit 2; }
+die() { echo "agyx: $*" >&2; exit 1; }
+usage_err() { echo "agyx: $*" >&2; exit 2; }
+missing_err() { echo "agyx: $*" >&2; exit 3; }
 
 # find our own real location (follow symlinks, bounded, zero dirname/basename forks)
 self=$0 _hops=0
@@ -35,14 +37,14 @@ flag=0 name='' src=''
 while [ $# -gt 0 ]; do
   case $1 in
     --profile)
-      [ $# -ge 2 ] || die "--profile needs a value"
+      [ $# -ge 2 ] || usage_err "--profile needs a value"
       v=$2; shift 2 ;;
     --profile=*) v=${1#--profile=}; shift ;;
     --) shift; break ;;
     *) break ;;
   esac
-  [ "$flag" = 0 ] || die "--profile given more than once"
-  [ -n "$v" ] || die "--profile value is empty"
+  [ "$flag" = 0 ] || usage_err "--profile given more than once"
+  [ -n "$v" ] || usage_err "--profile value is empty"
   flag=1 name=$v
 done
 if [ "$flag" = 0 ]; then
@@ -56,27 +58,34 @@ if [ "$flag" = 0 ]; then
     existing=''
     for d in "$data"/profiles/*/; do [ -d "$d" ] && existing="$existing $(basename "$d")"; done
     if [ -z "$existing" ]; then
-      die "no profiles yet. Create and sign in to one with: agyx profile login NAME (for example: agyx profile login work)"
+      missing_err "no profiles yet. Create and sign in to one with: agyx profile login NAME (for example: agyx profile login work)"
     fi
-    die "no profile chosen. Existing profiles:$existing. Pick one with --profile NAME, or set a default with: agyx profile default NAME"
+    missing_err "no profile chosen. Existing profiles:$existing. Pick one with --profile NAME, or set a default with: agyx profile default NAME"
   fi
 fi
-agyx_valid_name "$name" || die "invalid profile name: $name"
-agyx_subcommand "$name" && die "profile name is reserved: $name"
+agyx_valid_name "$name" || usage_err "invalid profile name: $name"
+agyx_subcommand "$name" && usage_err "profile name is reserved: $name"
 P=$data/profiles/$name/antigravity-cli
-if [ ! -d "$P" ] || [ -L "$P" ] || [ -L "$data/profiles/$name" ]; then
+if [ -L "$data/profiles/$name" ] || [ -L "$P" ]; then
+  die "profile '$name' must not be a symlink"
+fi
+if [ ! -d "$P" ]; then
   if [ "$src" = default ]; then
-    die "the default profile '$name' (from $data/default) does not exist. Fix it with: agyx profile default NAME, or create it with: agyx profile login $name"
+    missing_err "the default profile '$name' (from $data/default) does not exist. Fix it with: agyx profile default NAME, or create it with: agyx profile login $name"
   fi
-  die "profile '$name' does not exist (run: agyx profile login $name)"
+  missing_err "profile '$name' does not exist (run: agyx profile login $name)"
 fi
 
 # 2. real binary & profile app preparation
 agyx_find_real || agyx_missing_agy
 for a in "$@"; do
-  case $a in --app_data_dir|--app_data_dir=*|-app_data_dir|-app_data_dir=*|--gemini_dir|--gemini_dir=*|-gemini_dir|-gemini_dir=*) die "storage flags are managed by agyx" ;; esac
+  case $a in --app_data_dir|--app_data_dir=*|-app_data_dir|-app_data_dir=*|--gemini_dir|--gemini_dir=*|-gemini_dir|-gemini_dir=*) usage_err "storage flags are managed by agyx" ;; esac
 done
-agyx_sync_app || die "cannot prepare profile app directory"
+agyx_sync_app || {
+  _rc=$?
+  [ "$_rc" -eq 5 ] && exit 5
+  die "cannot prepare profile app directory"
+}
 agyx_app_arg || die "cannot resolve profile app directory"
 
 # 3. per-platform keyring bypass:
