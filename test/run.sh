@@ -752,5 +752,79 @@ mkdir -p "$IP/.local/share/agyx/profiles/work/antigravity-cli"
 eq uninstall-prefix-program absent "$([ -e "$IP/.local/lib/agyx" ] && echo present || echo absent)"
 eq uninstall-prefix-link absent "$([ -e "$IP/.local/bin/agyx" ] && echo present || echo absent)"
 eq uninstall-prefix-data-trashed 1 "$(find "$AGYX_TRASH_DIR" -path '*/data/profiles/work/antigravity-cli' | wc -l | tr -d ' ')"
+# Fast-path passthrough via bin/agyx (including symlinked agyx and strictly read-only --help).
+fpdata=$T/fastpath-data
+mkdir -p "$fpdata/profiles/work/antigravity-cli" "$fpdata/profiles/personal/antigravity-cli"
+printf 'work\n' > "$fpdata/default"
+eq fastpath-default-launch work "$(AGYX_DATA_DIR=$fpdata ax | sed -n 's/^PROFILE=//p')"
+out=$(AGYX_DATA_DIR=$fpdata ax --profile personal -p hi)
+eq fastpath-profile-launch personal "$(printf '%s\n' "$out" | sed -n 's/^PROFILE=//p')"
+eq fastpath-args '-p|hi' "$(printf '%s\n' "$out" | sed -n 's/^ARG=//p' | tail -n 2 | paste -sd '|' -)"
+ln -s "$here/bin/agyx" "$T/alias/agyx-link"
+eq fastpath-symlink-launch personal "$(AGYX_DATA_DIR=$fpdata "$T/alias/agyx-link" --profile personal | sed -n 's/^PROFILE=//p')"
+(AGYX_DATA_DIR="$T/fastpath-help-uninit" ax --help >/dev/null 2>&1); rc=$?
+eq fastpath-help-code 0 "$rc"
+eq fastpath-help-readonly absent "$([ -e "$T/fastpath-help-uninit" ] && echo present || echo absent)"
+# agyx profile remove (and rm alias): validation, TTY/busy guards, Trash move, default update, JSON.
+rdata=$T/remove-data rtrash=$T/remove-trash
+mkdir -p "$rdata/profiles/alpha/antigravity-cli/log" "$rdata/profiles/beta/antigravity-cli" "$rdata/profiles/gamma/antigravity-cli" "$rdata/profiles/delta/antigravity-cli" "$rtrash"
+printf 'alpha\n' > "$rdata/default"
+ln -s "$shared/conversation_summaries.db" "$rdata/profiles/alpha/antigravity-cli/conversation_summaries.db"
+ln -s "$shared/conversation_summaries.db" "$rdata/profiles/beta/antigravity-cli/conversation_summaries.db"
+ln -s "$shared/conversation_summaries.db" "$rdata/profiles/delta/antigravity-cli/conversation_summaries.db"
+printf 'logdata\n' > "$rdata/profiles/alpha/antigravity-cli/log/cli-native.log"
+ln -s "$rdata/profiles/alpha" "$rdata/profiles/symrm"
+eq remove-help 1 "$(ax profile remove --help | grep -c '^usage: agyx profile remove')"
+eq remove-rm-help 1 "$(ax profile rm --help | grep -c '^usage: agyx profile remove')"
+eq remove-missing-arg-code 2 "$(AGYX_DATA_DIR=$rdata ax profile remove >/dev/null 2>&1; echo $?)"
+eq remove-bad-name-code 2 "$(AGYX_DATA_DIR=$rdata ax profile remove BAD >/dev/null 2>&1; echo $?)"
+eq remove-reserved-name-code 2 "$(AGYX_DATA_DIR=$rdata ax profile remove doctor >/dev/null 2>&1; echo $?)"
+eq remove-uninit-code 3 "$(AGYX_DATA_DIR="$T/remove-uninit" ax profile remove alpha >/dev/null 2>&1; echo $?)"
+eq remove-uninit-json-code not_set_up "$(AGYX_DATA_DIR="$T/remove-uninit" ax profile remove alpha --json 2>/dev/null | sed -n 's/.*"code":"\([a-z_]*\)".*/\1/p')"
+eq remove-uninit-no-dir absent "$([ -e "$T/remove-uninit" ] && echo present || echo absent)"
+eq remove-absent-code 3 "$(AGYX_DATA_DIR=$rdata ax profile remove absent >/dev/null 2>&1; echo $?)"
+eq remove-absent-json-code no_such_profile "$(AGYX_DATA_DIR=$rdata ax profile remove absent --json 2>/dev/null | sed -n 's/.*"code":"\([a-z_]*\)".*/\1/p')"
+eq remove-symlink-code 1 "$(AGYX_DATA_DIR=$rdata ax profile remove symrm >/dev/null 2>&1; echo $?)"
+eq remove-symlink-json-code symlink_profile "$(AGYX_DATA_DIR=$rdata ax profile remove symrm --json 2>/dev/null | sed -n 's/.*"code":"\([a-z_]*\)".*/\1/p')"
+rm "$rdata/profiles/symrm"
+eq remove-no-tty-code 5 "$(AGYX_DATA_DIR=$rdata ax profile remove beta >/dev/null 2>&1; echo $?)"
+eq remove-no-tty-json-code needs_terminal "$(AGYX_DATA_DIR=$rdata ax profile remove beta --json 2>/dev/null | sed -n 's/.*"code":"\([a-z_]*\)".*/\1/p')"
+eq remove-no-tty-intact present "$([ -d "$rdata/profiles/beta" ] && echo present || echo absent)"
+eq remove-declined-code 1 "$(AGYX_DATA_DIR=$rdata AGYX_TTY="$T/no" ax profile remove beta >/dev/null 2>&1; echo $?)"
+eq remove-declined-intact present "$([ -d "$rdata/profiles/beta" ] && echo present || echo absent)"
+# Busy private log blocks removal; open shared DB does NOT block removing an idle profile.
+"$fr/writer with spaces" "$T/rm-log-ready" "$rdata/profiles/alpha/antigravity-cli/log/cli-native.log" & rm_log_writer=$!
+i=0; while [ ! -f "$T/rm-log-ready" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+eq remove-busy-log-code 1 "$(AGYX_DATA_DIR=$rdata AGYX_TRASH_DIR=$rtrash ax profile remove alpha --yes >/dev/null 2>"$T/rm-err"; echo $?)"
+eq remove-busy-log-json-code profile_busy "$(AGYX_DATA_DIR=$rdata AGYX_TRASH_DIR=$rtrash ax profile remove alpha --yes --json 2>/dev/null | sed -n 's/.*"code":"\([a-z_]*\)".*/\1/p')"
+eq remove-busy-log-intact present "$([ -d "$rdata/profiles/alpha" ] && echo present || echo absent)"
+kill "$rm_log_writer"; wait "$rm_log_writer" 2>/dev/null
+"$fr/writer with spaces" "$T/rm-shared-ready" "$shared/conversation_summaries.db" & rm_shared_writer=$!
+i=0; while [ ! -f "$T/rm-shared-ready" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+# Remove non-default profile (delta) while shared DB is held open: succeeds, default preserved, stdout empty without --json.
+out=$(AGYX_DATA_DIR=$rdata AGYX_TRASH_DIR=$rtrash ax profile remove delta --yes 2>"$T/rm-err"); rc=$?
+eq remove-nondefault-code 0 "$rc"
+eq remove-nondefault-stdout-empty '' "$out"
+eq remove-nondefault-default-kept alpha "$(cat "$rdata/default")"
+eq remove-nondefault-trashed 1 "$(find "$rtrash" -path '*/agyx-profile-delta-*/delta/antigravity-cli' | wc -l | tr -d ' ')"
+kill "$rm_shared_writer"; wait "$rm_shared_writer" 2>/dev/null
+# Remove default profile (alpha) when 2+ profiles remain (beta, gamma): clears default.
+out=$(AGYX_DATA_DIR=$rdata AGYX_TRASH_DIR=$rtrash ax profile remove alpha --yes --json 2>"$T/rm-err"); rc=$?
+eq remove-default-multi-code 0 "$rc"
+eq remove-default-multi-json '{"removed":"alpha","default":null}' "$out"
+eq remove-default-multi-cleared absent "$([ -e "$rdata/default" ] && echo present || echo absent)"
+eq remove-default-multi-trashed 1 "$(find "$rtrash" -path '*/agyx-profile-alpha-*/alpha/antigravity-cli' | wc -l | tr -d ' ')"
+# Remove default profile (beta) via rm alias when 1 profile remains (gamma): promotes sole remaining profile.
+printf 'beta\n' > "$rdata/default"
+out=$(AGYX_DATA_DIR=$rdata AGYX_TRASH_DIR=$rtrash ax profile rm beta --yes --json 2>"$T/rm-err"); rc=$?
+eq remove-rm-promote-code 0 "$rc"
+eq remove-rm-promote-json '{"removed":"beta","default":"gamma"}' "$out"
+eq remove-rm-promote-file gamma "$(cat "$rdata/default")"
+# Remove last remaining default profile (gamma): clears default.
+out=$(AGYX_DATA_DIR=$rdata AGYX_TRASH_DIR=$rtrash ax profile remove gamma --yes --json 2>"$T/rm-err"); rc=$?
+eq remove-last-code 0 "$rc"
+eq remove-last-json '{"removed":"gamma","default":null}' "$out"
+eq remove-last-default-cleared absent "$([ -e "$rdata/default" ] && echo present || echo absent)"
+eq remove-shared-untouched history "$(cat "$shared/history.jsonl")"
 printf 'passed: %s, failed: %s\n' "$pass" "$fail"
 [ "$fail" = 0 ]

@@ -4,6 +4,26 @@
 # through the shim. There is no setup step: everything else is automatic. See README.md.
 die() { echo "agyx: $*" >&2; exit 1; }
 
+usage="usage: agyx [--profile NAME] [agy args...]   launch agy as a profile
+       agyx profile login NAME        create profile NAME and sign in (needs a terminal)
+       agyx profile remove NAME       move profile NAME to the Trash (alias: rm)
+       agyx profile default [NAME]    show or set the default profile
+       agyx profile current           the profile a launch would use, and why
+       agyx profile list              list profiles and their Google accounts
+       agyx profile usage [NAME|--all] show quota (default profile if omitted)
+       agyx doctor                    check the installation
+       agyx uninstall                 remove agyx's data and configuration
+       --json   machine-readable output (profile default|current|list|usage|remove, doctor)
+       --yes    answer yes to confirmations (same as AGYX_ASSUME_YES=1)
+       exit: 0 ok, 1 error, 2 usage, 3 not set up / no profile, 4 not logged in, 5 needs a human
+       any other arguments go to agy; agy's own help: agyx --profile NAME --help
+       per-command help: agyx profile usage --help"
+
+# Help is strictly read-only: zero forks, zero disk access.
+if [ $# -eq 1 ]; then
+  case $1 in --help|-h|help) echo "$usage"; exit 0 ;; esac
+fi
+
 # find our own real location (follow symlinks, bounded, zero dirname/basename forks)
 self=$0 _hops=0
 while [ -L "$self" ]; do
@@ -15,6 +35,14 @@ while [ -L "$self" ]; do
   esac
 done
 case $self in */*) _sdir=${self%/*}; _sbase=${self##*/} ;; *) _sdir=.; _sbase=$self ;; esac
+
+# Fast-path passthrough: only management subcommands (matching agyx_subcommand in runtime/sync.sh)
+# plus --version are handled here; everything else launches agy directly via the sibling shim.
+case ${1-} in
+  doctor|profile|uninstall|--version) ;;
+  *) unset AGYX_RUNTIME; exec "${_sdir%/}/agy" "$@" ;;
+esac
+
 _pdir=$(cd "${_sdir:-/}" && pwd -P) || die "cannot resolve script directory"
 me=${_pdir%/}/$_sbase
 shim=${me%/*}/agy
@@ -30,36 +58,13 @@ agyx_stable "$shim"
 # shellcheck disable=SC2034 # used by the functions in sync.sh
 AGYX_SHIM=$AGYX_STABLE # the entry link must survive a Homebrew upgrade
 
-usage="usage: agyx [--profile NAME] [agy args...]   launch agy as a profile
-       agyx profile login NAME        create profile NAME and sign in (needs a terminal)
-       agyx profile default [NAME]    show or set the default profile
-       agyx profile current           the profile a launch would use, and why
-       agyx profile list              list profiles and their Google accounts
-       agyx profile usage [NAME|--all] show quota (default profile if omitted)
-       agyx doctor                    check the installation
-       agyx uninstall                 remove agyx's data and configuration
-       --json   machine-readable output (profile default|current|list|usage, doctor)
-       --yes    answer yes to confirmations (same as AGYX_ASSUME_YES=1)
-       exit: 0 ok, 1 error, 2 usage, 3 not set up / no profile, 4 not logged in, 5 needs a human
-       any other arguments go to agy; agy's own help: agyx --profile NAME --help
-       per-command help: agyx profile usage --help"
-
-# Help and version are strictly read-only: never touch disk.
-if [ $# -eq 1 ]; then
-  case $1 in --help|-h|help) echo "$usage"; exit 0 ;; esac
-fi
+# Version is strictly read-only: never touch disk.
 if [ "${1-}" = --version ]; then
   echo "agyx $AGYX_VERSION"
   # shellcheck disable=SC2154 # real is set by agyx_find_real
   agyx_find_real && _r=$real || _r=''
   [ -n "$_r" ] && [ -x "$_r" ] && echo "agy $(AGY_CLI_DISABLE_AUTO_UPDATE=true "$_r" --version 2>&1 | head -n 1)"
   exit 0
-fi
-
-# Anything that is not one of our own subcommands launches agy via the shim.
-if ! agyx_subcommand "${1-}"; then
-  unset AGYX_RUNTIME
-  exec "$shim" "$@"
 fi
 
 tok=antigravity-cli/antigravity-oauth-token
@@ -125,6 +130,10 @@ help_for() {
     login) echo "usage: agyx profile login NAME
 Create profile NAME and run agy's own sign-in (browser). A person must do this step.
 exit: 0 signed in, 2 bad name, 5 no terminal" ;;
+    remove|rm) echo "usage: agyx profile remove NAME [--yes] [--json]
+Move profile NAME to the Trash (alias: rm). Asks first; without a terminal needs --yes.
+json: {\"removed\":\"personal\",\"default\":\"work\"}
+exit: 0 removed, 1 error or busy, 2 bad name, 3 not set up / no such profile, 5 no terminal and no --yes" ;;
     default) echo "usage: agyx profile default [NAME] [--json]
 Without NAME, print the default profile. With NAME, set it.
 json: {\"default\":\"work\"}
@@ -307,7 +316,60 @@ case $cmd in
         [ "$json" = 0 ] || printf ']\n'
         exit "$rc"
         ;;
-      *) bad "profile needs a subcommand: list | current | login NAME | default [NAME] | usage [NAME|--all]" ;;
+      remove|rm)
+        [ $# -eq 1 ] || bad "profile remove needs exactly one profile name"
+        pname=$1
+        need "$pname"
+        [ -d "$data" ] || notyet
+        exists "$pname"
+        if [ "${AGYX_ASSUME_YES-}" != 1 ] && ! agyx_has_tty; then
+          fail 5 needs_terminal "profile remove needs a terminal to ask; nothing was removed" "agyx profile remove $pname --yes"
+        fi
+        pdir=$data/profiles/$pname/antigravity-cli
+        set -- "$pdir"
+        if [ -e "$pdir/conversation_summaries.db" ] && [ ! -L "$pdir/conversation_summaries.db" ]; then
+          set -- "$@" "$pdir/conversation_summaries.db"
+        fi
+        for lg in "$pdir"/log/*.log; do
+          [ -f "$lg" ] && [ ! -L "$lg" ] && set -- "$@" "$lg"
+        done
+        for dm in "$pdir"/daemon/*; do
+          [ -e "$dm" ] && [ ! -L "$dm" ] && set -- "$@" "$dm"
+        done
+        pids=$(agyx_open_pids "$@")
+        if [ -n "$pids" ]; then
+          fail 1 profile_busy "agy is still running in profile '$pname' (PIDs: ${pids% }). Close it first; nothing was removed"
+        fi
+        d=$(dflt)
+        dnote=''; [ "$pname" != "$d" ] || dnote=', current default'
+        {
+          echo "agyx profile remove will move to Trash:"
+          echo "  $(agyx_tilde "$data/profiles/$pname")/   ($(status "$pname")$dnote)"
+          echo "Kept: ~/.gemini (shared conversations and history) and other profiles."
+        } >&2
+        agyx_ask n "Remove profile '$pname'? [y/N] " || { echo >&2; die "nothing was removed."; }
+        tbase=$(agyx_trash_base)
+        (umask 077; mkdir -p "$tbase") || die "cannot create Trash directory"
+        trash=$(mktemp -d "$tbase/agyx-profile-$pname-$(date +%Y%m%d%H%M%S)-XXXXXX") || die "cannot create profile Trash directory"
+        mv "$data/profiles/$pname" "$trash/$pname" || die "could not move $data/profiles/$pname to the Trash"
+        if [ "$pname" = "$d" ]; then
+          rem=$(names)
+          # shellcheck disable=SC2086 # validated profile names have no spaces or glob chars
+          set -- $rem
+          if [ $# -eq 1 ]; then
+            printf '%s\n' "$1" > "$data/default" || die "cannot write $data/default"
+            echo "agyx: '$1' is now the default profile (change it with: agyx profile default NAME)" >&2
+          elif [ $# -eq 0 ]; then
+            rm -f "$data/default"
+          else
+            rm -f "$data/default"
+            echo "agyx: default profile cleared; set one with: agyx profile default NAME" >&2
+          fi
+        fi
+        echo "agyx: removed profile '$pname' (moved to the Trash: $(agyx_tilde "$trash"))" >&2
+        [ "$json" != 1 ] || printf '{"removed":%s,"default":%s}\n' "$(jstr "$pname")" "$(jstr "$(dflt)")"
+        ;;
+      *) bad "profile needs a subcommand: list | current | login NAME | remove NAME | default [NAME] | usage [NAME|--all]" ;;
     esac
     ;;
   uninstall)

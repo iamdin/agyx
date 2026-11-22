@@ -36,6 +36,7 @@ agyx profile usage                 # quota for the default profile
 agyx profile usage personal        # quota for one profile
 agyx profile usage --all --json    # every profile's quota, in parallel, as JSON
 agyx profile current               # which profile a launch would use
+agyx profile remove personal       # move a profile to the Trash (alias: rm)
 
 agyx                               # launch default profile
 agyx --profile personal -p "hi"    # launch a specific profile
@@ -50,7 +51,7 @@ Profile precedence: leading `--profile NAME` > `AGYX_PROFILE` > default. Profile
 
 ### For AI agents and scripts
 
-- `--json` on `profile list | current | default | usage` and `doctor` prints one JSON document on stdout; on failure it prints `{"ok":false,"error":{"code","message","hint"}}`. Without `--json`, stdout carries only data and notes go to stderr.
+- `--json` on `profile list | current | default | usage | remove` and `doctor` prints one JSON document on stdout; on failure it prints `{"ok":false,"error":{"code","message","hint"}}`. Without `--json`, stdout carries only data and notes go to stderr.
 - Exit codes: `0` ok, `1` error (or `doctor` found issues), `2` usage, `3` not set up / no or unknown profile, `4` not logged in, `5` needs a person (a terminal or browser sign-in).
 - Nothing waits for input without a terminal: confirmations fail with `5` unless `--yes` (or `AGYX_ASSUME_YES=1`). `agyx profile login` always needs a person.
 - `agyx profile usage --all --json` checks every logged-in profile in parallel (about 10 s): `[{"profile","ok","limits":[{"group","window":"5h|weekly","remaining","resets_at"}]}]`.

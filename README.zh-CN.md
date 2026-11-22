@@ -35,6 +35,7 @@ agyx profile usage                 # 查看默认 profile 的用量额度
 agyx profile usage personal        # 查看指定 profile 的用量额度
 agyx profile usage --all --json    # 并行查询所有 profile 的额度，输出 JSON
 agyx profile current               # 查看启动时会用哪个 profile
+agyx profile remove personal       # 将指定 profile 移入废纸篓（别名：rm）
 
 agyx                               # 启动默认 profile
 agyx --profile personal -p "hi"    # 指定 profile 运行
@@ -49,7 +50,7 @@ agyx uninstall                     # 将数据移入废纸篓并卸载 agyx
 
 ### 给 AI agent 和脚本用
 
-- `profile list | current | default | usage` 和 `doctor` 支持 `--json`，stdout 只输出一个 JSON；失败时输出 `{"ok":false,"error":{"code","message","hint"}}`。不加 `--json` 时 stdout 只放数据，提示一律走 stderr。
+- `profile list | current | default | usage | remove` 和 `doctor` 支持 `--json`，stdout 只输出一个 JSON；失败时输出 `{"ok":false,"error":{"code","message","hint"}}`。不加 `--json` 时 stdout 只放数据，提示一律走 stderr。
 - 退出码：`0` 成功，`1` 出错（或 `doctor` 发现问题），`2` 用法错误，`3` 未初始化 / 没有或不存在该 profile，`4` 未登录，`5` 需要人来操作（终端或浏览器登录）。
 - 没有终端时绝不等待输入：需要确认的操作直接以 `5` 退出，除非加 `--yes`（或 `AGYX_ASSUME_YES=1`）。`agyx profile login` 始终需要人来完成。
 - `agyx profile usage --all --json` 并行查询所有已登录 profile（约 10 秒）：`[{"profile","ok","limits":[{"group","window":"5h|weekly","remaining","resets_at"}]}]`。
