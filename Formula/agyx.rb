@@ -8,6 +8,7 @@ class Agyx < Formula
   # PLACEHOLDER: fill in after the v0.2.1 tag exists (`brew fetch --build-from-source` prints it).
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"
+  conflicts_with "agyx-beta", because: "both install agyx"
 
   def install
     # The scripts find their siblings (agy shim, runtime/) by resolving their own real path, so

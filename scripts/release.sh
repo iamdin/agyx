@@ -1,22 +1,39 @@
 #!/bin/sh
-# Release agyx from the maintainer's machine: scripts/release.sh [--dry-run] VERSION
+# Release agyx from the maintainer's machine: scripts/release.sh [--dry-run] [--beta] VERSION
 # Runs the checks first and refuses unless all pass; prints each step before doing it.
 # --dry-run runs the checks (including tests and shellcheck) and prints the commands without
 # running them. Never installs agyx. See RELEASING.md.
 set -eu
 
-usage() { echo "usage: scripts/release.sh [--dry-run] VERSION   (for example 0.1.3)" >&2; exit 2; }
+usage() { echo "usage: scripts/release.sh [--dry-run] [--beta] VERSION   (for example 0.2.2 or 0.2.2-beta.1)" >&2; exit 2; }
 
-dry=0 version=
+dry=0 beta_flag=0 version=
 for a in "$@"; do
   case $a in
     --dry-run) dry=1 ;;
+    --beta) beta_flag=1 ;;
     -*) usage ;;
     *) [ -z "$version" ] || usage; version=$a ;;
   esac
 done
+beta=0
 case $version in
-  [0-9]*.[0-9]*.[0-9]*) case $version in *[!0-9.]*|*..*) usage ;; esac ;;
+  *-beta.*)
+    beta=1
+    base=${version%-beta.*}
+    bnum=${version#*-beta.}
+    case $bnum in
+      [1-9]*) case $bnum in *[!0-9]*) usage ;; esac ;;
+      *) usage ;;
+    esac
+    ;;
+  *)
+    [ "$beta_flag" = 0 ] || usage
+    base=$version
+    ;;
+esac
+case $base in
+  [0-9]*.[0-9]*.[0-9]*) case $base in *[!0-9.]*|*..*|*.*.*.*|*.) usage ;; esac ;;
   *) usage ;;
 esac
 
@@ -48,12 +65,20 @@ push() { # push over the remote's own URL, then over HTTPS when that fails (for 
 
 step "1. what the release mechanics need"
 branch=$(git symbolic-ref -q --short HEAD || true)
-[ "$branch" = main ] && ok "on main (it is what gets tagged and pushed)" || no "not on main (on ${branch:-a detached HEAD})"
+if [ "$beta" = 1 ]; then
+  [ -n "$branch" ] && ok "on branch $branch (beta release)" || no "not on a branch (detached HEAD)"
+else
+  [ "$branch" = main ] && ok "on main (it is what gets tagged and pushed)" || no "not on main (on ${branch:-a detached HEAD})"
+fi
 git fetch -q --tags origin 2>/dev/null || echo "  warn git fetch origin failed; remote tags were not checked"
-src=$(sed -n 's/^AGYX_VERSION=\([0-9][0-9.]*\).*/\1/p' runtime/sync.sh)
+src=$(sed -n 's/^AGYX_VERSION=\([^ #]*\).*/\1/p' runtime/sync.sh | head -n 1)
 [ "$src" = "$version" ] && ok "AGYX_VERSION is $version" || no "AGYX_VERSION in runtime/sync.sh is '$src', not $version"
-furl=$(sed -n 's|^ *url ".*/tags/v\([0-9][0-9.]*\)\.tar\.gz".*|\1|p' "$formula")
-[ "$furl" = "$version" ] && ok "formula url tag is $tag" || no "formula url tag in $formula is '$furl', not $tag"
+furl=$(sed -n 's|^ *url ".*/tags/v\([0-9][0-9.]*\)\.tar\.gz".*|\1|p' "$formula" 2>/dev/null || true)
+if [ "$beta" = 1 ]; then
+  [ -n "$furl" ] && ok "formula template found at $formula" || no "formula template url not found in $formula"
+else
+  [ "$furl" = "$version" ] && ok "formula url tag is $tag" || no "formula url tag in $formula is '$furl', not $tag"
+fi
 if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then no "tag $tag already exists"; else ok "tag $tag does not exist yet"; fi
 if git -C "$tap" rev-parse --git-dir >/dev/null 2>&1; then ok "tap checkout found at $tap"
 else no "tap checkout not found at $tap (set AGYX_TAP_DIR)"; fi
@@ -76,13 +101,25 @@ fi
 
 step "4. tag and push"
 run git tag -a "$tag" -m "agyx $version"
-push "$root" main "$tag"
+push "$root" "$branch" "$tag"
 
 step "5. GitHub release"
-run gh release create "$tag" --generate-notes
+if [ "$beta" = 1 ]; then
+  run gh release create "$tag" --prerelease --generate-notes
+else
+  run gh release create "$tag" --generate-notes
+fi
 
 step "6. Homebrew tap"
-turl=$(sed -n 's|^ *url "\(.*\)".*|\1|p' "$formula")
+if [ "$beta" = 1 ]; then
+  turl=$(sed -n "s|^ *url \"\\(.*\\)/tags/v[^\"]*\\.tar\\.gz\".*|\\1/tags/$tag.tar.gz|p" "$formula")
+  tap_formula=Formula/agyx-beta.rb
+  tap_name=agyx-beta
+else
+  turl=$(sed -n 's|^ *url "\(.*\)".*|\1|p' "$formula")
+  tap_formula=$formula
+  tap_name=agyx
+fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 if [ "$dry" = 1 ]; then
@@ -98,21 +135,38 @@ else
 fi
 echo "  sha256 $sha"
 run git -C "$tap" pull -q --ff-only
-echo "  + write $formula into $tap with the real sha256"
+echo "  + write $tap_formula into $tap with the real sha256"
 if [ "$dry" = 0 ]; then
   mkdir -p "$tap/Formula"
-  sed -e '/^ *# PLACEHOLDER/d' -e "s/^\( *sha256 \)\"[0-9a-f]*\"/\1\"$sha\"/" "$formula" > "$tap/Formula/agyx.rb"
+  if [ "$beta" = 1 ]; then
+    sed \
+      -e 's|^# This file is published in .* (Formula/agyx\.rb)\.$|# Beta formula in the tap repository iamdin/homebrew-tap (Formula/agyx-beta.rb).|' \
+      -e 's|^class Agyx < Formula$|class AgyxBeta < Formula|' \
+      -e "s|^\\( *url \"\\)[^\"]*\"|\\1$turl\"|" \
+      -e '/^ *# PLACEHOLDER/d' \
+      -e "s/^\\( *sha256 \\)\"[0-9a-f]*\"/\\1\"$sha\"/" \
+      -e 's|^\( *conflicts_with \)"agyx-beta"|\1"agyx"|' \
+      "$formula" > "$tmp/agyx-beta.rb"
+    if grep -q '^ *conflicts_with ' "$tmp/agyx-beta.rb"; then
+      cp "$tmp/agyx-beta.rb" "$tap/$tap_formula"
+    else
+      awk '/^ *sha256 / { print; print "  conflicts_with \"agyx\", because: \"both install agyx\""; next } { print }' \
+        "$tmp/agyx-beta.rb" > "$tap/$tap_formula"
+    fi
+  else
+    sed -e '/^ *# PLACEHOLDER/d' -e "s/^\( *sha256 \)\"[0-9a-f]*\"/\1\"$sha\"/" "$formula" > "$tap/$tap_formula"
+  fi
 fi
-run git -C "$tap" add Formula/agyx.rb
-run git -C "$tap" commit -q -m "agyx $version"
+run git -C "$tap" add "$tap_formula"
+run git -C "$tap" commit -q -m "$tap_name $version"
 push "$tap"
 
 step "7. brew audit"
 if [ "$dry" = 1 ]; then
-  echo "  + brew update && brew audit --strict --online iamdin/tap/agyx"
+  echo "  + brew update && brew audit --strict --online iamdin/tap/$tap_name"
 else
   brew update || true
-  if brew audit --strict --online iamdin/tap/agyx; then echo "  brew audit: clean"
+  if brew audit --strict --online "iamdin/tap/$tap_name"; then echo "  brew audit: clean"
   else echo "  brew audit reported problems (the release itself is done); see above" >&2; exit 1; fi
 fi
 echo; echo "Done: $tag"

@@ -54,7 +54,7 @@ mk() {
 }
 rel() { (cd "$W" && sh scripts/release.sh "$@" >"$T/out" 2>&1 </dev/null); }
 untouched() { # nothing pushed, published or written to the tap (origin main moves only where a test pushes itself)
-  [ -z "$(git -C "$E/origin.git" tag -l v0.1.3)" ] && [ "$(git -C "$E/tap-origin.git" rev-parse main)" = "$TAPHEAD" ] \
+  [ -z "$(git -C "$E/origin.git" tag -l 'v0.1.3' 'v0.2.0-beta.*')" ] && [ "$(git -C "$E/tap-origin.git" rev-parse main)" = "$TAPHEAD" ] \
     && ! grep -q '^gh\|^brew\|^curl' "$STUBLOG" && echo untouched || echo CHANGED
 }
 refuses() { # name args...: exits 1, says Refusing, changes nothing
@@ -120,6 +120,61 @@ printf '#!/bin/sh\necho "brew $*" >> "$STUBLOG"\n' > "$T/stubs/brew"
 # the tap path can come from AGYX_TAP_DIR
 mk; mv "$E/homebrew-tap" "$E/mytap"; rel --dry-run 0.1.3; eq dry-run-default-tap-missing "1" "$?"
 (cd "$W" && AGYX_TAP_DIR=$E/mytap sh scripts/release.sh --dry-run 0.1.3 >"$T/out" 2>&1 </dev/null); eq dry-run-tap-env "0" "$?"
+
+# beta argument validation
+mk
+rel 0.1.3-beta; eq args-beta-no-num "2" "$?"
+rel 0.1.3-beta.0; eq args-beta-zero "2" "$?"
+rel 0.1.3-beta.01; eq args-beta-leading-zero "2" "$?"
+rel 0.1.3-alpha.1; eq args-alpha "2" "$?"
+rel --beta 0.1.3; eq args-beta-flag-stable "2" "$?"
+
+# beta failed checks: detached HEAD and AGYX_VERSION mismatch
+mk; printf 'AGYX_VERSION=0.2.0-beta.1 # x\n' > "$W/runtime/sync.sh"; git -C "$W" commit -q -am beta
+git -C "$W" checkout -q --detach HEAD; refuses beta-check-detached 0.2.0-beta.1
+mk; git -C "$W" switch -q -c feat/test; refuses beta-check-agyx-version 0.2.0-beta.1
+
+# beta dry-run on feature branch (Formula/agyx.rb stays at v0.1.3)
+mk; git -C "$W" switch -q -c feat/test
+printf 'AGYX_VERSION=0.2.0-beta.1 # x\n' > "$W/runtime/sync.sh"; git -C "$W" commit -q -am beta
+rel --dry-run 0.2.0-beta.1; rc=$?
+eq beta-dry-run-exit "0" "$rc"
+eq beta-dry-run-untouched "untouched,$ORIGHEAD,none" "$(untouched),$(git -C "$E/origin.git" rev-parse main),$(git -C "$W" tag -l v0.2.0-beta.1 | grep . || echo none)"
+eq beta-dry-run-commands "1,1,1,1,1,1" "$(grep -c '+ gh release create v0.2.0-beta.1 --prerelease --generate-notes$' "$T/out"),$(grep -c 'push origin feat/test v0.2.0-beta.1' "$T/out"),$(grep -c '+ write Formula/agyx-beta.rb into ' "$T/out"),$(grep -c 'commit -q -m agyx-beta 0.2.0-beta.1' "$T/out"),$(grep -c 'brew audit --strict --online iamdin/tap/agyx-beta' "$T/out"),$(grep -c 'on branch feat/test (beta release)' "$T/out")"
+
+# beta real run (0.2.0-beta.1): rewrites existing conflicts_with "agyx-beta" and top comment, keeps tap Formula/agyx.rb untouched
+mk
+mkdir -p "$E/homebrew-tap/Formula"
+printf 'stable-formula\n' > "$E/homebrew-tap/Formula/agyx.rb"
+git -C "$E/homebrew-tap" add Formula/agyx.rb; git -C "$E/homebrew-tap" commit -q -m stable; git -C "$E/homebrew-tap" push -q origin main 2>/dev/null
+git -C "$W" switch -q -c feat/test
+printf 'AGYX_VERSION=0.2.0-beta.1 # x\n' > "$W/runtime/sync.sh"
+printf '# This file is published in the tap repository iamdin/homebrew-tap (Formula/agyx.rb).\nclass Agyx < Formula\n  url "https://github.com/iamdin/agyx/archive/refs/tags/v0.1.3.tar.gz"\n  # PLACEHOLDER: fill in\n  sha256 "0000000000000000000000000000000000000000000000000000000000000000"\n  license "MIT"\n  conflicts_with "agyx-beta", because: "both install agyx"\nend\n' > "$W/Formula/agyx.rb"
+git -C "$W" commit -q -am beta1
+printf 'y\n' > "$E/ans"
+(cd "$W" && AGYX_TTY=$E/ans sh scripts/release.sh 0.2.0-beta.1 >"$T/out" 2>&1 </dev/null); rc=$?
+eq beta-real-exit "0" "$rc"
+eq beta-real-tag-annotated "tag/tag" "$(git -C "$W" cat-file -t v0.2.0-beta.1)/$(git -C "$E/origin.git" cat-file -t v0.2.0-beta.1)"
+eq beta-real-branch-pushed "$(git -C "$W" rev-parse feat/test),$ORIGHEAD" "$(git -C "$E/origin.git" rev-parse feat/test),$(git -C "$E/origin.git" rev-parse main)"
+eq beta-real-gh "gh release create v0.2.0-beta.1 --prerelease --generate-notes" "$(grep '^gh ' "$STUBLOG")"
+eq beta-real-curl-url "curl -fsSL -o $(grep -o '[^ ]*src.tar.gz' "$STUBLOG") https://github.com/iamdin/agyx/archive/refs/tags/v0.2.0-beta.1.tar.gz" "$(grep '^curl ' "$STUBLOG")"
+eq beta-real-brew "brew update|brew audit --strict --online iamdin/tap/agyx-beta" "$(grep '^brew ' "$STUBLOG" | tr '\n' '|' | sed 's/|$//')"
+eq beta-real-tap-commit "agyx-beta 0.2.0-beta.1" "$(git -C "$E/tap-origin.git" log -1 --format=%s main)"
+beta_rb=$(git -C "$E/tap-origin.git" show main:Formula/agyx-beta.rb)
+eq beta-real-tap-formula "1,1,1,1,1,0" "$(printf '%s\n' "$beta_rb" | grep -c '^# Beta formula in the tap repository iamdin/homebrew-tap (Formula/agyx-beta.rb)\.$'),$(printf '%s\n' "$beta_rb" | grep -c '^class AgyxBeta < Formula$'),$(printf '%s\n' "$beta_rb" | grep -c 'url "https://github.com/iamdin/agyx/archive/refs/tags/v0.2.0-beta.1.tar.gz"'),$(printf '%s\n' "$beta_rb" | grep -c "sha256 \"$SHA\""),$(printf '%s\n' "$beta_rb" | grep -c '^  conflicts_with "agyx", because: "both install agyx"$'),$(printf '%s\n' "$beta_rb" | grep -c 'PLACEHOLDER\|0000000000\|agyx-beta",')"
+eq beta-real-stable-untouched "stable-formula" "$(git -C "$E/tap-origin.git" show main:Formula/agyx.rb)"
+
+# beta real run (--beta 0.2.0-beta.2): minimal formula without conflicts_with inserts it after sha256
+mk; git -C "$W" switch -q -c feat/test
+printf 'AGYX_VERSION=0.2.0-beta.2 # x\n' > "$W/runtime/sync.sh"
+git -C "$W" commit -q -am beta2
+printf 'y\n' > "$E/ans"
+(cd "$W" && AGYX_TTY=$E/ans sh scripts/release.sh --beta 0.2.0-beta.2 >"$T/out" 2>&1 </dev/null); rc=$?
+eq beta-flag-real-exit "0" "$rc"
+eq beta-flag-real-gh "gh release create v0.2.0-beta.2 --prerelease --generate-notes" "$(grep '^gh ' "$STUBLOG")"
+eq beta-flag-real-tap-commit "agyx-beta 0.2.0-beta.2" "$(git -C "$E/tap-origin.git" log -1 --format=%s main)"
+beta2_rb=$(git -C "$E/tap-origin.git" show main:Formula/agyx-beta.rb)
+eq beta-flag-insert-conflicts "1,1,1" "$(printf '%s\n' "$beta2_rb" | grep -c '^class AgyxBeta < Formula$'),$(printf '%s\n' "$beta2_rb" | grep -c "sha256 \"$SHA\""),$(printf '%s\n' "$beta2_rb" | grep -c '^  conflicts_with "agyx", because: "both install agyx"$')"
 
 echo "passed: $pass, failed: $fail"
 [ "$fail" = 0 ]

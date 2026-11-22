@@ -29,6 +29,18 @@ Set up yourself first: `gh auth login` with a token that may create releases on 
 
 The script's own tests: `sh test/release.sh` (temporary repos, stubbed `gh`, `brew`, `curl`, no network). CI runs them with `test/run.sh` on macOS.
 
+## Beta / pre-release builds
+
+1. Set `AGYX_VERSION=X.Y.Z-beta.N` in `runtime/sync.sh` (leave `Formula/agyx.rb` on the stable tag) and commit on your branch (`main` or a feature branch).
+2. Dry run, then release:
+
+   ```sh
+   scripts/release.sh --dry-run 0.2.2-beta.1
+   scripts/release.sh 0.2.2-beta.1
+   ```
+
+   It tags `vX.Y.Z-beta.N`, pushes that branch and tag, creates a GitHub pre-release (`--prerelease`), writes `Formula/agyx-beta.rb` in the tap (leaving `Formula/agyx.rb` untouched), and audits `iamdin/tap/agyx-beta`.
+
 ## Verify on a second machine
 
 ```sh
