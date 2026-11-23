@@ -61,7 +61,7 @@ pdir=$AGYX_DATA/profiles/$name/antigravity-cli
 # 2. real binary & profile app preparation
 agyx_find_real || agyx_missing_agy
 for a in "$@"; do
-  case $a in --app_data_dir|--app_data_dir=*|-app_data_dir|-app_data_dir=*|--gemini_dir|--gemini_dir=*|-gemini_dir|-gemini_dir=*) usage_err "storage flags are managed by agyx" ;; esac
+  case $a in --app_data_dir|--app_data_dir=*|-app_data_dir|-app_data_dir=*|--app-data-dir|--app-data-dir=*|-app-data-dir|-app-data-dir=*|--gemini_dir|--gemini_dir=*|-gemini_dir|-gemini_dir=*|--gemini-dir|--gemini-dir=*|-gemini-dir|-gemini-dir=*) usage_err "storage flags are managed by agyx" ;; esac
 done
 agyx_sync_app "$pdir" || {
   _rc=$?

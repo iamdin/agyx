@@ -143,6 +143,12 @@ suite_launch_and_usage() {
   eq usage-all-prefix 'personal|work' "$(printf '%s\n' "$out" | cut -f 1 | sort -u | paste -sd '|' -)"
   out=$(FAKE_RUN=$tsv ax profile usage --json)
   eq usage-json '[{"profile":"work","ok":true,"limits":[{"group":"Gemini Models","window":"5h","remaining":92,"resets_at":"2026-11-16T16:11:52Z"},{"group":"Claude and GPT models","window":"weekly","remaining":43,"resets_at":"2026-11-19T07:21:07Z"}]}]' "$out"
+  # Multi-bucket agy 1.5.15 output (including Argon/Carbon, 0%, 100%, epoch reset, and custom window passthrough).
+  tsv15='printf "Gemini Models\tWeekly Limit Remaining\t100%%\t2026-11-30T16:29:06Z\nGemini Argon\tFive Hour Limit Remaining\t0%%\t2026-11-23T21:29:06Z\nGemini Carbon\tDaily Limit Remaining\t50%%\t2026-11-24T00:00:00Z\nClaude and GPT models\tWeekly Limit Remaining\t100%%\t1970-01-01T00:00:00Z\n"'
+  out=$(FAKE_RUN=$tsv15 ax profile usage --all)
+  eq usage-1515-all-lines 8 "$(printf '%s\n' "$out" | grep -c .)"
+  out=$(FAKE_RUN=$tsv15 ax profile usage --json)
+  eq usage-1515-json '[{"profile":"work","ok":true,"limits":[{"group":"Gemini Models","window":"weekly","remaining":100,"resets_at":"2026-11-30T16:29:06Z"},{"group":"Gemini Argon","window":"5h","remaining":0,"resets_at":"2026-11-23T21:29:06Z"},{"group":"Gemini Carbon","window":"Daily Limit Remaining","remaining":50,"resets_at":"2026-11-24T00:00:00Z"},{"group":"Claude and GPT models","window":"weekly","remaining":100,"resets_at":"1970-01-01T00:00:00Z"}]}]' "$out"
   mkdir -p "$DD/profiles/zeta/antigravity-cli"
   out=$(FAKE_RUN='echo boom >&2; exit 3' ax profile usage --all --json); rc=$?
   eq usage-all-failure-code 1 "$rc"
@@ -272,6 +278,10 @@ suite_discovery_and_args() {
   err override-app launch --app_data_dir=elsewhere
   err override-gemini launch --gemini_dir /elsewhere
   err override-single-dash launch -app_data_dir=elsewhere
+  for hflag in --app-data-dir --app-data-dir=elsewhere -app-data-dir -app-data-dir=elsewhere --gemini-dir --gemini-dir=elsewhere -gemini-dir -gemini-dir=elsewhere; do
+    err "override-hyphen-$hflag" launch "$hflag"
+    eq "override-hyphen-code-$hflag" 2 "$(launch "$hflag" >/dev/null 2>&1; echo $?)"
+  done
   # Resolve the relative argument, including spaces and data outside HOME.
   out=$(launch)
   rel=$(printf '%s\n' "$out" | sed -n 's/^ARG=--app_data_dir=//p')
