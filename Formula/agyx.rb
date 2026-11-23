@@ -4,8 +4,8 @@
 class Agyx < Formula
   desc "Run several Google Antigravity (agy) CLI profiles side by side"
   homepage "https://github.com/iamdin/agyx"
-  url "https://github.com/iamdin/agyx/archive/refs/tags/v0.2.2.tar.gz"
-  # PLACEHOLDER: fill in after the v0.2.2 tag exists (`brew fetch --build-from-source` prints it).
+  url "https://github.com/iamdin/agyx/archive/refs/tags/v0.2.3.tar.gz"
+  # PLACEHOLDER: fill in after the v0.2.3 tag exists (`brew fetch --build-from-source` prints it).
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"
   conflicts_with "agyx-beta", because: "both install agyx"
