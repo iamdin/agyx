@@ -209,7 +209,8 @@ err override-management-shim env AGYX_REAL_AGY="$T/alias/management" "$here/bin/
 err override-missing-no-fallback env AGYX_REAL_AGY="$T/missing-agy" "$here/bin/agy" --profile work
 eq doctor-new-entry 1 "$(ax doctor 2>/dev/null | grep -c "agy entry: $DD/agy (in place")"
 eq doctor-native-fallback 1 "$(AGYX_REAL_AGY='' ax doctor 2>/dev/null | grep -c "^real agy: $RH/.local/bin/agy$")"
-eq version-string 1 "$(ax --version | grep -c '^agyx 0.2.1$')"
+ver=$(sed -n 's/^AGYX_VERSION=\([^ #]*\).*/\1/p' "$here/runtime/sync.sh" | head -n 1)
+eq version-string 1 "$(ax --version | grep -Fxc "agyx $ver")"
 # Only doctor above queried item existence; launches still must make no security calls.
 eq doctor-item-queries-only 2 "$(wc -l < "$SECLOG" | tr -d ' ')"
 : > "$SECLOG"

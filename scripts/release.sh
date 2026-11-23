@@ -60,6 +60,14 @@ push() { # push over the remote's own URL, then over HTTPS when that fails (for 
   echo "  push failed; retrying over HTTPS"
   git -C "$_d" -c "url.https://github.com/.insteadOf=git@github.com:" push origin "$@"
 }
+pull() { # pull over the remote's own URL, then over HTTPS when that fails
+  _d=$1; shift
+  printf '  + git -C %s pull %s\n' "$_d" "$*"
+  [ "$dry" = 1 ] && return 0
+  git -C "$_d" pull "$@" && return 0
+  echo "  pull failed; retrying over HTTPS"
+  git -C "$_d" -c "url.https://github.com/.insteadOf=git@github.com:" pull "$@"
+}
 
 [ "$dry" = 1 ] && echo "DRY RUN: checks run for real, nothing is changed afterwards."
 
@@ -70,7 +78,9 @@ if [ "$beta" = 1 ]; then
 else
   [ "$branch" = main ] && ok "on main (it is what gets tagged and pushed)" || no "not on main (on ${branch:-a detached HEAD})"
 fi
-git fetch -q --tags origin 2>/dev/null || echo "  warn git fetch origin failed; remote tags were not checked"
+git fetch -q --tags origin 2>/dev/null \
+  || git -c "url.https://github.com/.insteadOf=git@github.com:" fetch -q --tags origin 2>/dev/null \
+  || echo "  warn git fetch origin failed; remote tags were not checked"
 src=$(sed -n 's/^AGYX_VERSION=\([^ #]*\).*/\1/p' runtime/sync.sh | head -n 1)
 [ "$src" = "$version" ] && ok "AGYX_VERSION is $version" || no "AGYX_VERSION in runtime/sync.sh is '$src', not $version"
 furl=$(sed -n 's|^ *url ".*/tags/v\([0-9][0-9.]*\)\.tar\.gz".*|\1|p' "$formula" 2>/dev/null || true)
@@ -134,7 +144,7 @@ else
   case $sha in [0-9a-f]*) [ ${#sha} = 64 ] || { echo "bad sha256: $sha" >&2; exit 1; } ;; *) echo "bad sha256: $sha" >&2; exit 1 ;; esac
 fi
 echo "  sha256 $sha"
-run git -C "$tap" pull -q --ff-only
+pull "$tap" -q --ff-only
 echo "  + write $tap_formula into $tap with the real sha256"
 if [ "$dry" = 0 ]; then
   mkdir -p "$tap/Formula"
