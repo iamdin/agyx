@@ -47,22 +47,14 @@ _pdir=$(cd "${_sdir:-/}" && pwd -P) || die "cannot resolve script directory"
 me=${_pdir%/}/$_sbase
 shim=${me%/*}/agy
 runtime=$(cd "${_pdir%/}/../runtime" && pwd -P) || die "cannot resolve runtime directory"
-rh=$HOME
-unset AGYX_REAL_HOME AGY_PROFILE
-data=${AGYX_DATA_DIR:-$rh/.local/share/agyx}
-# shellcheck disable=SC2034 # R, AGYX_SHIM and AGYX_RUNTIME are used by sync.sh
-R=$rh AGYX_SHIM=$shim AGYX_RUNTIME=$runtime
 # shellcheck source=../runtime/sync.sh
 . "$runtime/sync.sh"
-agyx_stable "$shim"
-# shellcheck disable=SC2034 # used by the functions in sync.sh
-AGYX_SHIM=$AGYX_STABLE # the entry link must survive a Homebrew upgrade
+agyx_init "$shim"
 
 # Version is strictly read-only: never touch disk.
 if [ "${1-}" = --version ]; then
   echo "agyx $AGYX_VERSION"
-  # shellcheck disable=SC2154 # real is set by agyx_find_real
-  agyx_find_real && _r=$real || _r=''
+  agyx_find_real && _r=$AGYX_REAL || _r=''
   [ -n "$_r" ] && [ -x "$_r" ] && echo "agy $(AGY_CLI_DISABLE_AUTO_UPDATE=true "$_r" --version 2>&1 | head -n 1)"
   exit 0
 fi
@@ -83,25 +75,23 @@ fail() {
 die() { fail 1 error "$*"; }
 notyet() { fail 3 not_set_up "agyx is not set up yet" "run agyx once in a terminal (or set AGYX_ASSUME_YES=1)"; }
 
-need() {
-  agyx_valid_name "${1-}" || bad "invalid profile name: ${1-}"
-  ! agyx_subcommand "$1" || bad "profile name is reserved: $1"
-}
+need() { agyx_check_name "${1-}" || bad "$AGYX_ERR_MSG"; }
 exists() {
-  need "${1-}"
-  [ ! -L "$data/profiles/$1" ] && [ ! -L "$data/profiles/$1/antigravity-cli" ] || fail 1 symlink_profile "profile '$1' must not be a symlink"
-  [ -d "$data/profiles/$1/antigravity-cli" ] || fail 3 no_such_profile "profile '$1' does not exist" "agyx profile login $1"
+  agyx_check_profile "${1-}" && return 0
+  _rc=$?
+  [ "$_rc" -eq 2 ] && bad "$AGYX_ERR_MSG"
+  fail "$_rc" "$AGYX_ERR_CODE" "$AGYX_ERR_MSG" "$AGYX_ERR_HINT"
 }
-names() { for d in "$data"/profiles/*/; do [ -d "$d" ] && basename "$d"; done; }
-dflt() { [ -f "$data/default" ] && cat "$data/default"; }
+names() { for d in "$AGYX_DATA"/profiles/*/; do [ -d "$d" ] && basename "$d"; done; }
+dflt() { [ -f "$AGYX_DATA/default" ] && cat "$AGYX_DATA/default"; }
 # Saved email only: never open the token, even for metadata.
 email_of() {
   e=''
-  [ ! -f "$data/profiles/$1/email" ] || IFS= read -r e < "$data/profiles/$1/email"
+  [ ! -f "$AGYX_DATA/profiles/$1/email" ] || IFS= read -r e < "$AGYX_DATA/profiles/$1/email"
   case $e in *[[:space:]]*) e='' ;; esac
   printf '%s' "$e"
 }
-logged_in() { [ -f "$data/profiles/$1/$tok" ] && [ ! -L "$data/profiles/$1/$tok" ]; }
+logged_in() { [ -f "$AGYX_DATA/profiles/$1/$tok" ] && [ ! -L "$AGYX_DATA/profiles/$1/$tok" ]; }
 status() {
   if ! logged_in "$1"; then echo "not logged in"; return 0; fi
   e=$(email_of "$1")
@@ -116,14 +106,8 @@ dup_warning() {
 bad() { [ "${json-0}" != 1 ] || fail 2 usage "$*"; echo "agyx: $*" >&2; echo "$usage" >&2; exit 2; }
 # The profile a launch would pick without --profile: AGYX_PROFILE, then the saved default.
 resolve() {
-  rname=${AGYX_PROFILE-} rsrc=env
-  [ -n "$rname" ] || { rname=$(dflt); rsrc=default; }
-  [ -n "$rname" ] || fail 3 no_profile "no profile selected" "agyx profile default NAME (or set AGYX_PROFILE)"
-  if ! agyx_valid_name "$rname" || agyx_subcommand "$rname"; then
-    fail 2 invalid_profile "invalid profile name: $rname"
-  fi
-  [ ! -L "$data/profiles/$rname" ] && [ ! -L "$data/profiles/$rname/antigravity-cli" ] || fail 1 symlink_profile "profile '$rname' must not be a symlink"
-  [ -d "$data/profiles/$rname/antigravity-cli" ] || fail 3 no_such_profile "profile '$rname' does not exist" "agyx profile login $rname"
+  agyx_resolve_profile || fail $? "$AGYX_ERR_CODE" "$AGYX_ERR_MSG" "$AGYX_ERR_HINT"
+  rname=$AGYX_PROFILE_NAME rsrc=$AGYX_PROFILE_SRC
 }
 help_for() {
   case $1 in
@@ -179,7 +163,7 @@ if [ "$want_help" = 1 ]; then
   if [ "$cmd" = profile ]; then help_for "${1-}"; else help_for "$cmd"; fi
   exit 0
 fi
-if [ "$cmd" != uninstall ] && [ -d "$data" ]; then
+if [ "$cmd" != uninstall ] && [ -d "$AGYX_DATA" ]; then
   repair
 fi
 case $cmd in
@@ -191,8 +175,8 @@ case $cmd in
         need "${1-}"
         agyx_has_tty || fail 5 needs_terminal "profile login runs agy's interactive sign-in and needs a terminal" "ask the user to run: agyx profile login $1"
         agyx_gate; repair
-        [ ! -L "$data/profiles/$1" ] && [ ! -L "$data/profiles/$1/antigravity-cli" ] || die "profile must not be a symlink"
-        (umask 077; mkdir -p "$data/profiles/$1/antigravity-cli") || die "cannot create profile"
+        [ ! -L "$AGYX_DATA/profiles/$1" ] && [ ! -L "$AGYX_DATA/profiles/$1/antigravity-cli" ] || die "profile must not be a symlink"
+        (umask 077; mkdir -p "$AGYX_DATA/profiles/$1/antigravity-cli") || die "cannot create profile"
         if logged_in "$1"; then
           echo "agyx: profile '$1' is already logged in ($(status "$1")). Starting agy in it anyway; sign in again from there only if you want to change the account." >&2
         fi
@@ -206,12 +190,12 @@ case $cmd in
         [ ! -s "$login_log" ] || agyx_check_storage "$login_log"
         if logged_in "$1"; then
           e=$(agyx_email_file "$login_log")
-          if [ -n "$e" ]; then printf '%s\n' "$e" > "$data/profiles/$1/email"
-          else rm -f "$data/profiles/$1/email"; fi
+          if [ -n "$e" ]; then printf '%s\n' "$e" > "$AGYX_DATA/profiles/$1/email"
+          else rm -f "$AGYX_DATA/profiles/$1/email"; fi
         fi
         rm -f "$login_log"
         if logged_in "$1" && [ -z "$(dflt)" ]; then
-          printf '%s\n' "$1" > "$data/default" &&
+          printf '%s\n' "$1" > "$AGYX_DATA/default" &&
             echo "agyx: '$1' is now the default profile (change it with: agyx profile default NAME)" >&2
         fi
         exit "$rc"
@@ -219,22 +203,22 @@ case $cmd in
       default)
         [ $# -le 1 ] || bad "profile default takes at most one profile name"
         if [ $# -eq 0 ]; then
-          [ -d "$data" ] || notyet
+          [ -d "$AGYX_DATA" ] || notyet
           d=$(dflt)
           [ -n "$d" ] || fail 3 no_default "no default profile" "agyx profile default NAME"
           if [ "$json" = 1 ]; then printf '{"default":%s}\n' "$(jstr "$d")"; else echo "$d"; fi
           exit 0
         fi
         need "$1"
-        [ -d "$data" ] || notyet
+        [ -d "$AGYX_DATA" ] || notyet
         exists "$1"
-        printf '%s\n' "$1" > "$data/default" || die "cannot write $data/default"
+        printf '%s\n' "$1" > "$AGYX_DATA/default" || die "cannot write $AGYX_DATA/default"
         [ "$json" != 1 ] || printf '{"default":%s}\n' "$(jstr "$1")"
         ;;
       list)
         [ $# -eq 0 ] || bad "profile list takes no arguments"
-        d=''; [ ! -d "$data" ] || d=$(dflt)
-        all=''; [ ! -d "$data" ] || all=$(names)
+        d=''; [ ! -d "$AGYX_DATA" ] || d=$(dflt)
+        all=''; [ ! -d "$AGYX_DATA" ] || all=$(names)
         [ -n "$all" ] || echo "agyx: no profiles yet; run: agyx profile login NAME" >&2
         if [ "$json" = 1 ]; then
           printf '{"default":%s,"profiles":[' "$(jstr "$d")"; sep=''
@@ -253,7 +237,7 @@ case $cmd in
         ;;
       current)
         [ $# -eq 0 ] || bad "profile current takes no arguments"
-        [ -d "$data" ] || notyet
+        [ -d "$AGYX_DATA" ] || notyet
         resolve
         if [ "$json" = 1 ]; then
           printf '{"name":%s,"source":%s,"email":%s,"logged_in":%s}\n' "$(jstr "$rname")" "$(jstr "$rsrc")" "$(jstr "$(email_of "$rname")")" "$(jbool logged_in "$rname")"
@@ -264,7 +248,7 @@ case $cmd in
       usage)
         all=0; [ "${1-}" != --all ] || { all=1; shift; }
         [ $# -le $((1 - all)) ] || bad "profile usage takes one profile name or --all"
-        [ -d "$data" ] || notyet
+        [ -d "$AGYX_DATA" ] || notyet
         if [ "$all" = 1 ]; then
           picked=$(names)
           [ -n "$picked" ] || fail 3 no_profile "no profiles yet" "agyx profile login NAME"
@@ -320,23 +304,12 @@ case $cmd in
         [ $# -eq 1 ] || bad "profile remove needs exactly one profile name"
         pname=$1
         need "$pname"
-        [ -d "$data" ] || notyet
+        [ -d "$AGYX_DATA" ] || notyet
         exists "$pname"
         if [ "${AGYX_ASSUME_YES-}" != 1 ] && ! agyx_has_tty; then
           fail 5 needs_terminal "profile remove needs a terminal to ask; nothing was removed" "agyx profile remove $pname --yes"
         fi
-        pdir=$data/profiles/$pname/antigravity-cli
-        set -- "$pdir"
-        if [ -e "$pdir/conversation_summaries.db" ] && [ ! -L "$pdir/conversation_summaries.db" ]; then
-          set -- "$@" "$pdir/conversation_summaries.db"
-        fi
-        for lg in "$pdir"/log/*.log; do
-          [ -f "$lg" ] && [ ! -L "$lg" ] && set -- "$@" "$lg"
-        done
-        for dm in "$pdir"/daemon/*; do
-          [ -e "$dm" ] && [ ! -L "$dm" ] && set -- "$@" "$dm"
-        done
-        pids=$(agyx_open_pids "$@")
+        pids=$(agyx_profile_pids "$AGYX_DATA/profiles/$pname/antigravity-cli")
         if [ -n "$pids" ]; then
           fail 1 profile_busy "agy is still running in profile '$pname' (PIDs: ${pids% }). Close it first; nothing was removed"
         fi
@@ -344,25 +317,25 @@ case $cmd in
         dnote=''; [ "$pname" != "$d" ] || dnote=', current default'
         {
           echo "agyx profile remove will move to Trash:"
-          echo "  $(agyx_tilde "$data/profiles/$pname")/   ($(status "$pname")$dnote)"
+          echo "  $(agyx_tilde "$AGYX_DATA/profiles/$pname")/   ($(status "$pname")$dnote)"
           echo "Kept: ~/.gemini (shared conversations and history) and other profiles."
         } >&2
         agyx_ask n "Remove profile '$pname'? [y/N] " || { echo >&2; die "nothing was removed."; }
         tbase=$(agyx_trash_base)
         (umask 077; mkdir -p "$tbase") || die "cannot create Trash directory"
         trash=$(mktemp -d "$tbase/agyx-profile-$pname-$(date +%Y%m%d%H%M%S)-XXXXXX") || die "cannot create profile Trash directory"
-        mv "$data/profiles/$pname" "$trash/$pname" || die "could not move $data/profiles/$pname to the Trash"
+        mv "$AGYX_DATA/profiles/$pname" "$trash/$pname" || die "could not move $AGYX_DATA/profiles/$pname to the Trash"
         if [ "$pname" = "$d" ]; then
           rem=$(names)
           # shellcheck disable=SC2086 # validated profile names have no spaces or glob chars
           set -- $rem
           if [ $# -eq 1 ]; then
-            printf '%s\n' "$1" > "$data/default" || die "cannot write $data/default"
+            printf '%s\n' "$1" > "$AGYX_DATA/default" || die "cannot write $AGYX_DATA/default"
             echo "agyx: '$1' is now the default profile (change it with: agyx profile default NAME)" >&2
           elif [ $# -eq 0 ]; then
-            rm -f "$data/default"
+            rm -f "$AGYX_DATA/default"
           else
-            rm -f "$data/default"
+            rm -f "$AGYX_DATA/default"
             echo "agyx: default profile cleared; set one with: agyx profile default NAME" >&2
           fi
         fi
@@ -377,14 +350,8 @@ case $cmd in
     if [ "${AGYX_ASSUME_YES-}" != 1 ] && ! agyx_has_tty; then
       fail 5 needs_terminal "uninstall needs a terminal to ask; nothing was removed" "agyx uninstall --yes"
     fi
-    # Only check open files inside agyx's own data/profile paths (never block plain native agy).
-    set -- "$data/agy"
-    for d in "$data"/profiles/*/antigravity-cli; do
-      [ -d "$d" ] || continue
-      set -- "$@" "$d" "$d/conversation_summaries.db"
-      for lg in "$d"/log/*.log; do [ -f "$lg" ] && set -- "$@" "$lg"; done
-    done
-    pids=$(agyx_open_pids "$@")
+    # Only check open non-symlink private targets inside agyx profiles (never block plain native agy).
+    pids=$(agyx_profile_pids "$AGYX_DATA"/profiles/*/antigravity-cli)
     if [ -n "$pids" ]; then
       die "agy is still running (PIDs: ${pids% }). Close it first, then run agyx uninstall again; nothing was removed."
     fi
@@ -397,13 +364,13 @@ case $cmd in
         elif [ -f "$prefix/.agyx-prefix" ]; then kind=prefix
         fi ;;
     esac
-    plink=$rh/.local/bin/agyx
+    plink=$AGYX_HOME/.local/bin/agyx
     case $kind in
       checkout|prefix) [ -L "$plink" ] && [ "$plink" -ef "$me" ] || plink= ;;
     esac
     {
       echo "agyx uninstall will remove:"
-      [ -d "$data" ] && echo "  $(agyx_tilde "$data")/   profiles ${pl:-none} (private app files, logins and logs; moved to Trash)"
+      [ -d "$AGYX_DATA" ] && echo "  $(agyx_tilde "$AGYX_DATA")/   profiles ${pl:-none} (private app files, logins and logs; moved to Trash)"
       case $kind in
         brew) echo "  agyx itself   (brew uninstall $formula)" ;;
         checkout) if [ -n "$plink" ]; then echo "  agyx itself   (the link $(agyx_tilde "$plink"))"; else echo "  agyx itself   (nothing: it runs from a checkout, which is left alone)"; fi ;;
@@ -414,13 +381,13 @@ case $cmd in
         *) echo "  agyx itself   (delete $(agyx_tilde "$me") yourself)" ;;
       esac
       echo "Kept: ~/.gemini (shared settings, history and conversations) and plain agy."
-      [ -d "$data" ] && echo "Apps set up with $(agyx_tilde "$data")/agy will stop working."
+      [ -d "$AGYX_DATA" ] && echo "Apps set up with $(agyx_tilde "$AGYX_DATA")/agy will stop working."
     } >&2
     agyx_ask n 'Remove? [y/N] ' || { echo >&2; die "nothing was removed."; }
     tbase=$(agyx_trash_base)
     (umask 077; mkdir -p "$tbase") || die "cannot create Trash directory"
     trash=$(mktemp -d "$tbase/agyx-uninstall-$(date +%Y%m%d%H%M%S)-XXXXXX") || die "cannot create uninstall Trash directory"
-    [ ! -d "$data" ] || mv "$data" "$trash/data" || die "could not move $data to the Trash"
+    [ ! -d "$AGYX_DATA" ] || mv "$AGYX_DATA" "$trash/data" || die "could not move $AGYX_DATA to the Trash"
     echo "agyx: removed. Moved to the Trash: $(agyx_tilde "$trash")"
     case $kind in
       brew)
@@ -439,75 +406,86 @@ case $cmd in
     ;;
   doctor)
     [ $# -eq 0 ] || bad "doctor takes no arguments"
-    [ -d "$data" ] || notyet
-    doctor_report() {
-    echo "agyx version: $AGYX_VERSION"
-    # shellcheck disable=SC2154 # real is set by agyx_find_real
+    [ -d "$AGYX_DATA" ] || notyet
+    ddir=$(mktemp -d "${TMPDIR:-/tmp}/agyx-doctor-XXXXXX") || die "cannot create temporary directory"
+    trap 'rm -rf "$ddir"' EXIT
+    trap 'rm -rf "$ddir"; exit 130' INT
+    trap 'rm -rf "$ddir"; exit 143' TERM
+    trap 'rm -rf "$ddir"; exit 129' HUP
+    dr=$ddir/report de=$ddir/err di=$ddir/issues
+    : > "$dr"; : > "$de"; : > "$di"
+    doc_line() { printf '%s\n' "$1" >> "$dr"; }
+    doc_warn() { printf '%s\n' "$1" >> "$dr"; printf '%s\n' "$1" >> "$di"; }
+    doc_err_warn() { printf '%s\n' "$1" >> "$de"; printf '%s\n' "$1" >> "$di"; }
+
+    doc_line "agyx version: $AGYX_VERSION"
     if agyx_find_real; then
-      echo "real agy: $real${AGYX_REAL_AGY:+ (from AGYX_REAL_AGY)}"
-      echo "version: $(AGY_CLI_DISABLE_AUTO_UPDATE=true "$real" --version 2>&1 | head -n 1)"
-      agyx_check_binary "$real"
+      doc_line "real agy: $AGYX_REAL${AGYX_REAL_AGY:+ (from AGYX_REAL_AGY)}"
+      doc_line "version: $(AGY_CLI_DISABLE_AUTO_UPDATE=true "$AGYX_REAL" --version 2>&1 | head -n 1)"
+      if ! _w=$(agyx_check_binary "$AGYX_REAL" 2>&1); then doc_err_warn "$_w"; fi
     else
-      echo "real agy: NOT FOUND. Install agy, or point agyx at it with AGYX_REAL_AGY=/path/to/agy"
+      doc_warn "real agy: NOT FOUND. Install agy, or point agyx at it with AGYX_REAL_AGY=/path/to/agy"
     fi
     first=$(command -v agyx)
-    if [ -n "$first" ] && [ "$first" -ef "$me" ]; then echo "PATH: agyx resolves to this script ($first)"
-    else echo "PATH: agyx does NOT resolve to this script (found: ${first:-none}); put it on PATH (Homebrew does; or link $me)"; fi
-    if [ -e "$data/agy" ] && [ "$data/agy" -ef "$shim" ]; then
-      echo "agy entry: $data/agy (in place; the path to give apps that need a binary named agy)"
+    if [ -n "$first" ] && [ "$first" -ef "$me" ]; then doc_line "PATH: agyx resolves to this script ($first)"
+    else doc_warn "PATH: agyx does NOT resolve to this script (found: ${first:-none}); put it on PATH (Homebrew does; or link $me)"; fi
+    if [ -e "$AGYX_DATA/agy" ] && [ "$AGYX_DATA/agy" -ef "$shim" ]; then
+      doc_line "agy entry: $AGYX_DATA/agy (in place; the path to give apps that need a binary named agy)"
     else
-      echo "agy entry: $data/agy is MISSING or not agyx's (it is the path to give apps that need a binary named agy)"
+      doc_warn "agy entry: $AGYX_DATA/agy is MISSING or not agyx's (it is the path to give apps that need a binary named agy)"
     fi
     if agyx_native_file_storage; then
-      echo "profile mode: real HOME; native file storage (no shell bridge needed); --app_data_dir=<profile>/antigravity-cli (relative to ~/.gemini)"
+      doc_line "profile mode: real HOME; native file storage (no shell bridge needed); --app_data_dir=<profile>/antigravity-cli (relative to ~/.gemini)"
     else
-      echo "profile mode: real HOME; WSL_INTEROP=${WSL_INTEROP:-agyx} (desktop keyring bypass + shell bridge); --app_data_dir=<profile>/antigravity-cli (relative to ~/.gemini)"
+      doc_line "profile mode: real HOME; WSL_INTEROP=${WSL_INTEROP:-agyx} (desktop keyring bypass + shell bridge); --app_data_dir=<profile>/antigravity-cli (relative to ~/.gemini)"
     fi
-    if [ -x "$sec" ] && HOME=$rh "$sec" find-generic-password -s gemini -a antigravity >/dev/null 2>&1; then
-      echo "keychain: INFO plain agy has a login (gemini/antigravity); agyx does not use it"
+    if [ -x "$sec" ] && HOME=$AGYX_HOME "$sec" find-generic-password -s gemini -a antigravity >/dev/null 2>&1; then
+      doc_line "keychain: INFO plain agy has a login (gemini/antigravity); agyx does not use it"
     fi
-    d=$(dflt); echo "default: ${d:-none}"
+    d=$(dflt); doc_line "default: ${d:-none}"
+    # shellcheck disable=SC2034 # used by agyx_report in runtime/sync.sh
+    AGYX_DOC_LINE=doc_line AGYX_DOC_WARN=doc_warn
     for n in $(names); do
-      p=$data/profiles/$n
+      p=$AGYX_DATA/profiles/$n
       t=$p/$tok
-      echo "profile $n: $(status "$n")"
+      doc_line "profile $n: $(status "$n")"
       for dir in "$p" "$p/antigravity-cli"; do
         if [ -d "$dir" ]; then
           mode=$(agyx_mode "$dir")
-          [ $((0$mode & 077)) -eq 0 ] || echo "  permissions: WARNING $dir mode $mode is group/world accessible (expected 0700)"
-        else echo "  permissions: WARNING directory missing: $dir"; fi
+          [ $((0$mode & 077)) -eq 0 ] || doc_warn "  permissions: WARNING $dir mode $mode is group/world accessible (expected 0700)"
+        else doc_warn "  permissions: WARNING directory missing: $dir"; fi
       done
-      if [ -L "$t" ]; then echo "  token: WARNING symlink (profile will not start)"
+      if [ -L "$t" ]; then doc_warn "  token: WARNING symlink (profile will not start)"
       elif [ -f "$t" ]; then
         mode=$(agyx_mode "$t")
-        if [ "$mode" = 600 ]; then echo "  token: present, mode 0600"
-        else echo "  token: WARNING mode $mode (expected 0600)"; fi
-      else echo "  token: missing (sign in again)"; fi
-      # shellcheck disable=SC2034 # P is used by sync.sh
-      P=$p/antigravity-cli
-      agyx_report
-      nl=$(ls -t "$P"/log/*.log 2>/dev/null | head -n 1)
-      [ -z "$nl" ] || agyx_check_storage "$nl"
+        if [ "$mode" = 600 ]; then doc_line "  token: present, mode 0600"
+        else doc_warn "  token: WARNING mode $mode (expected 0600)"; fi
+      else doc_line "  token: missing (sign in again)"; fi
+      pdir=$p/antigravity-cli
+      agyx_report "$pdir"
+      nl=$(ls -t "$pdir"/log/*.log 2>/dev/null | head -n 1)
+      if [ -n "$nl" ]; then
+        if ! _w=$(agyx_check_storage "$nl" 2>&1); then doc_err_warn "$_w"; fi
+      fi
       nl=${nl##*/}
-      echo "  logs: $(agyx_tilde "$P/log")/, newest: ${nl:-none yet}"
+      doc_line "  logs: $(agyx_tilde "$pdir/log")/, newest: ${nl:-none yet}"
     done
-    dup_warning
-    }
-    de=$(mktemp "${TMPDIR:-/tmp}/agyx-doctor-XXXXXX") || die "cannot create temporary file"
-    trap 'rm -f "$de"' EXIT
-    trap 'rm -f "$de"; exit 130' INT
-    trap 'rm -f "$de"; exit 143' TERM
-    trap 'rm -f "$de"; exit 129' HUP
-    dout=$(doctor_report 2>"$de"); derr=$(cat "$de"); rm -f "$de"
-    # ponytail: issues are found by the report's own markers; a check registry if this list grows.
-    issues=$(printf '%s\n%s\n' "$dout" "$derr" | grep -E 'WARNING|NOT FOUND|MISSING|NOT confirmed|DRIFT|does NOT')
+    unset AGYX_DOC_LINE AGYX_DOC_WARN
+    _dups=$(dup_warning)
+    if [ -n "$_dups" ]; then
+      printf '%s\n' "$_dups" | while IFS= read -r _dl; do
+        [ -z "$_dl" ] || doc_warn "$_dl"
+      done
+    fi
     if [ "$json" = 1 ]; then
       jarr() { awk 'function j(s) { gsub(/[\\"]/, "\\\\&", s); gsub(/\t/, " ", s); return "\"" s "\"" } NF { printf "%s%s", c, j($0); c = "," }'; }
-      printf '{"ok":%s,"issues":[%s],"report":[%s]}\n' "$(jbool [ -z "$issues" ])" "$(printf '%s\n' "$issues" | jarr)" "$(printf '%s\n%s\n' "$dout" "$derr" | jarr)"
+      printf '{"ok":%s,"issues":[%s],"report":[%s]}\n' "$(jbool [ ! -s "$di" ])" "$(jarr < "$di")" "$(cat "$dr" "$de" | jarr)"
     else
-      printf '%s\n' "$dout"
-      [ -z "$derr" ] || printf '%s\n' "$derr" >&2
+      cat "$dr"
+      [ ! -s "$de" ] || cat "$de" >&2
     fi
-    [ -z "$issues" ] || exit 1
+    _has_issues=0; [ ! -s "$di" ] || _has_issues=1
+    rm -rf "$ddir"
+    [ "$_has_issues" = 0 ] || exit 1
     ;;
 esac

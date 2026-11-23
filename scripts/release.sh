@@ -94,7 +94,7 @@ if git -C "$tap" rev-parse --git-dir >/dev/null 2>&1; then ok "tap checkout foun
 else no "tap checkout not found at $tap (set AGYX_TAP_DIR)"; fi
 
 step "2. tests and shellcheck"
-if sh test/run.sh </dev/null >/dev/null 2>&1; then ok "sh test/run.sh"; else no "sh test/run.sh fails (run it to see why)"; fi
+if (unset AGYX_TAP_DIR AGYX_TTY; sh test/run.sh </dev/null >/dev/null 2>&1); then ok "sh test/run.sh"; else no "sh test/run.sh fails (run it to see why)"; fi
 if shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh runtime/bash_env runtime/zsh/.zshenv test/run.sh test/release.sh scripts/release.sh scripts/install.sh; then ok "shellcheck"
 else no "shellcheck"; fi
 

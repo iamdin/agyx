@@ -18,22 +18,17 @@ case $self in */*) _sdir=${self%/*}; _sbase=${self##*/} ;; *) _sdir=.; _sbase=$s
 _pdir=$(cd "${_sdir:-/}" && pwd -P) || die "cannot resolve script directory"
 self=${_pdir%/}/$_sbase
 runtime=$(cd "${_pdir%/}/../runtime" && pwd -P) || die "cannot resolve runtime directory"
-rh=$HOME
-unset AGYX_REAL_HOME AGY_PROFILE
-data=${AGYX_DATA_DIR:-$rh/.local/share/agyx}
-# shellcheck disable=SC2034 # R, AGYX_SHIM, AGYX_RUNTIME and data are used by sync.sh
-R=$rh AGYX_SHIM=$self AGYX_RUNTIME=$runtime
 # shellcheck source=../runtime/sync.sh
 . "$runtime/sync.sh"
 # what we store or pass on (entry link, ZDOTDIR, BASH_ENV) must survive a Homebrew upgrade
-agyx_stable "$self"; AGYX_SHIM=$AGYX_STABLE
+agyx_init "$self"
 runtime_stable=${AGYX_SHIM%/*/*}/runtime
 # ask once before the first write; then automatic repairs (stderr only, never stdout)
 agyx_gate
 agyx_ensure_entry || die "cannot prepare app entry"
 
 # 1. profile choice: leading --profile flags only
-flag=0 name='' src=''
+flag=0 name=''
 while [ $# -gt 0 ]; do
   case $1 in
     --profile)
@@ -47,46 +42,33 @@ while [ $# -gt 0 ]; do
   [ -n "$v" ] || usage_err "--profile value is empty"
   flag=1 name=$v
 done
-if [ "$flag" = 0 ]; then
-  name=${AGYX_PROFILE:-}
-  [ -z "$name" ] || src='env'
-  if [ -z "$name" ] && [ -f "$data/default" ]; then
-    read -r name < "$data/default" || :
-    [ -z "$name" ] || src='default'
-  fi
-  if [ -z "$name" ]; then
-    existing=''
-    for d in "$data"/profiles/*/; do [ -d "$d" ] && existing="$existing $(basename "$d")"; done
-    if [ -z "$existing" ]; then
-      missing_err "no profiles yet. Create and sign in to one with: agyx profile login NAME (for example: agyx profile login work)"
-    fi
-    missing_err "no profile chosen. Existing profiles:$existing. Pick one with --profile NAME, or set a default with: agyx profile default NAME"
-  fi
+if [ "$flag" = 1 ]; then
+  agyx_resolve_profile "$name"
+else
+  agyx_resolve_profile
 fi
-agyx_valid_name "$name" || usage_err "invalid profile name: $name"
-agyx_subcommand "$name" && usage_err "profile name is reserved: $name"
-P=$data/profiles/$name/antigravity-cli
-if [ -L "$data/profiles/$name" ] || [ -L "$P" ]; then
-  die "profile '$name' must not be a symlink"
+_rc=$?
+if [ "$_rc" -ne 0 ]; then
+  case $_rc in
+    1) die "$AGYX_ERR_MSG" ;;
+    2) usage_err "$AGYX_ERR_MSG" ;;
+    *) missing_err "$AGYX_ERR_MSG${AGYX_ERR_HINT:+ ($AGYX_ERR_HINT)}" ;;
+  esac
 fi
-if [ ! -d "$P" ]; then
-  if [ "$src" = default ]; then
-    missing_err "the default profile '$name' (from $data/default) does not exist. Fix it with: agyx profile default NAME, or create it with: agyx profile login $name"
-  fi
-  missing_err "profile '$name' does not exist (run: agyx profile login $name)"
-fi
+name=$AGYX_PROFILE_NAME
+pdir=$AGYX_DATA/profiles/$name/antigravity-cli
 
 # 2. real binary & profile app preparation
 agyx_find_real || agyx_missing_agy
 for a in "$@"; do
   case $a in --app_data_dir|--app_data_dir=*|-app_data_dir|-app_data_dir=*|--gemini_dir|--gemini_dir=*|-gemini_dir|-gemini_dir=*) usage_err "storage flags are managed by agyx" ;; esac
 done
-agyx_sync_app || {
+agyx_sync_app "$pdir" || {
   _rc=$?
   [ "$_rc" -eq 5 ] && exit 5
   die "cannot prepare profile app directory"
 }
-agyx_app_arg || die "cannot resolve profile app directory"
+agyx_app_arg "$pdir" || die "cannot resolve profile app directory"
 
 # 3. per-platform keyring bypass:
 # - Headless Linux, containers, and SSH sessions already use file storage natively (zero env/shell hooks).
@@ -106,7 +88,11 @@ if ! agyx_native_file_storage; then
 fi
 
 # 4. check newest native log in <profile>/antigravity-cli/log, then direct exec
-agyx_check_recent_log "$P"
-unset AGYX_RUNTIME AGYX_ASSUME_YES AGYX_TTY AGYX_SECURITY AGYX_TRASH_DIR AGYX_LOCK_TRIES AGYX_OS AGYX_DOCKERENV
-# shellcheck disable=SC2154 # real is set by agyx_find_real
-exec "$real" "--app_data_dir=$AGYX_APP_ARG" "$@"
+agyx_check_recent_log "$pdir"
+_exec_real=$AGYX_REAL _exec_app=$AGYX_APP_ARG
+unset AGYX_RUNTIME AGYX_ASSUME_YES AGYX_TTY AGYX_SECURITY AGYX_TRASH_DIR AGYX_LOCK_TRIES AGYX_OS AGYX_DOCKERENV \
+  AGYX_HOME AGYX_DATA AGYX_SHIM AGYX_VERSION AGYX_SHARED_DIRS AGYX_SHARED_FILES \
+  AGYX_STABLE AGYX_APP_ARG AGYX_RESOLVED AGYX_REAL \
+  AGYX_PROFILE_NAME AGYX_PROFILE_SRC AGYX_ERR_CODE AGYX_ERR_MSG AGYX_ERR_HINT \
+  AGYX_DOC_LINE AGYX_DOC_WARN
+exec "$_exec_real" "--app_data_dir=$_exec_app" "$@"
