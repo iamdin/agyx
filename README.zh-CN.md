@@ -8,7 +8,7 @@
 
 ## 安装
 
-先安装[官方 `agy`](https://antigravity.google/docs/cli/overview)，再安装 `agyx`：
+先安装[官方 `agy`](https://antigravity.google/docs/cli/overview)（`>= 1.5.16`），再安装 `agyx`：
 
 ```sh
 curl -fsSL https://antigravity.google/cli/install.sh | bash
@@ -40,6 +40,7 @@ agyx profile remove personal       # 将指定 profile 移入废纸篓（别名�
 agyx                               # 启动默认 profile
 agyx --profile personal -p "hi"    # 指定 profile 运行
 agyx --profile personal -c         # 换另一个账号无缝续接最近一次对话
+agyx --profile personal -r <id>    # 换另一个账号续接指定 ID 的对话
 AGYX_PROFILE=work agyx models      # 通过环境变量指定 profile
 
 agyx doctor                        # 检查安装状态、目录权限与软链
@@ -47,6 +48,10 @@ agyx uninstall                     # 将数据移入废纸篓并卸载 agyx
 ```
 
 选择优先级：前置 `--profile NAME` > `AGYX_PROFILE` > 默认 profile。名称需匹配 `[a-z][a-z0-9_-]{0,31}`（`profile`、`doctor`、`uninstall` 为保留字），其余参数原样透传给 `agy`。`agyx profile usage` 跑的是 agy 的 `/usage`。
+
+### Agentic IDE 与多路复用器（Herdr、Zed、JetBrains、T3 Code）
+
+将工具的 `agy` 可执行路径设为 `~/.local/share/agyx/agy`（升级后仍保持稳定的 shim 入口）。可通过环境变量 `AGYX_PROFILE=work` 或在 `agy` / `agy acp` 参数前加 `--profile work` 指定账号；未指定时使用默认 profile。
 
 ### 给 AI agent 和脚本用
 
@@ -59,8 +64,8 @@ agyx uninstall                     # 将数据移入废纸篓并卸载 agyx
 ## 工作原理与路径
 
 - **数据目录（`${AGYX_DATA_DIR:-~/.local/share/agyx}`）**：首次写入前询问一次确认（脚本可设 `AGYX_ASSUME_YES=1` 跳过），仅存放 `agy` 入口链接、`default` 和 `profiles/<name>/`。
-- **共享与私有边界**：对话、`history.jsonl`、`conversation_summaries.db`、`brain`、`skills`、`mcp` 等软链至 `~/.gemini/antigravity-cli/` 跨账号共享；Token、`settings.json`、`cache/`、`daemon/` 及原生 `log/` 按账号私有隔离。若共享项发生冲突（`DRIFT`），下次启动会询问确认后自动合并，被替换副本移入系统废纸篓。
-- **分平台零侵入隔离**：直接通过 `exec` 加 `--app_data_dir` 启动原生 `agy`。无头 Linux、容器及所有 SSH 会话直接使用原生文件存储（零额外环境变量）；带系统钥匙串的桌面会话（本地 macOS、Linux 桌面）注入 `WSL_INTEROP=agyx` 并在首层 Bash/Zsh 启动时自动清除还原。
+- **共享与私有边界**：对话、`history.jsonl`、`conversation_summaries.db`、`brain`、`skills`、`mcp` 等软链至 `~/.gemini/antigravity-cli/` 跨账号共享；Token、`settings.json`、`cache/`、`daemon/`、`persistent_terminals/` 及原生 `log/` 按账号私有隔离。若共享项发生冲突（`DRIFT`），下次启动会询问确认后自动合并，被替换副本移入系统废纸篓。
+- **全平台零侵入隔离**：直接通过 `exec` 加 `--app_data_dir` 与 `AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1` 启动原生 `agy`，在 macOS、Linux、桌面、SSH 以及 `agy acp` 下行为完全一致，完全不碰系统钥匙串，也不修改 `ZDOTDIR` / `BASH_ENV` 等 Shell 启动变量。
 
 全程不修改任何 Shell 配置文件、`PATH` 或系统登录钥匙串。原生 `agy` 每次从 `PATH` 或 `~/.local/bin/agy` 动态查找（可用 `AGYX_REAL_AGY=/path/to/agy` 覆盖）。
 
@@ -73,7 +78,7 @@ agyx uninstall                     # 将数据移入废纸篓并卸载 agyx
 ```sh
 sh test/run.sh
 sh test/release.sh
-shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh runtime/bash_env runtime/zsh/.zshenv test/run.sh test/release.sh scripts/release.sh scripts/install.sh
+shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh test/run.sh test/release.sh scripts/release.sh scripts/install.sh
 ```
 
 ## 许可证

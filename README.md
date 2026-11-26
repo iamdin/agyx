@@ -8,7 +8,7 @@ POSIX `sh`, zero runtime dependencies.
 
 ## Install
 
-Install [the official `agy`](https://antigravity.google/docs/cli/overview) first, then install `agyx`:
+Install [the official `agy`](https://antigravity.google/docs/cli/overview) (`>= 1.5.16`) first, then install `agyx`:
 
 ```sh
 curl -fsSL https://antigravity.google/cli/install.sh | bash
@@ -41,6 +41,7 @@ agyx profile remove personal       # move a profile to the Trash (alias: rm)
 agyx                               # launch default profile
 agyx --profile personal -p "hi"    # launch a specific profile
 agyx --profile personal -c         # continue the latest conversation under another account
+agyx --profile personal -r <id>    # resume a specific conversation under another account
 AGYX_PROFILE=work agyx models      # select profile via environment variable
 
 agyx doctor                        # check installation, permissions, and links
@@ -48,6 +49,10 @@ agyx uninstall                     # move agyx data to Trash and uninstall
 ```
 
 Profile precedence: leading `--profile NAME` > `AGYX_PROFILE` > default. Profile names match `[a-z][a-z0-9_-]{0,31}` (`profile`, `doctor`, and `uninstall` are reserved). Any other arguments pass straight through to `agy`. `agyx profile usage` runs agy's `/usage`.
+
+### Agentic IDEs & Multiplexers (Herdr, Zed, JetBrains, T3 Code)
+
+Point the tool's `agy` binary path to `~/.local/share/agyx/agy` (the stable shim entry that survives upgrades). Select a profile by setting `AGYX_PROFILE=work` in the environment or passing leading `--profile work` before `agy` / `agy acp` arguments; without either, it uses the default profile.
 
 ### For AI agents and scripts
 
@@ -60,8 +65,8 @@ Profile precedence: leading `--profile NAME` > `AGYX_PROFILE` > default. Profile
 ## How it works & paths
 
 - **Data directory (`${AGYX_DATA_DIR:-~/.local/share/agyx}`):** asked once on first write (`AGYX_ASSUME_YES=1` skips prompts). Holds the `agy` app entry, `default`, and `profiles/<name>/`.
-- **Shared vs. private:** conversations, `history.jsonl`, `conversation_summaries.db`, `brain`, `skills`, and `mcp` link to `~/.gemini/antigravity-cli/`. Tokens, `settings.json`, `cache/`, `daemon/`, and native `log/` stay private per profile. If a shared entry drifts, the next launch asks once before merging and moving displaced copies to the OS Trash.
-- **Per-platform isolation:** `agy` is `exec`d directly with `--app_data_dir` pointing at the profile directory. Headless Linux, containers, and SSH sessions use native file storage with zero extra env vars; desktop keyring sessions (local macOS, Linux Desktop) set `WSL_INTEROP=agyx` and clean it on first Bash/Zsh entry.
+- **Shared vs. private:** conversations, `history.jsonl`, `conversation_summaries.db`, `brain`, `skills`, and `mcp` link to `~/.gemini/antigravity-cli/`. Tokens, `settings.json`, `cache/`, `daemon/`, `persistent_terminals/`, and native `log/` stay private per profile. If a shared entry drifts, the next launch asks once before merging and moving displaced copies to the OS Trash.
+- **Isolation:** `agy` is `exec`d directly with `--app_data_dir` pointing at the profile directory and `AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1` across all platforms (macOS, Linux, desktop, SSH, and `agy acp`), leaving OS keyrings and shell startup variables (`ZDOTDIR` / `BASH_ENV`) completely untouched.
 
 No shell startup files, `PATH`, or system keychains are modified. Native `agy` is discovered from `PATH` or `~/.local/bin/agy` (`AGYX_REAL_AGY=/path/to/agy` overrides).
 
@@ -74,7 +79,7 @@ Logins are stored as `0600` token files inside `0700` profile directories — th
 ```sh
 sh test/run.sh
 sh test/release.sh
-shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh runtime/bash_env runtime/zsh/.zshenv test/run.sh test/release.sh scripts/release.sh scripts/install.sh
+shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh test/run.sh test/release.sh scripts/release.sh scripts/install.sh
 ```
 
 ## License

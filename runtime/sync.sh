@@ -109,21 +109,6 @@ agyx_ask() {
   return 1
 }
 
-# True when agy natively selects file-based token storage without any synthetic environment variable:
-# any SSH session, container, existing WSL session, or headless Linux without a D-Bus session bus socket.
-agyx_native_file_storage() {
-  [ -n "${SSH_TTY-}${SSH_CLIENT-}${SSH_CONNECTION-}${WSL_DISTRO_NAME-}${WSL_INTEROP-}" ] && return 0
-  [ -e "${AGYX_DOCKERENV:-/.dockerenv}" ] && return 0
-  if [ "$AGYX_OS" = Linux ]; then
-    case ${DBUS_SESSION_BUS_ADDRESS-} in
-      ''|none:|disabled:)
-        _bus=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus
-        [ ! -S "$_bus" ] && return 0 ;;
-    esac
-  fi
-  return 1
-}
-
 # Portable across macOS and Linux: Trash dir, octal mode, UUID, and open-file PID lookup.
 agyx_trash_base() {
   _tb_home=${1:-$AGYX_HOME}
@@ -183,6 +168,9 @@ agyx_profile_pids() (
     for _dm in "$_d"/daemon/*; do
       [ -e "$_dm" ] && [ ! -L "$_dm" ] && set -- "$@" "$_dm"
     done
+    for _pt in "$_d"/persistent_terminals/*; do
+      [ -e "$_pt" ] && [ ! -L "$_pt" ] && set -- "$@" "$_pt"
+    done
   done
   [ $# -gt 0 ] && agyx_open_pids "$@"
 )
@@ -194,10 +182,10 @@ agyx_private_file() {
 }
 
 # All per-account entries (never linked from ~/.gemini/antigravity-cli):
-# cache holds default_project_id.txt; daemon holds remote-control discovery/tokens; log + cli.log are managed & pruned by native agy per profile.
+# cache holds default_project_id.txt; daemon holds remote-control discovery/tokens; persistent_terminals holds per-profile PTY state; log + cli.log are managed & pruned by native agy per profile.
 agyx_private() {
   agyx_private_file "$1" && return 0
-  case $1 in cache|crashes|daemon|log|cli.log|updater|last_check.timestamp) return 0 ;; esac
+  case $1 in cache|crashes|daemon|log|cli.log|persistent_terminals|updater|last_check.timestamp) return 0 ;; esac
   return 1
 }
 
@@ -499,7 +487,7 @@ agyx_email_file() {
   case $_el in *[[:space:]]*) ;; *) printf '%s' "$_el" ;; esac
 }
 
-# A future agy may ignore WSL and fall back to keychain-first, mixing accounts.
+# A future agy may ignore AGY_CLI_FORCE_FILE_TOKEN_STORAGE and fall back to keychain-first, mixing accounts.
 agyx_check_storage() {
   case $1 in /*) _storage_log=$1 ;; *) _storage_log=$PWD/$1 ;; esac
   if ! grep -Fq 'Using file-based token storage' "$_storage_log" 2>/dev/null; then
@@ -508,12 +496,12 @@ agyx_check_storage() {
   fi
 }
 
-# Doctor-only static check on native agy binary (no cache files written to disk).
+# Doctor-only static check on native agy binary (requires agy >= 1.5.16; no cache files written to disk).
 agyx_check_binary() {
-  if ! LC_ALL=C grep -Fq WSL_INTEROP "$1" 2>/dev/null ||
+  if ! LC_ALL=C grep -Fq AGY_CLI_FORCE_FILE_TOKEN_STORAGE "$1" 2>/dev/null ||
      ! LC_ALL=C grep -Fq app_data_dir "$1" 2>/dev/null ||
      ! LC_ALL=C grep -Fq 'Using file-based token storage' "$1" 2>/dev/null; then
-    echo "agyx: WARNING: file-based token storage markers NOT confirmed in $1. Stop using profiles until agy compatibility is checked: keychain fallback can mix accounts and delete the profile token file." >&2
+    echo "agyx: WARNING: file-based token storage markers NOT confirmed in $1 (agy >= 1.5.16 required; run: agy update). Stop using profiles until agy compatibility is checked: keychain fallback can mix accounts and delete the profile token file." >&2
     return 1
   fi
 }

@@ -24,7 +24,7 @@ jobs:
             sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck sqlite3 lsof psmisc
           fi
       - name: shellcheck
-        run: shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh runtime/bash_env runtime/zsh/.zshenv test/run.sh test/release.sh scripts/release.sh scripts/install.sh
+        run: shellcheck -s sh -S warning bin/agy bin/agyx runtime/sync.sh test/run.sh test/release.sh scripts/release.sh scripts/install.sh
       - name: Tests
         run: sh test/run.sh </dev/null
       - name: Release script tests

@@ -20,9 +20,8 @@ self=${_pdir%/}/$_sbase
 runtime=$(cd "${_pdir%/}/../runtime" && pwd -P) || die "cannot resolve runtime directory"
 # shellcheck source=../runtime/sync.sh
 . "$runtime/sync.sh"
-# what we store or pass on (entry link, ZDOTDIR, BASH_ENV) must survive a Homebrew upgrade
+# what we store or pass on (entry link) must survive a Homebrew upgrade
 agyx_init "$self"
-runtime_stable=${AGYX_SHIM%/*/*}/runtime
 # ask once before the first write; then automatic repairs (stderr only, never stdout)
 agyx_gate
 agyx_ensure_entry || die "cannot prepare app entry"
@@ -70,27 +69,15 @@ agyx_sync_app "$pdir" || {
 }
 agyx_app_arg "$pdir" || die "cannot resolve profile app directory"
 
-# 3. per-platform keyring bypass:
-# - Headless Linux, containers, and SSH sessions already use file storage natively (zero env/shell hooks).
-# - Desktop sessions with an active OS keyring (local macOS, Linux Desktop with D-Bus) set WSL_INTEROP
-#   (ignored by brew/CLI tools unlike WSL_DISTRO_NAME) and clean it on first shell entry.
-AGYX_PROFILE=$name AGY_CLI_DISABLE_AUTO_UPDATE=true
-export AGYX_PROFILE AGY_CLI_DISABLE_AUTO_UPDATE
-if ! agyx_native_file_storage; then
-  bz=$runtime_stable/zsh bb=$runtime_stable/bash_env
-  if [ "${ZDOTDIR-}" != "$bz" ] && [ "${BASH_ENV-}" != "$bb" ]; then
-    AGYX_ORIG_WSL_INTEROP=${WSL_INTEROP+:$WSL_INTEROP}
-  fi
-  [ "${ZDOTDIR-}" = "$bz" ] || AGYX_ORIG_ZDOTDIR=${ZDOTDIR+:$ZDOTDIR}
-  [ "${BASH_ENV-}" = "$bb" ] || AGYX_ORIG_BASH_ENV=${BASH_ENV+:$BASH_ENV}
-  WSL_INTEROP=${WSL_INTEROP:-agyx} ZDOTDIR=$bz BASH_ENV=$bb
-  export WSL_INTEROP AGYX_ORIG_WSL_INTEROP AGYX_ORIG_ZDOTDIR AGYX_ORIG_BASH_ENV ZDOTDIR BASH_ENV
-fi
+# 3. force profile-local file token storage (agy >= 1.5.16; bypasses OS keyrings on all platforms)
+AGYX_PROFILE=$name AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 AGY_CLI_DISABLE_AUTO_UPDATE=true
+export AGYX_PROFILE AGY_CLI_FORCE_FILE_TOKEN_STORAGE AGY_CLI_DISABLE_AUTO_UPDATE
 
 # 4. check newest native log in <profile>/antigravity-cli/log, then direct exec
 agyx_check_recent_log "$pdir"
 _exec_real=$AGYX_REAL _exec_app=$AGYX_APP_ARG
-unset AGYX_RUNTIME AGYX_ASSUME_YES AGYX_TTY AGYX_SECURITY AGYX_TRASH_DIR AGYX_LOCK_TRIES AGYX_OS AGYX_DOCKERENV \
+unset AGYX_RUNTIME AGYX_ASSUME_YES AGYX_TTY AGYX_SECURITY AGYX_TRASH_DIR AGYX_LOCK_TRIES AGYX_OS \
+  AGYX_REAL_HOME AGY_PROFILE \
   AGYX_HOME AGYX_DATA AGYX_SHIM AGYX_VERSION AGYX_SHARED_DIRS AGYX_SHARED_FILES \
   AGYX_STABLE AGYX_APP_ARG AGYX_RESOLVED AGYX_REAL \
   AGYX_PROFILE_NAME AGYX_PROFILE_SRC AGYX_ERR_CODE AGYX_ERR_MSG AGYX_ERR_HINT \

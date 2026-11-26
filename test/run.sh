@@ -11,13 +11,13 @@ if [ "${1-}" = --suite ] && [ $# -eq 2 ]; then only_suite=$2; fi
 T=$(mktemp -d) || exit 1
 T=$(cd "$T" && pwd -P)
 trap 'rm -rf "$T"' EXIT
-export AGYX_SECURITY=$T/security AGYX_REAL_AGY=$T/fake-agy AGYX_DOCKERENV=$T/no-docker DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/fake-bus
+export AGYX_SECURITY=$T/security AGYX_REAL_AGY=$T/fake-agy
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
 
 cat > "$T/fake-agy" <<'EOF'
 #!/bin/sh
-# Markers checked by agyx doctor: WSL_INTEROP app_data_dir Using file-based token storage
+# Markers checked by agyx doctor: AGY_CLI_FORCE_FILE_TOKEN_STORAGE app_data_dir Using file-based token storage
 app= log=
 for a in "$@"; do case $a in --app_data_dir=*) app=${a#*=} ;; esac; done
 prev=
@@ -39,10 +39,11 @@ if [ -z "$log" ] && [ -n "$app" ]; then
   esac
 fi
 if [ -n "$log" ]; then
-  case ${FAKE_STORAGE:-WSL} in
+  case ${FAKE_STORAGE-} in
+    '') printf 'Using file-based token storage because AGY_CLI_FORCE_FILE_TOKEN_STORAGE is set\n' > "$log" ;;
     missing) ;;
     keychain) printf 'Using keychain token storage\n' > "$log" ;;
-    *) printf 'Using file-based token storage because %s environment detected\n' "${FAKE_STORAGE:-WSL}" > "$log" ;;
+    *) printf 'Using file-based token storage because %s environment detected\n' "$FAKE_STORAGE" > "$log" ;;
   esac
 fi
 if [ "${FAKE_LOGIN-}" = 1 ]; then
@@ -52,7 +53,10 @@ if [ "${FAKE_LOGIN-}" = 1 ]; then
 fi
 if [ -n "${FAKE_RUN-}" ]; then exec /bin/sh -c "$FAKE_RUN"; fi
 printf 'EXE=%s\n' "$0"
-printf 'HOME=%s\nPROFILE=%s\nWSL_INTEROP=%s\nWSL_DISTRO=%s\nZDOTDIR=%s\nBASH_ENV=%s\nSSH_CLIENT=%s\nSSH_CONNECTION=%s\nSSH_TTY=%s\n' "$HOME" "$AGYX_PROFILE" "${WSL_INTEROP-unset}" "${WSL_DISTRO_NAME-unset}" "${ZDOTDIR-unset}" "${BASH_ENV-unset}" "${SSH_CLIENT-unset}" "${SSH_CONNECTION-unset}" "${SSH_TTY-unset}"
+printf 'HOME=%s\nPROFILE=%s\nFORCE_FILE=%s\nDISABLE_UPDATE=%s\nWSL_INTEROP=%s\nWSL_DISTRO=%s\nZDOTDIR=%s\nBASH_ENV=%s\nSSH_CLIENT=%s\nSSH_CONNECTION=%s\nSSH_TTY=%s\n' \
+  "$HOME" "$AGYX_PROFILE" "${AGY_CLI_FORCE_FILE_TOKEN_STORAGE-unset}" "${AGY_CLI_DISABLE_AUTO_UPDATE-unset}" \
+  "${WSL_INTEROP-unset}" "${WSL_DISTRO_NAME-unset}" "${ZDOTDIR-unset}" "${BASH_ENV-unset}" \
+  "${SSH_CLIENT-unset}" "${SSH_CONNECTION-unset}" "${SSH_TTY-unset}"
 for a in "$@"; do printf 'ARG=%s\n' "$a"; done
 exit "${FAKE_STATUS:-0}"
 EOF
@@ -96,18 +100,13 @@ suite_launch_and_usage() {
   eq flag work "$(AGYX_PROFILE=personal prof --profile=work)"
   eq old-profile-env-ignored work "$(AGY_PROFILE=personal prof)"
   eq real-home "$RH" "$(FIELD=HOME field)"
-  eq desktop-wsl-interop agyx "$(FIELD=WSL_INTEROP field)"
-  eq desktop-no-wsl-distro unset "$(FIELD=WSL_DISTRO field)"
-  eq wsl-interop-existing /run/WSL/1 "$(WSL_INTEROP=/run/WSL/1 FIELD=WSL_INTEROP field)"
-  eq wsl-interop-empty agyx "$(WSL_INTEROP='' FIELD=WSL_INTEROP field)"
-  # Per-platform native bypass: SSH, container, and headless Linux inject NEITHER WSL_* NOR ZDOTDIR/BASH_ENV.
-  eq ssh-zero-bridge 'unset|unset|unset' "$(SSH_CLIENT='1.2.3.4 1 22' launch | awk -F= '/^(WSL_INTEROP|ZDOTDIR|BASH_ENV)=/{printf "%s|", $2}' | sed 's/|$//')"
-  if [ "$(uname -s)" = Linux ]; then
-    eq linux-headless-zero-bridge 'unset|unset|unset' "$(DBUS_SESSION_BUS_ADDRESS='' XDG_RUNTIME_DIR="$S/no-bus" launch | awk -F= '/^(WSL_INTEROP|ZDOTDIR|BASH_ENV)=/{printf "%s|", $2}' | sed 's/|$//')"
-  fi
-  eq desktop-uses-bridge agyx "$(DBUS_SESSION_BUS_ADDRESS='unix:path=/tmp/bus' FIELD=WSL_INTEROP field)"
-  touch "$S/fake-dockerenv"
-  eq container-zero-bridge 'unset|unset|unset' "$(AGYX_DOCKERENV="$S/fake-dockerenv" launch | awk -F= '/^(WSL_INTEROP|ZDOTDIR|BASH_ENV)=/{printf "%s|", $2}' | sed 's/|$//')"
+  eq force-file-default 1 "$(FIELD=FORCE_FILE field)"
+  eq disable-update-default true "$(FIELD=DISABLE_UPDATE field)"
+  eq force-file-ssh '1|true' "$(SSH_CLIENT='1.2.3.4 1 22' SSH_CONNECTION='1.2.3.4 1 5.6.7.8 22' SSH_TTY=/dev/pts/0 launch | awk -F= '/^(FORCE_FILE|DISABLE_UPDATE)=/{printf "%s|", $2}' | sed 's/|$//')"
+  eq force-file-wsl '1|true' "$(WSL_INTEROP=/run/WSL/1 launch | awk -F= '/^(FORCE_FILE|DISABLE_UPDATE)=/{printf "%s|", $2}' | sed 's/|$//')"
+  eq env-untouched-unset 'unset|unset|unset|unset' "$(launch | awk -F= '/^(WSL_INTEROP|WSL_DISTRO|ZDOTDIR|BASH_ENV)=/{printf "%s|", $2}' | sed 's/|$//')"
+  eq env-untouched-empty '|||' "$(WSL_INTEROP='' WSL_DISTRO_NAME='' ZDOTDIR='' BASH_ENV='' launch | awk -F= '/^(WSL_INTEROP|WSL_DISTRO|ZDOTDIR|BASH_ENV)=/{printf "%s|", $2}' | sed 's/|$//')"
+  eq env-untouched-values '/run/WSL/1|Ubuntu|/zd|/be' "$(WSL_INTEROP=/run/WSL/1 WSL_DISTRO_NAME=Ubuntu ZDOTDIR=/zd BASH_ENV=/be launch | awk -F= '/^(WSL_INTEROP|WSL_DISTRO|ZDOTDIR|BASH_ENV)=/{printf "%s|", $2}' | sed 's/|$//')"
   for bad in Work 1a a/b doctor profile uninstall ''; do err "profile-$bad" launch --profile "$bad"; done
   err missing launch --profile
   err duplicate launch --profile work --profile personal
@@ -297,21 +296,21 @@ suite_bridge() {
   # SSH passthrough is byte-for-byte, including an empty variable.
   out=$(SSH_CLIENT='client value' SSH_CONNECTION='connection value' SSH_TTY='' launch)
   eq ssh 'SSH_CLIENT=client value|SSH_CONNECTION=connection value|SSH_TTY=|' "$(printf '%s\n' "$out" | grep '^SSH_' | tr '\n' '|')"
-  # Desktop mode Bash/Zsh bridge restores unset/empty/existing WSL_INTEROP and user's startup variables, even nested.
+  # Caller env (SSH_*, WSL_INTEROP, ZDOTDIR, BASH_ENV) passes through byte-for-byte untouched into child shells.
   for shell in bash zsh; do
     command -v "$shell" >/dev/null || { echo "SKIP $shell"; continue; }
-    snippet="$shell -c 'printf \"%s|%s|%s|%s\" \"\$HOME\" \"\${WSL_INTEROP-unset}\" \"\${ZDOTDIR-unset}\" \"\${BASH_ENV-unset}\"'"
-    eq "$shell-unset" "$RH|unset|unset|unset" "$(FAKE_RUN="$snippet" launch)"
-    eq "$shell-empty" "$RH|||" "$(WSL_INTEROP='' ZDOTDIR='' BASH_ENV='' FAKE_RUN="$snippet" launch)"
-    eq "$shell-existing" "$RH|/run/WSL/9|/zd|/be" "$(WSL_INTEROP=/run/WSL/9 ZDOTDIR=/zd BASH_ENV=/be FAKE_RUN="$snippet" launch)"
-    nested="$shell -c 'FAKE_RUN= AGYX_DOCKERENV=\"$T/no-docker\" \"$here/bin/agy\" --profile personal'"
+    snippet="$shell -c 'printf \"%s|%s|%s|%s|%s|%s|%s\" \"\$HOME\" \"\${WSL_INTEROP-unset}\" \"\${ZDOTDIR-unset}\" \"\${BASH_ENV-unset}\" \"\${SSH_CLIENT-unset}\" \"\${SSH_CONNECTION-unset}\" \"\${SSH_TTY-unset}\"'"
+    eq "$shell-unset" "$RH|unset|unset|unset|unset|unset|unset" "$(FAKE_RUN="$snippet" launch)"
+    eq "$shell-empty" "$RH||||||" "$(WSL_INTEROP='' ZDOTDIR='' BASH_ENV='' SSH_CLIENT='' SSH_CONNECTION='' SSH_TTY='' FAKE_RUN="$snippet" launch)"
+    eq "$shell-existing" "$RH|/run/WSL/9|/zd|/be|c v|conn v|/dev/pts/1" "$(WSL_INTEROP=/run/WSL/9 ZDOTDIR=/zd BASH_ENV=/be SSH_CLIENT='c v' SSH_CONNECTION='conn v' SSH_TTY=/dev/pts/1 FAKE_RUN="$snippet" launch)"
+    nested="$shell -c 'FAKE_RUN= \"$here/bin/agy\" --profile personal'"
     eq "$shell-nested" personal "$(FAKE_RUN="$nested" launch | sed -n 's/^PROFILE=//p')"
-    nested="$shell -c 'FAKE_RUN= AGYX_DOCKERENV=\"$T/no-docker\" \"$here/bin/agy\"'"
+    nested="$shell -c 'FAKE_RUN= \"$here/bin/agy\"'"
     eq "$shell-nested-inherits-profile" personal "$(FAKE_RUN="$nested" launch --profile personal | sed -n 's/^PROFILE=//p')"
     if [ "$shell" = bash ]; then names='compgen -A variable AGYX_ORIG_ || :'
     else names='print -rl -- ${(k)parameters[(I)AGYX_ORIG_*]}'; fi
-    eq "$shell-originals-cleaned" '' "$(AGYX_ORIG_EXTRA=probe FAKE_RUN="$shell -c '$names'" launch)"
-    eq "$shell-home-helper-cleaned" unset "$(AGYX_REAL_HOME=/unused FAKE_RUN="$shell -c 'printf %s \${AGYX_REAL_HOME-unset}'" launch)"
+    eq "$shell-no-orig-vars" '' "$(FAKE_RUN="$shell -c '$names'" launch)"
+    eq "$shell-legacy-vars-cleaned" 'unset|unset' "$(AGYX_REAL_HOME=/unused AGY_PROFILE=personal FAKE_RUN="$shell -c 'printf \"%s|%s\" \"\${AGYX_REAL_HOME-unset}\" \"\${AGY_PROFILE-unset}\"'" launch)"
     if [ "$shell" = bash ]; then routing='compgen -e AGYX_'
     else routing='print -rl -- ${(k)parameters[(I)AGYX_*]}'; fi
     eq "$shell-routing-vars-only" 'AGYX_DATA_DIR AGYX_PROFILE AGYX_REAL_AGY ' "$(FAKE_RUN="$shell -c '$routing'" launch | sort | tr '\n' ' ')"
@@ -422,6 +421,17 @@ EOF
   eq private-daemon-not-adopted shared-daemon "$(cat "$shared/daemon/info.json")"
   eq private-daemon-kept work-daemon "$(cat "$app/daemon/info.json")"
   eq doctor-daemon-no-drift 0 "$(ax doctor 2>/dev/null | grep -c 'antigravity-cli daemon: DRIFT')"
+  mkdir -p "$shared/persistent_terminals"
+  printf shared-pt > "$shared/persistent_terminals/t1.json"
+  ln -s "$shared/persistent_terminals" "$app/persistent_terminals"
+  launch >/dev/null
+  eq former-shared-pt-detached no "$([ -L "$app/persistent_terminals" ] && echo yes || echo no)"
+  mkdir -p "$app/persistent_terminals"
+  printf work-pt > "$app/persistent_terminals/t1.json"
+  launch >/dev/null
+  eq private-pt-not-adopted shared-pt "$(cat "$shared/persistent_terminals/t1.json")"
+  eq private-pt-kept work-pt "$(cat "$app/persistent_terminals/t1.json")"
+  eq doctor-pt-no-drift 0 "$(ax doctor 2>/dev/null | grep -c 'antigravity-cli persistent_terminals: DRIFT')"
   printf newly-created > "$app/future-entry"
   printf future-db > "$app/future.db"
   printf future-wal > "$app/future.db-wal"
@@ -546,7 +556,7 @@ suite_login_and_doctor() {
   (umask 022; printf invalid-json > "$app/antigravity-oauth-token")
   ln -s "$shared/missing" "$app/broken"
   out=$(FAKE_KEYCHAIN_ITEM=1 ax doctor)
-  eq doctor-mode 1 "$(printf '%s\n' "$out" | grep -c '^profile mode: real HOME; WSL_INTEROP=agyx')"
+  eq doctor-mode 1 "$(printf '%s\n' "$out" | grep -c '^profile mode: real HOME; AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1;')"
   eq doctor-permissions 1 "$(printf '%s\n' "$out" | grep -c 'token: WARNING mode 644')"
   eq doctor-drift 1 "$(printf '%s\n' "$out" | grep -c 'antigravity-cli collision: DRIFT')"
   eq doctor-link 1 "$(printf '%s\n' "$out" | grep -c 'antigravity-cli broken: WARNING')"
@@ -580,6 +590,16 @@ EOF
   out=$(AGYX_REAL_AGY='' ax doctor --json 2>/dev/null); rc=$?
   eq doctor-structured-missing-real-rc 1 "$rc"
   eq doctor-structured-missing-real 1 "$(printf '%s' "$out" | grep -c 'real agy: NOT FOUND')"
+  # Legacy agy (< 1.5.16) with WSL_INTEROP but without AGY_CLI_FORCE_FILE_TOKEN_STORAGE triggers upgrade warning.
+  cat > "$S/legacy-agy" <<'EOF'
+#!/bin/sh
+# Legacy markers: WSL_INTEROP app_data_dir Using file-based token storage
+echo "agy 1.5.15"
+EOF
+  chmod +x "$S/legacy-agy"
+  out=$(AGYX_REAL_AGY="$S/legacy-agy" ax doctor --json 2>/dev/null); rc=$?
+  eq doctor-legacy-rc 1 "$rc"
+  eq doctor-legacy-upgrade-hint 1 "$(printf '%s' "$out" | grep -c '(agy >= 1.5.16 required; run: agy update)')"
   # Clean state reports ok:true and empty issues array.
   mkdir -p "$S/clean-bin"
   ln -s "$here/bin/agyx" "$S/clean-bin/agyx"
@@ -839,6 +859,9 @@ suite_gate_and_uninstall() {
   (HOME=$IP sh "$here/scripts/install.sh" --from "$here" --prefix "$IP/.local/lib/agyx" --bin-dir "$IP/.local/bin" >/dev/null)
   eq install-prefix-marker "$(sed -n 's/^AGYX_VERSION=\([^ #]*\).*/\1/p' "$here/runtime/sync.sh")" "$(cat "$IP/.local/lib/agyx/.agyx-prefix")"
   eq install-prefix-link "$IP/.local/lib/agyx/bin/agyx" "$(readlink "$IP/.local/bin/agyx")"
+  eq install-prefix-runtime-sync present "$([ -f "$IP/.local/lib/agyx/runtime/sync.sh" ] && echo present || echo absent)"
+  eq install-prefix-no-bash-env absent "$([ -e "$IP/.local/lib/agyx/runtime/bash_env" ] && echo present || echo absent)"
+  eq install-prefix-no-zsh absent "$([ -e "$IP/.local/lib/agyx/runtime/zsh" ] && echo present || echo absent)"
   eq install-prefix-version "agyx $(cat "$IP/.local/lib/agyx/.agyx-prefix")" "$(HOME=$IP "$IP/.local/bin/agyx" --version | head -n 1)"
   mkdir -p "$IP/.local/share/agyx/profiles/work/antigravity-cli"
   (HOME=$IP AGYX_ASSUME_YES=1 "$IP/.local/bin/agyx" uninstall >/dev/null 2>"$S/err-prefix")
@@ -900,6 +923,15 @@ suite_fastpath_and_remove() {
   eq remove-busy-log-json-code profile_busy "$(AGYX_DATA_DIR=$rdata AGYX_TRASH_DIR=$rtrash ax profile remove alpha --yes --json 2>/dev/null | sed -n 's/.*"code":"\([a-z_]*\)".*/\1/p')"
   eq remove-busy-log-intact present "$([ -d "$rdata/profiles/alpha" ] && echo present || echo absent)"
   kill "$rm_log_writer"; wait "$rm_log_writer" 2>/dev/null
+  # Busy private persistent_terminals entry also blocks removal.
+  mkdir -p "$rdata/profiles/alpha/antigravity-cli/persistent_terminals"
+  printf 'ptdata\n' > "$rdata/profiles/alpha/antigravity-cli/persistent_terminals/t1.sock"
+  "$T/writer with spaces" "$S/rm-pt-ready" "$rdata/profiles/alpha/antigravity-cli/persistent_terminals/t1.sock" & rm_pt_writer=$!
+  i=0; while [ ! -f "$S/rm-pt-ready" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+  eq remove-busy-pt-code 1 "$(AGYX_DATA_DIR=$rdata AGYX_TRASH_DIR=$rtrash ax profile remove alpha --yes >/dev/null 2>"$S/rm-err"; echo $?)"
+  eq remove-busy-pt-json-code profile_busy "$(AGYX_DATA_DIR=$rdata AGYX_TRASH_DIR=$rtrash ax profile remove alpha --yes --json 2>/dev/null | sed -n 's/.*"code":"\([a-z_]*\)".*/\1/p')"
+  eq remove-busy-pt-intact present "$([ -d "$rdata/profiles/alpha" ] && echo present || echo absent)"
+  kill "$rm_pt_writer"; wait "$rm_pt_writer" 2>/dev/null
   "$T/writer with spaces" "$S/rm-shared-ready" "$shared/conversation_summaries.db" & rm_shared_writer=$!
   i=0; while [ ! -f "$S/rm-shared-ready" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
   # Remove non-default profile (delta) while shared DB is held open: succeeds, default preserved, stdout empty without --json.

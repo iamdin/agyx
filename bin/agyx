@@ -434,11 +434,7 @@ case $cmd in
     else
       doc_warn "agy entry: $AGYX_DATA/agy is MISSING or not agyx's (it is the path to give apps that need a binary named agy)"
     fi
-    if agyx_native_file_storage; then
-      doc_line "profile mode: real HOME; native file storage (no shell bridge needed); --app_data_dir=<profile>/antigravity-cli (relative to ~/.gemini)"
-    else
-      doc_line "profile mode: real HOME; WSL_INTEROP=${WSL_INTEROP:-agyx} (desktop keyring bypass + shell bridge); --app_data_dir=<profile>/antigravity-cli (relative to ~/.gemini)"
-    fi
+    doc_line "profile mode: real HOME; AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1; --app_data_dir=<profile>/antigravity-cli (relative to ~/.gemini)"
     if [ -x "$sec" ] && HOME=$AGYX_HOME "$sec" find-generic-password -s gemini -a antigravity >/dev/null 2>&1; then
       doc_line "keychain: INFO plain agy has a login (gemini/antigravity); agyx does not use it"
     fi

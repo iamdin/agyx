@@ -132,12 +132,8 @@ for f in agy agyx; do
   cp "$FROM/bin/$f" "$stage/bin/$f" || die "missing $FROM/bin/$f"
   chmod 755 "$stage/bin/$f"
 done
-# runtime/: scripts + zsh/ bridge tree
-cp "$FROM/runtime/sync.sh" "$FROM/runtime/bash_env" "$stage/runtime/" || die "missing runtime files"
-if [ -d "$FROM/runtime/zsh" ]; then
-  mkdir -p "$stage/runtime/zsh"
-  cp -R "$FROM/runtime/zsh/." "$stage/runtime/zsh/" || die "cannot copy runtime/zsh"
-fi
+# runtime/: shared sh library
+cp "$FROM/runtime/sync.sh" "$stage/runtime/" || die "missing runtime/sync.sh"
 printf '%s\n' "$VERSION" > "$stage/.agyx-prefix"
 # Replace any previous prefix install atomically from the caller's point of view.
 mkdir -p "${PREFIX%/*}" "$BINDIR" || die "cannot create install directories"
