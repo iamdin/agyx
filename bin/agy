@@ -70,8 +70,8 @@ agyx_sync_app "$pdir" || {
 agyx_app_arg "$pdir" || die "cannot resolve profile app directory"
 
 # 3. force profile-local file token storage (agy >= 1.5.16; bypasses OS keyrings on all platforms)
-AGYX_PROFILE=$name AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 AGY_CLI_DISABLE_AUTO_UPDATE=true
-export AGYX_PROFILE AGY_CLI_FORCE_FILE_TOKEN_STORAGE AGY_CLI_DISABLE_AUTO_UPDATE
+AGYX_PROFILE=$name AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1
+export AGYX_PROFILE AGY_CLI_FORCE_FILE_TOKEN_STORAGE
 
 # 4. check newest native log in <profile>/antigravity-cli/log, then direct exec
 agyx_check_recent_log "$pdir"
