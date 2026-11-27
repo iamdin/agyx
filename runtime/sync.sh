@@ -1,7 +1,7 @@
 # shellcheck shell=sh
 # shellcheck disable=SC2034,SC3013 # AGYX_* used by callers; -ef/-nt are POSIX.1-2024
 # Shared runtime for bin/agy and bin/agyx. Never read or copy a token.
-AGYX_VERSION=0.2.4-beta.1 # the one place the version lives (the formula's url tag must match)
+AGYX_VERSION=0.2.4 # the one place the version lives (the formula's url tag must match)
 AGYX_SHARED_DIRS='annotations bin brain builtin conversations implicit mcp presence sidecar_data skills'
 AGYX_SHARED_FILES='conversation_summaries.db history.jsonl installation_id'
 AGYX_HOME=${AGYX_HOME:-${HOME-}}
